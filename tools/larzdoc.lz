@@ -1,0 +1,65 @@
+# larzdoc - generate Markdown API docs from a Larzscript file's comments.
+#
+# It reads the leading `#` comment block as the module description, then
+# documents each `fn name(...)` (and commented public `let NAME`), attaching the
+# `#` comment lines that immediately precede each declaration.
+#
+#   larzscript larzdoc.lz path/to/module.lz > module.md
+
+if len(args) == 0 {
+  print("usage: larzscript larzdoc.lz <file.lz>")
+  exit(1)
+}
+
+let path = args[0]
+if not file_exists(path) {
+  print("larzdoc: no such file: " + path)
+  exit(1)
+}
+
+let lines = read_file(path).split("\n")
+
+# ---- module title + leading description block ----
+let title = path.split("/")[len(path.split("/")) - 1]
+print("# " + title)
+print("")
+
+let i = 0
+while i < len(lines) and lines[i].strip().starts_with("#") {
+  print(lines[i].strip()[1:].strip())
+  i = i + 1
+}
+print("")
+print("## API")
+print("")
+
+# ---- declarations ----
+let pending = []
+let found = false
+while i < len(lines) {
+  let t = lines[i].strip()
+  if t.starts_with("#") {
+    pending.push(t[1:].strip())
+  } else if t.starts_with("fn ") and not t.starts_with("fn _") {
+    let sig = t.contains("{") ? t.split("{")[0].strip() : t
+    print("### `" + sig[3:] + "`")
+    print("")
+    for p in pending { print(p) }
+    if len(pending) > 0 { print("") }
+    found = true
+    pending = []
+  } else if t.starts_with("let ") and not t.starts_with("let _") and len(pending) > 0 {
+    let name = t[4:].split("=")[0].split(" ")[0]
+    print("### `" + name + "` — value")
+    print("")
+    for p in pending { print(p) }
+    print("")
+    found = true
+    pending = []
+  } else {
+    pending = []
+  }
+  i = i + 1
+}
+
+if not found { print("_(no public functions found)_") }

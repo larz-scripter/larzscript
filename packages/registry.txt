@@ -13,3 +13,6 @@ time    https://github.com/larz-scripter/lz-time
 string  https://github.com/larz-scripter/lz-string
 random  https://github.com/larz-scripter/lz-random
 fs      https://github.com/larz-scripter/lz-fs
+base64  https://github.com/larz-scripter/lz-base64
+table   https://github.com/larz-scripter/lz-table
+log     https://github.com/larz-scripter/lz-log
