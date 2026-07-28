@@ -71,7 +71,7 @@
       "name": "keyword.other.money.larzscript"
     },
     "builtins": {
-      "match": "\\b(print|len|range|str|int|float|bool|type|abs|min|max|sum|sorted|reversed|floor|ceil|round|sqrt|pow|chr|ord|assert|input|keys|values|push|money|map|filter|reduce|join|enumerate|zip|read_file|write_file|append_file|file_exists|exit|args)\\b",
+      "match": "\\b(print|len|range|str|int|float|bool|type|abs|min|max|sum|sorted|reversed|floor|ceil|round|sqrt|pow|chr|ord|assert|input|keys|values|push|money|map|filter|reduce|join|enumerate|zip|read_file|write_file|append_file|file_exists|exit|args|all|any|count|unique|hex|bin|oct|gcd|factorial|sign|clamp|list|dict)\\b",
       "name": "support.function.builtin.larzscript"
     },
     "operators": {
