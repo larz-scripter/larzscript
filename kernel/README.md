@@ -77,6 +77,26 @@ larzos:/ $ ping 10.0.2.2
 Boot with a NIC in QEMU: `-netdev user,id=n0 -device rtl8139,netdev=n0`
 (VirtualBox: set the adapter type to PCnet/PCI or, ideally, add an RTL8139).
 
+### A web server, in Larzscript, over TCP
+
+A minimal single-connection **TCP** server (in `net.c`) handles the handshake and
+exposes itself to Larzscript through virtual files: `read_file("/net/http/accept")`
+blocks for a request, `write_file("/net/http/reply", resp)` sends it. So the whole
+HTTP server — [`rootfs/webserver.lz`](rootfs/webserver.lz) — is Larzscript, and its
+content is money-native:
+
+```bash
+# boot the server build with a forwarded port:
+qemu-system-x86_64 -cdrom larzos.iso -device rtl8139,netdev=n0 \
+  -netdev user,id=n0,hostfwd=tcp::8080-:80 ...
+# then from the host:
+curl http://localhost:8080/
+#  Hello from LarzOS ... Money is native to the language: price pro = $5.00 -> $5.00
+```
+
+Build it with `EXTRA=-DLARZ_SERVER` (boots straight into the server), or just run
+`webserver` inside `larzsh`.
+
 Build variants: default runs `/boot.lz` then halts (deterministic, for
 `make test`); `EXTRA=-DLARZ_SHELL` = demo then the shell (shipped);
 `EXTRA=-DLARZ_DEMO_REPL` = demo then a raw `larz>` REPL; `EXTRA=-DLARZ_REPL` =

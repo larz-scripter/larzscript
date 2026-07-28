@@ -60,10 +60,14 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   `clock()`/`sleep()`, `date`/`uptime`), and **networking** — an RTL8139 driver
   + ARP/IPv4/ICMP stack that pings the gateway, exposed to Larzscript via virtual
   `/net/` files (`netstat`, `ping`). LarzOS talks to the network on bare metal.
-- Next: **TCP** (so `pkg` can fetch from a remote repo and a Larzscript HTTP
-  server can run — a real, money-native web server on bare metal), interrupt-
-  driven I/O, a bigger on-disk filesystem, and `init.lz` managing services.
-  Userland stays 100% Larzscript.
+- Also ✅: **TCP + a web server written in Larzscript** — a minimal TCP server
+  (`net.c`) handles the handshake and hands requests to `webserver.lz` via
+  `/net/http/*` files; verified with `curl` from the host returning money-native
+  pages over TCP. A real, if minimal, server on bare metal — no Linux.
+- Next: outbound TCP so `pkg` fetches from a **remote repo** (apt over the
+  network); a multi-connection / keep-alive server; interrupt-driven I/O; a
+  bigger on-disk filesystem; and `init.lz` supervising long-running services
+  (e.g. the web server). Userland stays 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most
