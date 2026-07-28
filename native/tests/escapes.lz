@@ -1,0 +1,6 @@
+print(len("a\rb"), len("a\tb"), len("a\nb"))
+print("quote: \" backslash: \\ slash: /")
+print("tab\there")
+let s = "line1\nline2"
+print(len(s.split("\n")))
+print("carriage" + "\r" + "return has len 1:", len("\r"))

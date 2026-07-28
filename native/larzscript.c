@@ -1473,7 +1473,7 @@ static int bracket_depth(const char *s){
 static void repl(Interp *ip){
   char line[8192];
   static char buf[1<<16]; buf[0]=0;
-  printf("Larzscript native REPL (v1.8.0) - type statements; Ctrl-D to exit.\n"
+  printf("Larzscript native REPL (v1.8.1) - type statements; Ctrl-D to exit.\n"
          "Definitions can span multiple lines; the '..... ' prompt means more is expected.\n");
   for(;;){
     printf(buf[0] ? "..... " : "larz> "); fflush(stdout);
@@ -1704,7 +1704,7 @@ int main(int argc, char **argv){
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.8.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.8.1\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }

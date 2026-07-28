@@ -14,15 +14,43 @@ pip). You write `.lz` files and run them — just like any other language.
 
 ## Get it & run it
 
-Download a prebuilt binary from
-[Releases](https://github.com/larz-scripter/larzscript/releases) (Linux
-x86_64 / ARM64), or build it — one C file, no dependencies:
+**One-line install** (Linux x86_64 / ARM64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/larz-scripter/larzscript/main/install.sh | sh
+```
+
+Or grab a binary from [Releases](https://github.com/larz-scripter/larzscript/releases),
+or build it — one C file, no dependencies:
 
 ```bash
 cc -O2 -o larzscript native/larzscript.c     # or: make -C native
 ./larzscript program.lz                        # run a file
-./larzscript repl                              # interactive REPL
+./larzscript -e "print(1 + 2)"                 # a one-liner
+./larzscript repl                              # interactive (multi-line) REPL
+./larzscript fmt program.lz                    # canonical auto-formatter
 ```
+
+## Packages
+
+Larzscript has a package manager (`larzpkg`) that installs libraries into
+`~/.larzscript/lib`, where `import` finds them:
+
+```bash
+larzscript ~/.larzscript/larzpkg.lz install json
+larzscript ~/.larzscript/larzpkg.lz list
+```
+
+```
+import "http" as http
+import "json" as json
+let repo = json.parse(http.get("https://api.github.com/repos/larz-scripter/larzscript"))
+print(repo["full_name"])                       # larz-scripter/larzscript
+```
+
+Available: **json** (parse/stringify), **http** (a curl-based client), **mathx**,
+**greet**. Add yours by PR-ing a line to
+[`packages/registry.txt`](packages/registry.txt).
 
 ## A taste — general-purpose *and* money-native
 
