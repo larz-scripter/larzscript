@@ -1,0 +1,10 @@
+fn greet(name, greeting="Hello", mark="!") { return greeting + ", " + name + mark }
+print(greet("Ada"))
+print(greet("Bob", "Hi"))
+print(greet("Cy", "Yo", "?"))
+fn f(a, b=10, c=20) { return a + b + c }
+print(f(1), f(1, 2), f(1, 2, 3))
+let n = 7
+print(n % 2 == 0 ? "even" : "odd")
+fn sign(x) { return x > 0 ? "pos" : x < 0 ? "neg" : "zero" }
+print(sign(3), sign(-3), sign(0))

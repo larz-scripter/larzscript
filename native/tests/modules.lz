@@ -1,0 +1,6 @@
+import "modlib/util.lz" as u
+print(u.double(21))
+print(u.greet("ada"))
+print(u.VERSION)
+import "modlib/util.lz" as u2
+print(u.VERSION == u2.VERSION)

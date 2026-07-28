@@ -75,22 +75,25 @@ nums.sort()
 print("sorted", nums, "sum", sum(nums), "max", max(nums))
 ```
 
-## Language (v1.1 — a general-purpose standalone language)
+## Language (v1.2 — a general-purpose standalone language)
+
+Full reference: **[LANGUAGE.md](LANGUAGE.md)**.
 
 **Values:** numbers · strings · booleans · nil · **lists** · **dicts** ·
-**functions** (incl. anonymous `fn(x){ ... }` **lambdas**) ·
+**functions** (incl. anonymous `fn(x){ ... }` **lambdas**) · **modules** ·
 money (`$` = exact integer cents) · wallets.
 
 **Operators:** `+ - * / % // **` · `== != < <= > >=` · `and or not` ·
-**`in`** (list/dict/string membership) · `has`.
+**`in`** (list/dict/string membership) · `has` · **`cond ? a : b`** (ternary).
 
 **Syntax:** `let` / assign / **compound assign** (`+= -= *= /= %=`) ·
 `if`/`else`/`else if` · `while` · **`for x in`** lists/dicts/strings ·
-**`break`** / **`continue`** · **`try` / `catch` / `throw`** · functions +
-recursion + closures + lambdas · **gas-metered functions** · list & dict
+**`break`** / **`continue`** · **`try` / `catch` / `throw`** · functions with
+**default parameters** + recursion + closures + lambdas · **gas-metered
+functions** · **`import "file.lz" as m`** (relative paths, cached) · list & dict
 literals · indexing · **slicing** (`a[i:j]`, negatives) · **element assignment**
-(`a[i] = x`, `d[k] = v`) · **f-strings** (`f"hi {name}, {1+2}"`) · errors
-reported **with line numbers** and **catchable**.
+(`a[i] = x`, `d[k] = v`) · **f-strings** (`f"hi {name}, {1+2}"`) · `;` separates
+statements · errors reported **with line numbers** and **catchable**.
 
 **Methods:** list `push`/`pop`/`insert`/`sort`/`reverse`/`contains`/`index` ·
 dict `keys`/`values`/`has`/`get`/`remove` · string
@@ -102,6 +105,18 @@ map filter reduce join enumerate`.
 
 **Money-native:** `price` · `pay ... from ... to ...` · `require` ·
 `paywall` / `subscribe` / `has`.
+
+## Modules
+
+```
+# mathx.lz
+fn square(x) { return x * x }
+let PI = 3.14159
+
+# main.lz
+import "mathx.lz" as m
+print(m.square(5), m.PI)      # 25 3.14159
+```
 
 ## Tests
 
