@@ -52,6 +52,29 @@ src = 'fn scan() gas 500 { return 1 }\nscan()\nscan()\nscan()'
 run(src, gas=1200)         # raises OutOfGasError on the 3rd call
 ```
 
+### Subscriptions & paywalls (new in 0.2)
+
+```
+wallet customer = $20.00
+wallet platform
+paywall pro = $9.00 / month to platform
+
+subscribe customer to pro          # charges $9, pays platform, records the ledger, grants access
+
+fn premium(user) {
+    require user has pro, "subscribe to Pro first"   # the runtime enforces the gate
+    return "secret content"
+}
+```
+
+### Run it
+
+```bash
+larzscript program.lz     # run a file
+larzscript repl           # interactive REPL (state persists across lines)
+python -m larzscript program.lz
+```
+
 ## Why it exists — the selling point
 
 A new general-purpose language competing with Python or Rust is dead on arrival.
@@ -88,7 +111,7 @@ fn analyze(img) gas 500 { ... }   # metered: each call costs gas
 ## Roadmap
 
 - **v0.1 (this release)** — tree-walking interpreter, in-memory settlement.
-- **v0.2** — subscriptions/`paywall` and periods, more built-ins, a REPL + CLI.
+- **v0.2 (this release)** — subscriptions/paywalls, the `has` operator, and a CLI + REPL.
 - **v1.0** — compile to bytecode for a gas-metered VM, and deploy `.lz` programs
   as on-chain contracts.
 

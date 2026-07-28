@@ -11,7 +11,7 @@ would implement the same credit/debit/record interface.
 from larzscript.errors import (LarzNameError, LarzTypeError, MoneyError,
                                RequireError, OutOfGasError)
 
-__all__ = ["Interpreter", "Money", "Wallet", "Transaction"]
+__all__ = ["Interpreter", "Money", "Wallet", "Transaction", "Paywall"]
 
 
 # --------------------------------------------------------------------------- #
@@ -84,6 +84,21 @@ class Transaction(object):
 
     def __repr__(self):
         return "Transaction(%s -> %s: %s)" % (self.src, self.dst, self.amount)
+
+
+class Paywall(object):
+    """A subscription product: a price, a period, and the wallet that's paid."""
+
+    __slots__ = ("name", "price", "period", "payee")
+
+    def __init__(self, name, price, period, payee):
+        self.name = name
+        self.price = price
+        self.period = period
+        self.payee = payee
+
+    def __repr__(self):
+        return "Paywall(%r, %s / %s)" % (self.name, self.price, self.period)
 
 
 class _Function(object):
@@ -168,6 +183,8 @@ def stringify(v):
         return str(v)
     if isinstance(v, Wallet):
         return "<wallet %s: %s>" % (v.name, v.balance)
+    if isinstance(v, Paywall):
+        return "<paywall %s: %s/%s>" % (v.name, v.price, v.period)
     if isinstance(v, _Function):
         return "<fn %s>" % v.decl.name
     if isinstance(v, _Builtin):
@@ -186,11 +203,13 @@ class Interpreter(object):
     def __init__(self, gas=None, output=None):
         self.globals = Environment()
         self.ledger = []
+        self.subscriptions = set()   # {(wallet_name, paywall_name)}
         self.gas = gas               # None = unlimited
         self.gas_used = 0
         self._out = output if output is not None else []
         self.globals.define("print", _Builtin("print", self._print))
         self.globals.define("money", _Builtin("money", self._money))
+        self.globals.define("len", _Builtin("len", self._len))
 
     # -- public --
     def run(self, program):
@@ -214,6 +233,11 @@ class Interpreter(object):
         if not _is_num(dollars):
             raise LarzTypeError("money() expects a number of dollars")
         return Money(dollars * 100)
+
+    def _len(self, value):
+        if isinstance(value, str):
+            return len(value)
+        raise LarzTypeError("len() expects a string")
 
     # -- dispatch --
     def execute(self, node, env):
@@ -252,6 +276,27 @@ class Interpreter(object):
         src.debit(amount)            # raises MoneyError if insufficient
         dst.credit(amount)
         self.ledger.append(Transaction(node.src, node.dst, amount))
+
+    def exec_Paywall(self, node, env):
+        price = self.evaluate(node.amount, env)
+        if not isinstance(price, Money):
+            raise LarzTypeError("a paywall price must be money")
+        env.define(node.name, Paywall(node.name, price, node.period, node.payee))
+
+    def exec_Subscribe(self, node, env):
+        wallet = env.get(node.who)
+        plan = env.get(node.plan)
+        if not isinstance(wallet, Wallet):
+            raise LarzTypeError("can only subscribe a wallet")
+        if not isinstance(plan, Paywall):
+            raise LarzTypeError("can only subscribe to a paywall")
+        payee = env.get(plan.payee)
+        if not isinstance(payee, Wallet):
+            raise LarzTypeError("paywall payee '%s' is not a wallet" % plan.payee)
+        wallet.debit(plan.price)          # charge the subscriber (raises if short)
+        payee.credit(plan.price)
+        self.ledger.append(Transaction(node.who, plan.payee, plan.price))
+        self.subscriptions.add((wallet.name, plan.name))
 
     def exec_Require(self, node, env):
         if not _truthy(self.evaluate(node.cond, env)):
@@ -307,6 +352,12 @@ class Interpreter(object):
         if node.op == "or":
             left = self.evaluate(node.left, env)
             return left if _truthy(left) else self.evaluate(node.right, env)
+        if node.op == "has":
+            wallet = self.evaluate(node.left, env)
+            plan = self.evaluate(node.right, env)
+            if not isinstance(wallet, Wallet) or not isinstance(plan, Paywall):
+                raise LarzTypeError("'has' needs a wallet and a paywall")
+            return (wallet.name, plan.name) in self.subscriptions
         return self._binop(node.op, self.evaluate(node.left, env),
                            self.evaluate(node.right, env))
 

@@ -14,6 +14,7 @@ KEYWORDS = {
     "let", "fn", "return", "if", "else", "while",
     "and", "or", "not", "true", "false", "nil",
     "price", "wallet", "pay", "from", "to", "require", "gas",
+    "paywall", "subscribe", "has",
 }
 
 _TWO_CHAR_OPS = ("==", "!=", "<=", ">=")

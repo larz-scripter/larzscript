@@ -31,6 +31,8 @@ Assign = _node("Assign", "name", "value")
 Price = _node("Price", "name", "value")
 WalletDecl = _node("WalletDecl", "name", "value")
 Pay = _node("Pay", "amount", "src", "dst")
+Paywall = _node("Paywall", "name", "amount", "period", "payee")
+Subscribe = _node("Subscribe", "who", "plan")
 Require = _node("Require", "cond", "message")
 Fn = _node("Fn", "name", "params", "gas", "body")
 Return = _node("Return", "value")
@@ -111,6 +113,10 @@ class Parser(object):
             return self._wallet()
         if t == "pay":
             return self._pay()
+        if t == "paywall":
+            return self._paywall()
+        if t == "subscribe":
+            return self._subscribe()
         if t == "require":
             return self._require()
         if t == "fn":
@@ -159,6 +165,26 @@ class Parser(object):
         self.expect("to", "'to' in a pay")
         dst = self.expect("IDENT", "a wallet after 'to'").value
         return Pay(amount, src, dst)
+
+    def _paywall(self):
+        # paywall NAME = <money> / PERIOD to WALLET
+        self.advance()
+        name = self.expect("IDENT", "a name after 'paywall'").value
+        self.expect_op("=", "'=' in a paywall")
+        amount = self._unary()                     # stops before the '/'
+        self.expect_op("/", "'/' before the period")
+        period = self.expect("IDENT", "a period after '/' (e.g. month)").value
+        self.expect("to", "'to' in a paywall")
+        payee = self.expect("IDENT", "a wallet after 'to'").value
+        return Paywall(name, amount, period, payee)
+
+    def _subscribe(self):
+        # subscribe WALLET to PAYWALL
+        self.advance()
+        who = self.expect("IDENT", "a wallet after 'subscribe'").value
+        self.expect("to", "'to' in subscribe")
+        plan = self.expect("IDENT", "a paywall after 'to'").value
+        return Subscribe(who, plan)
 
     def _require(self):
         self.advance()
@@ -232,10 +258,18 @@ class Parser(object):
         return node
 
     def _equality(self):
-        node = self._comparison()
+        node = self._membership()
         while self.check_op("==", "!="):
             op = self.advance().value
-            node = Binary(op, node, self._comparison())
+            node = Binary(op, node, self._membership())
+        return node
+
+    def _membership(self):
+        # WALLET has PAYWALL  ->  is this wallet subscribed?
+        node = self._comparison()
+        while self.check("has"):
+            self.advance()
+            node = Binary("has", node, self._comparison())
         return node
 
     def _comparison(self):

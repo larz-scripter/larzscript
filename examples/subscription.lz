@@ -1,0 +1,16 @@
+# Subscriptions & paywalls, native to the language.
+wallet customer = $20.00
+wallet platform
+
+paywall pro = $9.00 / month to platform
+
+subscribe customer to pro                 # charges $9, grants access, records ledger
+
+fn premium_report(user) {
+    require user has pro, "subscribe to Pro to view this"
+    return "your premium report is ready"
+}
+
+print(premium_report(customer))           # works - customer has pro
+print("customer left:", customer.balance) # $11.00
+print("platform earned:", platform.balance)

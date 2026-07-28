@@ -140,3 +140,61 @@ class TestErrors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSubscriptions(unittest.TestCase):
+    def test_subscribe_charges_and_grants(self):
+        src = ('wallet customer = $20.00\nwallet platform\n'
+               'paywall pro = $9.00 / month to platform\n'
+               'subscribe customer to pro\n'
+               'print("has pro:", customer has pro)')
+        r = run(src)
+        self.assertEqual(r.get("customer").balance, Money(1100))   # $11.00 left
+        self.assertEqual(r.get("platform").balance, Money(900))    # $9.00
+        self.assertEqual(r.output, "has pro: true")
+        self.assertEqual(len(r.ledger), 1)
+
+    def test_has_is_false_before_subscribing(self):
+        src = ('wallet customer = $20.00\nwallet platform\n'
+               'paywall pro = $9.00 / month to platform\n'
+               'print(customer has pro)')
+        self.assertEqual(run(src).output, "false")
+
+    def test_require_access_gate(self):
+        src = ('wallet customer = $20.00\nwallet platform\n'
+               'paywall pro = $9.00 / month to platform\n'
+               'fn premium_feature(user) {\n'
+               '    require user has pro, "subscribe to pro first"\n'
+               '    return "secret content"\n'
+               '}\n'
+               'premium_feature(customer)')
+        try:
+            run(src)
+            self.fail("should have been gated")
+        except RequireError as e:
+            self.assertIn("subscribe to pro first", str(e))
+
+    def test_gate_passes_after_subscribe(self):
+        src = ('wallet customer = $20.00\nwallet platform\n'
+               'paywall pro = $9.00 / month to platform\n'
+               'subscribe customer to pro\n'
+               'fn premium_feature(user) {\n'
+               '    require user has pro, "subscribe first"\n'
+               '    return "secret content"\n'
+               '}\n'
+               'print(premium_feature(customer))')
+        self.assertEqual(run(src).output, "secret content")
+
+    def test_cannot_subscribe_without_funds(self):
+        src = ('wallet customer = $1.00\nwallet platform\n'
+               'paywall pro = $9.00 / month to platform\n'
+               'subscribe customer to pro')
+        self.assertRaises(MoneyError, run, src)
+
+
+class TestBuiltins(unittest.TestCase):
+    def test_len(self):
+        self.assertEqual(run('print(len("hello"))').output, "5")
+
+    def test_money_builtin(self):
+        self.assertEqual(run('print(money(3.5))').output, "$3.50")
