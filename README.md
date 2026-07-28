@@ -151,6 +151,34 @@ Two backends ship ready to use (opt-in imports; core stays zero-dependency):
   [LarzChain](https://github.com/larz-scripter/larzchain) package) settles every
   payment as a real signed LARZ transaction.
 
+## Contracts (new in 1.2)
+
+Deploy a `.lz` program as a persistent, callable **contract**. Because the
+language is deterministic and I/O-free, a contract's state is a pure function of
+its ordered calls — so it's replayable and hashes to a commitment you can anchor
+on-chain, while every payment settles through your chosen rail.
+
+```python
+from larzscript.contract import Contract
+
+c = Contract('''
+    wallet treasury
+    paywall pro = $9.00 / month to treasury
+    fn join(user) gas 20 {
+        require user.balance >= $9.00, "need $9.00 to join"
+        subscribe user to pro
+    }
+''')
+
+alice = c.new_wallet("alice", "$20.00")
+c.call("join", alice)          # metered, settling call; state persists
+c.balance("treasury")          # Money(900)
+c.state_hash()                 # sha256 commitment — anchor it on-chain
+```
+
+Full *in-consensus* execution is a separate frontier; this gives deterministic
+state + real settlement + an anchorable commitment with no consensus changes.
+
 ## Why it exists — the selling point
 
 A new general-purpose language competing with Python or Rust is dead on arrival.

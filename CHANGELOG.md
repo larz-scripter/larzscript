@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0
+Contracts — deploy a `.lz` program as a deterministic state machine.
+- `Contract(source, gas=, settlement=)` deploys a program (defines its wallets,
+  prices, paywalls, functions), then `call(fn, *args)` invokes its functions
+  over time; state persists across calls and each call is gas-metered and
+  settles through the chosen backend.
+- Because the language is deterministic and I/O-free, a contract's state is a
+  pure function of its ordered calls: `state()` snapshots it and `state_hash()`
+  is a sha256 commitment you can anchor on-chain. Replaying the same calls
+  reproduces the same hash.
+- `CallResult` reports each call's value, output, settled ledger and gas.
+  `examples/contract_saas.py` + `tests/test_contract.py`. 73 tests.
+
 ## 1.1.0
 Fiat/credit settlement adapters (`larzscript.adapters`).
 - `CreditSettlement` — a reusable backend where payments settle instantly

@@ -30,9 +30,9 @@ from larzscript.errors import (LarzScriptError, LarzSyntaxError, LarzRuntimeErro
                                LarzNameError, LarzTypeError, MoneyError,
                                RequireError, OutOfGasError, SettlementError)
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __all__ = ["run", "compile_source", "parse", "tokenize", "Interpreter", "Money", "Wallet",
-           "Transaction", "Settlement", "CallbackSettlement",
+           "Transaction", "Settlement", "CallbackSettlement", "Contract",
            "LarzScriptError", "LarzSyntaxError", "LarzRuntimeError",
            "LarzNameError", "LarzTypeError", "MoneyError", "RequireError",
            "OutOfGasError", "SettlementError"]
@@ -71,3 +71,8 @@ def run(source, gas=None, output=None, backend="tree", settlement=None):
     interp = Interpreter(gas=gas, output=output, settlement=settlement)
     interp.run(parse(source))
     return interp
+
+
+# Imported last so `parse` (referenced by contract.py) is already defined,
+# avoiding a circular import while still exporting `larzscript.Contract`.
+from larzscript.contract import Contract   # noqa: E402
