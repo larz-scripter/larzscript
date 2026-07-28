@@ -4,6 +4,7 @@
 void console_init(void);
 void serial_putc(char c);
 char serial_getc(void);
+char console_getc(void);          /* blocks on serial OR the PS/2 keyboard */
 int  serial_can_read(void);
 void qemu_exit(unsigned char code);
 #endif

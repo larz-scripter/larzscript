@@ -35,11 +35,25 @@ static int serial_tx_ready(void){ return inb(COM1+5) & 0x20; }
 
 static volatile u16 *const VGA = (u16*)0xB8000;
 static int vga_row = 0, vga_col = 0;
+#define VGA_ATTR (0x0F<<8)                 /* white on black */
+static void vga_cursor(void){
+    unsigned pos = vga_row*80 + vga_col;
+    outb(0x3D4,14); outb(0x3D5,(u8)(pos>>8));
+    outb(0x3D4,15); outb(0x3D5,(u8)pos);
+}
+static void vga_scroll(void){
+    for(int i=0;i<24*80;i++) VGA[i]=VGA[i+80];
+    for(int i=24*80;i<25*80;i++) VGA[i]=' '|VGA_ATTR;
+}
 static void vga_putc(char c){
-    if(c=='\n'){ vga_col=0; if(++vga_row>=25) vga_row=0; return; }
-    if(c=='\r'){ vga_col=0; return; }
-    VGA[vga_row*80+vga_col] = (u16)c | (0x0F<<8);
-    if(++vga_col>=80){ vga_col=0; if(++vga_row>=25) vga_row=0; }
+    if(c=='\n'){ vga_col=0; if(++vga_row>=25){ vga_row=24; vga_scroll(); } }
+    else if(c=='\r'){ vga_col=0; }
+    else if(c=='\b'){ if(vga_col>0){ vga_col--; VGA[vga_row*80+vga_col]=' '|VGA_ATTR; } }
+    else {
+        VGA[vga_row*80+vga_col] = (u16)c | VGA_ATTR;
+        if(++vga_col>=80){ vga_col=0; if(++vga_row>=25){ vga_row=24; vga_scroll(); } }
+    }
+    vga_cursor();
 }
 void serial_putc(char c){
     if(c=='\n'){ while(!serial_tx_ready()){} outb(COM1,'\r'); }
@@ -51,10 +65,50 @@ char serial_getc(void){
     while(!serial_can_read()){}
     return (char)inb(COM1);
 }
+
+/* ---- PS/2 keyboard (polled, scancode set 1) - local input on real HW/VM ---- */
+static const char kmap[0x40] = {
+    0,   27, '1','2','3','4','5','6','7','8','9','0','-','=','\b','\t',
+    'q','w','e','r','t','y','u','i','o','p','[',']','\n', 0, 'a','s',
+    'd','f','g','h','j','k','l',';','\'','`', 0,'\\','z','x','c','v',
+    'b','n','m',',','.','/', 0, '*', 0, ' ', 0,0,0,0,0,0,
+};
+static const char kmap_s[0x40] = {
+    0,   27, '!','@','#','$','%','^','&','*','(',')','_','+','\b','\t',
+    'Q','W','E','R','T','Y','U','I','O','P','{','}','\n', 0, 'A','S',
+    'D','F','G','H','J','K','L',':','"','~', 0, '|','Z','X','C','V',
+    'B','N','M','<','>','?', 0, '*', 0, ' ', 0,0,0,0,0,0,
+};
+static int kbd_shift=0, kbd_caps=0;
+static int kbd_poll(void){                 /* returns an ASCII char, or -1 */
+    if(!(inb(0x64)&1)) return -1;
+    unsigned char sc=inb(0x60);
+    if(sc==0x2A||sc==0x36){ kbd_shift=1; return -1; }
+    if(sc==0xAA||sc==0xB6){ kbd_shift=0; return -1; }
+    if(sc==0x3A){ kbd_caps^=1; return -1; }
+    if(sc & 0x80) return -1;               /* key release */
+    if(sc >= 0x40) return -1;              /* keypad / F-keys: ignore */
+    char base = kmap[sc];
+    if(base>='a' && base<='z'){ int up = kbd_shift ^ kbd_caps; return up? base-32 : base; }
+    char c = kbd_shift ? kmap_s[sc] : kmap[sc];
+    return c? (unsigned char)c : -1;
+}
+
+/* Block for a char from EITHER the serial line or the PS/2 keyboard, so the
+ * same kernel works over a serial console (headless) and locally (keyboard). */
+char console_getc(void){
+    for(;;){
+        if(serial_can_read()) return (char)inb(COM1);
+        int k=kbd_poll(); if(k>0) return (char)k;
+    }
+}
+
 void console_init(void){
     outb(COM1+1,0x00); outb(COM1+3,0x80);
     outb(COM1+0,0x01); outb(COM1+1,0x00);   /* 115200 baud */
     outb(COM1+3,0x03); outb(COM1+2,0xC7); outb(COM1+4,0x0B);
+    while(inb(0x64)&1) (void)inb(0x60);      /* drain any pending keyboard bytes */
+    vga_cursor();
 }
 void qemu_exit(unsigned char code){ outb(0xf4, code); }
 
@@ -418,7 +472,7 @@ char *fgets(char *buf, int size, FILE *f){
     if(f==&_stdin){
         int n=0;
         for(;;){
-            char c=serial_getc();
+            char c=console_getc();                       /* serial OR local keyboard */
             if(c=='\r'||c=='\n'){ serial_putc('\n'); buf[n++]='\n'; buf[n]=0; return buf; }
             if((c==0x7F||c==0x08)){ if(n>0){ n--; con_puts("\b \b"); } continue; }
             if(c>=32 && c<127 && n<size-2){ buf[n++]=c; serial_putc(c); }

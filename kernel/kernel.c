@@ -18,15 +18,26 @@ void kernel_main(void){
     printf("  kernel (Stage 1): 64-bit long mode, no Linux underneath.\n");
     printf("  The Larzscript interpreter is running on bare metal.\n");
     printf("\n");
-#ifdef LARZ_REPL
+#if defined(LARZ_REPL)
+    /* interactive only */
     printf("  Try it at the larz> prompt, e.g.  wallet a = $20.00\n");
     printf("  End the session with:  exit(0)\n\n");
-    char *argv[] = { "larzscript", "repl", 0 };
-#else
+    char *repl_argv[] = { "larzscript", "repl", 0 };
+    larz_main(2, repl_argv);
+#elif defined(LARZ_DEMO_REPL)
+    /* run the boot demo, then drop into an interactive prompt */
     printf("  Loading /boot.lz from the RAM filesystem...\n");
-    char *argv[] = { "larzscript", "/boot.lz", 0 };
+    char *boot_argv[] = { "larzscript", "/boot.lz", 0 };
+    larz_main(2, boot_argv);
+    printf("\n  [ demo complete - interactive Larzscript prompt; exit(0) to halt ]\n\n");
+    char *repl2_argv[] = { "larzscript", "repl", 0 };
+    larz_main(2, repl2_argv);
+#else
+    /* deterministic: run the boot program and halt (used by `make test`) */
+    printf("  Loading /boot.lz from the RAM filesystem...\n");
+    char *boot_argv[] = { "larzscript", "/boot.lz", 0 };
+    larz_main(2, boot_argv);
 #endif
-    larz_main(2, argv);
 
     printf("\n  LarzOS halted.\n");
     qemu_exit(0);

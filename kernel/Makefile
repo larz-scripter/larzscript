@@ -18,7 +18,7 @@ GCCINC := $(shell $(CC) -print-file-name=include)
 FREE   := -m64 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pie \
           -mno-red-zone -fno-asynchronous-unwind-tables -O2 -nostdlib \
           -nostdinc -isystem $(GCCINC) -Ilibc -I.
-CFLAGS := $(FREE) -Wall
+CFLAGS := $(FREE) -Wall $(EXTRA)     # e.g. make EXTRA=-DLARZ_REPL for an interactive prompt
 AFLAGS := -m64 -ffreestanding -fno-pie
 LDFLAGS := -m elf_x86_64 -T linker.ld -nostdlib -no-pie -z max-page-size=0x1000
 

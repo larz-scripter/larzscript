@@ -15,8 +15,14 @@ file reads, and money-native code all working on the hardware.
 [lang]  factorials  = [1, 2, 6, 24, 120, 720, 5040]
 ```
 
-Build with `CFLAGS+=-DLARZ_REPL` instead for an interactive `larz>` prompt over
-serial (wallets, pay, f-strings, recursion, dicts, floats — all evaluate live).
+The published `larzos.iso` runs that demo and then drops into an **interactive
+`larz>` prompt** you can type on with a **real keyboard** (or over serial) —
+wallets, pay, f-strings, recursion, dicts, floats all evaluate live. Output goes
+to a scrolling VGA text console *and* the serial line.
+
+Build variants: default runs `/boot.lz` then halts (deterministic, for
+`make test`); `EXTRA=-DLARZ_DEMO_REPL` = demo then prompt (shipped); `EXTRA=
+-DLARZ_REPL` = prompt only.
 
 ## How it works
 
@@ -37,6 +43,11 @@ serial (wallets, pay, f-strings, recursion, dicts, floats — all evaluate live)
 - **`rootfs/` + `mkramfs.py`** — the files baked into the image. `mkramfs.py`
   turns `rootfs/` into `ramfs_gen.c` (a C table of `{path, bytes, size}`); the
   kernel boots `/boot.lz`, which `import`s `/mathlib.lz` and reads `/motd.txt`.
+- **PS/2 keyboard + VGA console** (in `libk.c`) — a polled scancode-set-1
+  keyboard driver (shift/caps) gives **local input on real hardware / a VM**, and
+  a scrolling VGA text console with a hardware cursor gives local output. Input
+  blocks on *either* the serial line or the keyboard, so the same kernel works
+  headless (serial) and locally (keyboard) with no rebuild.
 - **`setjmp.S`** — a real x86_64 `setjmp`/`longjmp` (the interpreter's try/catch
   save/restores `jmp_buf` with `memcpy`, so `__builtin_setjmp` won't do).
 - **`kernel.c`** — brings up the console and calls the interpreter's `main()`
@@ -62,14 +73,15 @@ make run      # boot interactively; your terminal is the serial console
 
 Boot on a **real 64-bit laptop** (write `larzos.iso` to a USB stick) or in
 **VirtualBox** (type "Other/Unknown 64-bit", attach the ISO, give it **≥ 128 MiB
-RAM**). At the `larz>` prompt, type Larzscript. End a session with `exit(0)`.
+RAM**). You'll see the demo, then a `larz>` prompt — **type Larzscript on the
+keyboard**. End a session with `exit(0)`.
 
 ## Known limitations (Stage 1)
 
-- **Serial input has no flow control.** The kernel polls the 16-byte UART FIFO,
-  so a *burst* of pasted/piped input can overflow it and drop bytes. A human
-  typing is fine; `make test` throttles its scripted input for the same reason.
-  A future revision adds interrupt-driven input with a ring buffer.
+- Input is **polled** (both the keyboard and the 16-byte UART FIFO), so a *burst*
+  of pasted/piped *serial* input can overflow and drop bytes. A human typing (on
+  the keyboard or a serial terminal) is fine. Interrupt-driven input with a ring
+  buffer is a future revision.
 - The filesystem is a **read-only RAM image** baked into the kernel, so `import`,
   `read_file`, and `listdir` work but writes (`write_file`, `mkdir`) and
   process/env/clock builtins are stubbed. A writable + disk-backed FS is next.
