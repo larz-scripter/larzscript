@@ -131,6 +131,26 @@ run(program, settlement=OnChainSettlement())
   ledger (a LarzChain transaction, a GemVault fiat charge, an audit log).
 - Works identically on both backends. See `examples/settlement_backend.py`.
 
+### Ready-made rails (`larzscript.adapters`)
+
+Two backends ship ready to use (opt-in imports; core stays zero-dependency):
+
+- **Fiat / credit** — `CreditSettlement` settles payments instantly against
+  pre-funded per-wallet credit; the only real charge is a top-up **checkout a
+  human completes**, so a program never triggers a silent charge.
+  `GemVaultSettlement` sells that credit via the GemVault hub (card / PayPal /
+  crypto), verifying the signed webhook. See `examples/fiat_settlement.py`.
+
+  ```python
+  from larzscript.adapters.credit import CreditSettlement
+  settle = CreditSettlement(balances={"customer": 5000})   # $50.00 of credit
+  run(program, settlement=settle)                           # pays draw it down
+  ```
+
+- **On-chain** — `LarzChainSettlement` (in the
+  [LarzChain](https://github.com/larz-scripter/larzchain) package) settles every
+  payment as a real signed LARZ transaction.
+
 ## Why it exists — the selling point
 
 A new general-purpose language competing with Python or Rust is dead on arrival.
@@ -178,9 +198,12 @@ fn analyze(img) gas 500 { ... }   # metered: each call costs gas
   same `.lz` program settles every `pay`/`subscribe` as a real signed LARZ
   transaction, authorized against on-chain balances. Plug it in with
   `run(program, settlement=LarzChainSettlement(node))`.
+- **Fiat settlement (shipped, 1.1)** — `larzscript.adapters` ships
+  `CreditSettlement` + `GemVaultSettlement` (card / PayPal / crypto via checkout,
+  no silent charges). Same seam as on-chain, different rail.
 - **Next** — a native standalone build already runs `.lz` with zero Python (see
-  `native/`); a fiat-gateway settlement adapter and deploying `.lz` as on-chain
-  contracts that also speak fiat are the ongoing direction.
+  `native/`); deploying `.lz` as on-chain contracts that also speak fiat is the
+  ongoing direction.
 
 ## Learn to code with Larz
 

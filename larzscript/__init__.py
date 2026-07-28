@@ -30,7 +30,7 @@ from larzscript.errors import (LarzScriptError, LarzSyntaxError, LarzRuntimeErro
                                LarzNameError, LarzTypeError, MoneyError,
                                RequireError, OutOfGasError, SettlementError)
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["run", "compile_source", "parse", "tokenize", "Interpreter", "Money", "Wallet",
            "Transaction", "Settlement", "CallbackSettlement",
            "LarzScriptError", "LarzSyntaxError", "LarzRuntimeError",

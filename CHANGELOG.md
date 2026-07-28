@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0
+Fiat/credit settlement adapters (`larzscript.adapters`).
+- `CreditSettlement` — a reusable backend where payments settle instantly
+  against pre-funded per-wallet credit; the only place real money moves is a
+  top-up checkout a human completes (no silent charges).
+- `GemVaultSettlement` / `GemVaultGateway` — sell that credit through the
+  GemVault payment hub (card / PayPal / crypto). Pure stdlib, no hardcoded
+  secrets; verifies the `X-GV-Signature` webhook and is idempotent by txid.
+- `MockGemVaultGateway` reproduces the signed-webhook handshake for offline
+  demos/tests. Adapters are opt-in imports; core stays zero-dependency.
+- Adds `examples/fiat_settlement.py` and `tests/test_adapters.py`. 62 tests.
+  Complements the on-chain `LarzChainSettlement` — same seam, different rail.
+
 ## 1.0.0
 Pluggable settlement - Larzscript can now settle against a real ledger.
 - Every `pay` and `subscribe` routes through a `Settlement` backend instead of
