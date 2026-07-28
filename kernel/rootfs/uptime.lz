@@ -1,0 +1,7 @@
+# uptime - time since boot, from the monotonic (TSC) clock.
+fn run(args) {
+  let s = int(clock())
+  let h = s // 3600
+  let m = (s - h * 3600) // 60
+  print("up " + str(h) + "h " + str(m) + "m " + str(s - h * 3600 - m * 60) + "s")
+}

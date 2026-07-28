@@ -1,0 +1,28 @@
+# date - show the current UTC date/time, from the hardware RTC.
+fn _leap(y) { return (y % 4 == 0 and y % 100 != 0) or y % 400 == 0 }
+fn _p2(n) { return n < 10 ? "0" + str(n) : str(n) }
+fn run(args) {
+  let t = int(time())
+  if t == 0 { print("date: no clock"); return }
+  let days = t // 86400
+  let secs = t - days * 86400
+  let h = secs // 3600
+  let mi = (secs - h * 3600) // 60
+  let s = secs - h * 3600 - mi * 60
+  let year = 1970
+  while true {
+    let dy = _leap(year) ? 366 : 365
+    if days < dy { break }
+    days = days - dy
+    year = year + 1
+  }
+  let md = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  let mo = 12
+  for i in range(12) {
+    let dm = md[i]
+    if i == 1 and _leap(year) { dm = 29 }
+    if days < dm { mo = i + 1; break }
+    days = days - dm
+  }
+  print(str(year) + "-" + _p2(mo) + "-" + _p2(days + 1) + " " + _p2(h) + ":" + _p2(mi) + ":" + _p2(s) + " UTC")
+}

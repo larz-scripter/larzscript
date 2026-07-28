@@ -103,12 +103,14 @@ char console_getc(void){
     }
 }
 
+static void clock_init(void);            /* RTC/TSC clock, defined below */
 void console_init(void){
     outb(COM1+1,0x00); outb(COM1+3,0x80);
     outb(COM1+0,0x01); outb(COM1+1,0x00);   /* 115200 baud */
     outb(COM1+3,0x03); outb(COM1+2,0xC7); outb(COM1+4,0x0B);
     while(inb(0x64)&1) (void)inb(0x60);      /* drain any pending keyboard bytes */
     vga_cursor();
+    clock_init();                            /* calibrate the TSC against the PIT */
 }
 void qemu_exit(unsigned char code){ outb(0xf4, code); }
 
@@ -702,8 +704,46 @@ int rmdir(const char *p){ return vn_unlink(p); }
 int unlink(const char *p){ return vn_unlink(p); }
 int remove(const char *p){ return vn_unlink(p); }
 int access(const char *p, int m){ (void)m; return vn_resolve(p)?0:-1; }
-int usleep(unsigned us){ for(volatile unsigned i=0;i<us*20u;i++){} return 0; }
-unsigned sleep(unsigned s){ (void)s; return 0; }
+
+/* ---- RTC wall clock (CMOS) + TSC monotonic clock (PIT-calibrated) ---- */
+static int cmos_read(int reg){ outb(0x70,(u8)reg); return inb(0x71); }
+static int cmos_updating(void){ outb(0x70,0x0A); return inb(0x71)&0x80; }
+static int bcd2bin(int v){ return (v&0x0F)+((v>>4)*10); }
+static int is_leap(int y){ return (y%4==0 && y%100!=0)||y%400==0; }
+static long rtc_unix(void){
+    while(cmos_updating()){}
+    int s=cmos_read(0), mi=cmos_read(2), h=cmos_read(4);
+    int d=cmos_read(7), mo=cmos_read(8), y=cmos_read(9);
+    int b=cmos_read(0x0B);
+    if(!(b&0x04)){ s=bcd2bin(s); mi=bcd2bin(mi); int pm=h&0x80; h=bcd2bin(h&0x7F); if(pm)h+=12; d=bcd2bin(d); mo=bcd2bin(mo); y=bcd2bin(y); }
+    int year=2000+y;
+    static const int md[12]={31,28,31,30,31,30,31,31,30,31,30,31};
+    long days=0;
+    for(int yy=1970; yy<year; yy++) days += is_leap(yy)?366:365;
+    for(int mm=1; mm<mo; mm++){ days += md[mm-1]; if(mm==2 && is_leap(year)) days++; }
+    days += d-1;
+    return days*86400L + h*3600L + mi*60L + s;
+}
+static unsigned long long rdtsc(void){ unsigned lo,hi; __asm__ volatile("rdtsc":"=a"(lo),"=d"(hi)); return ((unsigned long long)hi<<32)|lo; }
+static unsigned long long g_tsc_hz=0, g_tsc_start=0;
+static void clock_init(void){
+    outb(0x61, (inb(0x61)&0xFD)|1);          /* PIT ch2 gate on, speaker off */
+    outb(0x43, 0xB0);                         /* ch2, lobyte/hibyte, mode 0, binary */
+    outb(0x42, 11932&0xFF); inb(0x60); outb(0x42,(11932>>8)&0xFF);  /* ~1/100 s count */
+    unsigned char p=inb(0x61)&0xFE; outb(0x61,p); outb(0x61,p|1);   /* restart the count */
+    unsigned long long t0=rdtsc();
+    for(unsigned i=0;i<200000000u;i++){ if(inb(0x61)&0x20) break; }  /* wait for OUT high */
+    unsigned long long t1=rdtsc();
+    g_tsc_hz=(t1-t0)*100; g_tsc_start=rdtsc();
+    if(g_tsc_hz==0) g_tsc_hz=1000000000ULL;
+}
+int usleep(unsigned us){
+    if(!g_tsc_hz) return 0;
+    unsigned long long target=rdtsc() + (unsigned long long)us*g_tsc_hz/1000000ULL;
+    while(rdtsc()<target){}
+    return 0;
+}
+unsigned sleep(unsigned s){ while(s--) usleep(1000000); return 0; }
 int stat(const char *p, struct stat *b){
     VNode *n=vn_resolve(p); if(!n) return -1;
     if(b){ b->st_mode = n->is_dir?S_IFDIR:S_IFREG; b->st_size=n->size; }
@@ -730,5 +770,12 @@ struct dirent *readdir(DIR *d){
     d->cur=d->cur->next; return &d->ent;
 }
 int closedir(DIR *d){ if(d) free(d); return 0; }
-time_t time(time_t *t){ if(t)*t=0; return 0; }
-int clock_gettime(int id, struct timespec *tp){ (void)id; if(tp){ tp->tv_sec=0; tp->tv_nsec=0; } return 0; }
+time_t time(time_t *t){ long u=rtc_unix(); if(t)*t=u; return u; }
+int clock_gettime(int id, struct timespec *tp){
+    (void)id; if(!tp) return 0;
+    if(!g_tsc_hz){ tp->tv_sec=0; tp->tv_nsec=0; return 0; }
+    unsigned long long dt=rdtsc()-g_tsc_start;
+    tp->tv_sec=(long)(dt/g_tsc_hz);
+    tp->tv_nsec=(long)((dt%g_tsc_hz)*1000000000ULL/g_tsc_hz);
+    return 0;
+}
