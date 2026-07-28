@@ -1,0 +1,5 @@
+Hello, World!
+7 squared is 49
+list: [1, 2, 3], half: 2.5
+literal braces: {not interpolated}
+nested WORLD works

@@ -8,21 +8,25 @@
  *   gcc -O2 -o larzscript larzscript.c
  *   ./larzscript program.lz
  *
- * v1.0 native - a real general-purpose language, standalone:
- *   values:   numbers, strings, booleans, nil, lists, DICTS, money, wallets
+ * v1.1 native - a real general-purpose language, standalone:
+ *   values:   numbers, strings, booleans, nil, lists, dicts, money, wallets,
+ *             functions (incl. anonymous fn(x){...} lambdas)
  *   binding:  let / assign / compound assign (+= -= *= /= %=)
- *   control:  if/else, while, for-in (lists, dicts, strings), break, continue
- *   funcs:    functions + recursion + closures; gas-metered functions
- *   data:     list & dict literals, indexing, element assignment a[i]=x
+ *   control:  if/else, while, for-in (lists, dicts, strings), break, continue,
+ *             try/catch/throw
+ *   operators: + - * / % // ** ; == != < <= > >= ; and or not ; in ; has
+ *   funcs:    functions + recursion + closures + lambdas; gas-metered functions
+ *   data:     list & dict literals, indexing, slicing a[i:j], element assign a[i]=x
+ *   strings:  f-strings  f"hi {name}, {1+2}"
  *   methods:  list (push/pop/insert/sort/reverse/contains/index),
  *             dict (keys/values/has/get/remove), string (upper/lower/strip/
  *             split/replace/contains/starts_with/ends_with/find)
  *   stdlib:   print money len range str int float bool type abs min max sum
  *             sorted reversed floor ceil round sqrt pow chr ord assert input
- *             keys values push
+ *             keys values push map filter reduce join enumerate
  *   money:    $ = integer cents; price; pay .. from .. to ..; require;
  *             paywall / subscribe / has (money-native primitives)
- *   errors:   reported with line numbers.
+ *   errors:   reported with line numbers; catchable with try/catch.
  * Memory: a simple grow-only allocator (freed by the OS on exit) - a bootstrap
  * interpreter, honest about it. Zero third-party dependencies (libc only).
  */
@@ -212,7 +216,8 @@ typedef enum {
   N_LET, N_ASSIGN, N_PRICE, N_WALLET, N_PAY, N_REQUIRE, N_FN, N_RETURN,
   N_IF, N_WHILE, N_BLOCK, N_EXPR, N_PAYWALL, N_SUBSCRIBE,
   N_NUM, N_MONEY, N_STR, N_BOOL, N_NIL, N_NAME, N_BIN, N_UN, N_CALL, N_GET, N_METHOD,
-  N_ARRAY, N_INDEX, N_DICT, N_SETINDEX, N_BREAK, N_CONTINUE, N_FOR
+  N_ARRAY, N_INDEX, N_DICT, N_SETINDEX, N_BREAK, N_CONTINUE, N_FOR,
+  N_SLICE, N_TRY, N_THROW, N_FSTR
 } NodeKind;
 
 typedef struct Node {
@@ -237,14 +242,15 @@ static void push_kid(Node *b, Node *k){
 }
 
 /* ===================== lexer ===================== */
-typedef enum { T_EOF, T_NUM, T_MONEY, T_STR, T_IDENT, T_KW, T_OP,
+typedef enum { T_EOF, T_NUM, T_MONEY, T_STR, T_FSTR, T_IDENT, T_KW, T_OP,
                T_LP, T_RP, T_LB, T_RB, T_COMMA, T_DOT, T_LBK, T_RBK, T_COLON } TokType;
 typedef struct { TokType type; char *text; double num; long long cents; int line; } Token;
 
 static const char *KEYWORDS[] = {
   "let","fn","return","if","else","while","and","or","not","true","false","nil",
   "price","wallet","pay","from","to","require","gas",
-  "paywall","subscribe","has","for","in","break","continue", NULL
+  "paywall","subscribe","has","for","in","break","continue",
+  "try","catch","throw", NULL
 };
 static int is_keyword(const char *s, int n){
   for(int i=0; KEYWORDS[i]; i++)
@@ -295,8 +301,9 @@ static Token *lex(const char *src){
       int j=i; while(isdigit((unsigned char)src[j])||src[j]=='.') j++;
       char *num=xstrndup(src+i,j-i); t.type=T_NUM; t.num=strtod(num,NULL); i=j; tk_push(&tl,t); continue;
     }
-    if(c=='"'){
-      int j=i+1; char buf[4096]; int b=0;
+    if(c=='"' || (c=='f' && src[i+1]=='"')){
+      int isf = c=='f';
+      int j = i + (isf?2:1); char buf[8192]; int b=0;
       while(src[j] && src[j]!='"'){
         if(src[j]=='\\' && src[j+1]){
           char e=src[j+1];
@@ -304,15 +311,20 @@ static Token *lex(const char *src){
           j+=2; continue;
         }
         buf[b++]=src[j++];
+        if(b>=(int)sizeof(buf)-1) fail("string too long on line %d", line);
       }
       if(!src[j]) fail("unterminated string on line %d", line);
-      buf[b]=0; t.type=T_STR; t.text=xstrdup(buf); i=j+1; tk_push(&tl,t); continue;
+      buf[b]=0; t.type = isf?T_FSTR:T_STR; t.text=xstrdup(buf); i=j+1; tk_push(&tl,t); continue;
     }
     if(isalpha((unsigned char)c)||c=='_'){
       int j=i; while(isalnum((unsigned char)src[j])||src[j]=='_') j++;
       t.text=xstrndup(src+i,j-i);
       t.type = is_keyword(src+i,j-i) ? T_KW : T_IDENT;
       i=j; tk_push(&tl,t); continue;
+    }
+    /* ** (power) and // (floor division) - before compound-assign so *= /= still work */
+    if((c=='*'&&src[i+1]=='*')||(c=='/'&&src[i+1]=='/')){
+      t.type=T_OP; t.text=xstrndup(src+i,2); i+=2; tk_push(&tl,t); continue;
     }
     /* two-char operators (comparison + compound assignment) */
     if((c=='='&&src[i+1]=='=')||(c=='!'&&src[i+1]=='=')||(c=='<'&&src[i+1]=='=')||(c=='>'&&src[i+1]=='=')
@@ -355,6 +367,8 @@ static void expect_kw(Parser *p, const char *w){
 
 static Node *statement(Parser *p);
 static Node *expression(Parser *p);
+static Node *parse_fn(Parser *p, int named);
+static Node *fstring_node(const char *raw);
 
 static Node *block(Parser *p){
   expect(p, T_LB, "'{'");
@@ -385,6 +399,8 @@ static Node *primary(Parser *p){
   if(t->type==T_NUM){ padv(p); Node *n=node(N_NUM); n->num=t->num; return n; }
   if(t->type==T_MONEY){ padv(p); Node *n=node(N_MONEY); n->cents=t->cents; return n; }
   if(t->type==T_STR){ padv(p); Node *n=node(N_STR); n->str=t->text; return n; }
+  if(t->type==T_FSTR){ padv(p); return fstring_node(t->text); }
+  if(is_kw(t,"fn")){ return parse_fn(p, 0); }   /* anonymous function (lambda) */
   if(is_kw(t,"true")){ padv(p); Node *n=node(N_BOOL); n->boolean=1; return n; }
   if(is_kw(t,"false")){ padv(p); Node *n=node(N_BOOL); n->boolean=0; return n; }
   if(is_kw(t,"nil")){ padv(p); return node(N_NIL); }
@@ -432,16 +448,27 @@ static Node *postfix(Parser *p){
     } else if(pk(p)->type==T_LP){
       Node *c=node(N_CALL); c->a=n; arglist(p,&c->kids,&c->nkids); n=c;
     } else if(pk(p)->type==T_LBK){
-      padv(p); Node *ix=node(N_INDEX); ix->a=n; ix->b=expression(p); expect(p,T_RBK,"']'"); n=ix;
+      padv(p);
+      Node *start=NULL, *end=NULL; int slice=0;
+      if(pk(p)->type!=T_COLON) start=expression(p);
+      if(pk(p)->type==T_COLON){ slice=1; padv(p); if(pk(p)->type!=T_RBK) end=expression(p); }
+      expect(p,T_RBK,"']'");
+      if(slice){ Node *s=node(N_SLICE); s->a=n; s->b=start; s->c=end; n=s; }
+      else { Node *ix=node(N_INDEX); ix->a=n; ix->b=start; n=ix; }
     } else break;
   }
   return n;
 }
 
+static Node *power(Parser *p){   /* right-associative ** */
+  Node *n=postfix(p);
+  if(is_op(pk(p),"**")){ padv(p); Node *b=node(N_BIN); b->op="**"; b->a=n; b->b=power(p); return b; }
+  return n;
+}
 static Node *unary(Parser *p){
   if(is_kw(pk(p),"not")){ padv(p); Node *n=node(N_UN); n->op="not"; n->a=unary(p); return n; }
   if(is_op(pk(p),"-")){ padv(p); Node *n=node(N_UN); n->op="-"; n->a=unary(p); return n; }
-  return postfix(p);
+  return power(p);
 }
 static Node *bin_lvl(Parser *p, Node*(*sub)(Parser*), const char **ops, int nops, int kw){
   Node *n = sub(p);
@@ -456,18 +483,71 @@ static Node *bin_lvl(Parser *p, Node*(*sub)(Parser*), const char **ops, int nops
   }
   return n;
 }
-static Node *factor(Parser *p){ const char *o[]={"*","/","%"}; return bin_lvl(p,unary,o,3,0); }
+static Node *factor(Parser *p){ const char *o[]={"*","/","%","//"}; return bin_lvl(p,unary,o,4,0); }
 static Node *term(Parser *p){ const char *o[]={"+","-"}; return bin_lvl(p,factor,o,2,0); }
 static Node *comparison(Parser *p){ const char *o[]={"<","<=",">",">="}; return bin_lvl(p,term,o,4,0); }
-static Node *membership(Parser *p){ const char *o[]={"has"}; return bin_lvl(p,comparison,o,1,1); }
+static Node *membership(Parser *p){ const char *o[]={"has","in"}; return bin_lvl(p,comparison,o,2,1); }
 static Node *equality(Parser *p){ const char *o[]={"==","!="}; return bin_lvl(p,membership,o,2,0); }
 static Node *logic_and(Parser *p){ const char *o[]={"and"}; return bin_lvl(p,equality,o,1,1); }
 static Node *logic_or(Parser *p){ const char *o[]={"or"}; return bin_lvl(p,logic_and,o,1,1); }
 static Node *expression(Parser *p){ return logic_or(p); }
 
+static Node *parse_fn(Parser *p, int named){
+  expect_kw(p,"fn");
+  Node *n=node(N_FN);
+  n->name = named ? padv(p)->text : NULL;
+  expect(p,T_LP,"'('");
+  int cap=0;
+  if(pk(p)->type!=T_RP){
+    do { if(n->nparams==cap){ cap=cap?cap*2:4; n->params=realloc(n->params,cap*sizeof(char*)); } n->params[n->nparams++]=padv(p)->text; }
+    while(pk(p)->type==T_COMMA && (padv(p),1));
+  }
+  expect(p,T_RP,"')'");
+  if(is_kw(pk(p),"gas")){ padv(p); if(pk(p)->type!=T_NUM) fail("expected a gas amount on line %d",pk(p)->line); n->gas=(long long)padv(p)->num; n->has_gas=1; }
+  n->b=block(p);
+  return n;
+}
+
+/* build an f-string "f{...}" into a "+"-concatenation of strings and str(expr) */
+static Node *mkstr_node(const char *s){ Node *n=node(N_STR); n->str=xstrdup(s); return n; }
+static Node *mkadd(Node *a, Node *b){ if(!a) return b; Node *n=node(N_BIN); n->op="+"; n->a=a; n->b=b; return n; }
+static Node *fstring_node(const char *raw){
+  Node *result=NULL;
+  SB lit; lit.s=NULL; lit.n=0; lit.cap=0;
+  int i=0;
+  while(raw[i]){
+    char c=raw[i];
+    if(c=='{'){
+      if(raw[i+1]=='{'){ sb_putc(&lit,'{'); i+=2; continue; }
+      /* flush any pending literal */
+      sb_putc(&lit,0); result=mkadd(result, mkstr_node(lit.s?lit.s:"")); lit.n=0; if(lit.s) lit.s[0]=0;
+      /* capture up to the matching '}' */
+      int j=i+1, depth=1; SB ex; ex.s=NULL; ex.n=0; ex.cap=0;
+      while(raw[j] && depth>0){
+        if(raw[j]=='{') depth++;
+        else if(raw[j]=='}'){ depth--; if(depth==0) break; }
+        sb_putc(&ex, raw[j]); j++;
+      }
+      if(!raw[j]) fail("unclosed '{' in f-string");
+      sb_putc(&ex,0);
+      Token *toks=lex(ex.s?ex.s:"");
+      Parser sp; sp.t=toks; sp.i=0; sp.loopn=0;
+      Node *e=expression(&sp);
+      Node *call=node(N_CALL); Node *nm=node(N_NAME); nm->name=xstrdup("str"); call->a=nm; push_kid(call, e);
+      result=mkadd(result, call);
+      i=j+1; continue;
+    }
+    if(c=='}' && raw[i+1]=='}'){ sb_putc(&lit,'}'); i+=2; continue; }
+    sb_putc(&lit, c); i++;
+  }
+  sb_putc(&lit,0);
+  if(lit.n>1 || result==NULL) result=mkadd(result, mkstr_node(lit.s?lit.s:""));
+  return result;
+}
+
 static int starts_expr(Token *t){
-  if(t->type==T_NUM||t->type==T_MONEY||t->type==T_STR||t->type==T_IDENT||t->type==T_LP||t->type==T_LBK) return 1;
-  if(is_kw(t,"true")||is_kw(t,"false")||is_kw(t,"nil")||is_kw(t,"not")) return 1;
+  if(t->type==T_NUM||t->type==T_MONEY||t->type==T_STR||t->type==T_FSTR||t->type==T_IDENT||t->type==T_LP||t->type==T_LBK||t->type==T_LB) return 1;
+  if(is_kw(t,"true")||is_kw(t,"false")||is_kw(t,"nil")||is_kw(t,"not")||is_kw(t,"fn")) return 1;
   if(is_op(t,"-")) return 1;
   return 0;
 }
@@ -480,11 +560,9 @@ static Node *statement(Parser *p){
   if(is_kw(t,"pay")){ padv(p); Node *n=node(N_PAY); n->a=expression(p); expect_kw(p,"from"); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text; return n; }
   if(is_kw(t,"require")){ padv(p); Node *n=node(N_REQUIRE); n->a=expression(p);
       if(pk(p)->type==T_COMMA){ padv(p); if(pk(p)->type!=T_STR) fail("expected a message string on line %d",pk(p)->line); n->str=padv(p)->text; } return n; }
-  if(is_kw(t,"fn")){ padv(p); Node *n=node(N_FN); n->name=padv(p)->text; expect(p,T_LP,"'('");
-      int cap=0; if(pk(p)->type!=T_RP){ do{ if(n->nparams==cap){cap=cap?cap*2:4; n->params=realloc(n->params,cap*sizeof(char*));} n->params[n->nparams++]=padv(p)->text; }while(pk(p)->type==T_COMMA&&(padv(p),1)); }
-      expect(p,T_RP,"')'");
-      if(is_kw(pk(p),"gas")){ padv(p); if(pk(p)->type!=T_NUM) fail("expected a gas amount on line %d",pk(p)->line); n->gas=(long long)padv(p)->num; n->has_gas=1; }
-      n->b=block(p); return n; }
+  if(is_kw(t,"fn")){ return parse_fn(p, 1); }
+  if(is_kw(t,"try")){ padv(p); Node *n=node(N_TRY); n->a=block(p); expect_kw(p,"catch"); n->name=padv(p)->text; n->b=block(p); return n; }
+  if(is_kw(t,"throw")){ padv(p); Node *n=node(N_THROW); n->a=expression(p); return n; }
   if(is_kw(t,"return")){ padv(p); Node *n=node(N_RETURN); if(starts_expr(pk(p))) n->a=expression(p); return n; }
   if(is_kw(t,"if")){ padv(p); Node *n=node(N_IF); n->a=expression(p); n->b=block(p);
       if(is_kw(pk(p),"else")){ padv(p); n->c = is_kw(pk(p),"if") ? statement(p) : block(p); } return n; }
@@ -613,6 +691,8 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
     runtime_error(ip,"LarzTypeError","cannot divide those values");
   }
   if(strcmp(op,"%")==0){ if(bn){ if(b.num==0) runtime_error(ip,"LarzRuntimeError","division by zero"); return V_number((double)((long long)a.num % (long long)b.num)); } runtime_error(ip,"LarzTypeError","cannot take modulo"); }
+  if(strcmp(op,"//")==0){ if(bn){ if(b.num==0) runtime_error(ip,"LarzRuntimeError","division by zero"); double q=a.num/b.num; long long f=(long long)q; if(q<0 && (double)f!=q) f--; return V_number((double)f); } runtime_error(ip,"LarzTypeError","cannot floor-divide those values"); }
+  if(strcmp(op,"**")==0){ if(bn){ double e=b.num; if(e!=(long long)e) runtime_error(ip,"LarzValueError","** exponent must be a whole number"); long long ex=(long long)e; int neg=ex<0; if(neg)ex=-ex; double r=1,base=a.num; for(long long i=0;i<ex;i++) r*=base; if(neg){ if(a.num==0) runtime_error(ip,"LarzRuntimeError","0 to a negative power"); r=1/r; } return V_number(r); } runtime_error(ip,"LarzTypeError","cannot raise those values to a power"); }
   /* ordering */
   {
     double x,y; int kind; /* 0 money,1 num,2 str */
@@ -658,6 +738,13 @@ static Value eval(Interp *ip, Node *n, Env *env){
         if(w.t!=V_WALLET || pw.t!=V_PAYWALL) runtime_error(ip,"LarzTypeError","'has' needs a wallet and a paywall");
         return V_bool(has_sub(ip, w.wal->name, pw.pw->name));
       }
+      if(strcmp(n->op,"in")==0){
+        Value a=eval(ip,n->a,env), b=eval(ip,n->b,env);
+        if(b.t==V_LIST){ for(int i=0;i<b.list->n;i++) if(values_equal(b.list->items[i],a)) return V_bool(1); return V_bool(0); }
+        if(b.t==V_DICT) return V_bool(dict_find(b.dict,a)!=NULL);
+        if(b.t==V_STR && a.t==V_STR) return V_bool(strstr(b.str,a.str)!=NULL);
+        runtime_error(ip,"LarzTypeError","'in' needs a list, dict or string on the right");
+      }
       return do_binop(ip,n->op, eval(ip,n->a,env), eval(ip,n->b,env));
     }
     case N_ARRAY: {
@@ -672,6 +759,26 @@ static Value eval(Interp *ip, Node *n, Env *env){
         dict_set(d, k, v);
       }
       return V_dict(d);
+    }
+    case N_FN: { Closure *c=xmalloc(sizeof(Closure)); c->decl=n; c->env=env; c->name=n->name; return V_func(c); }
+    case N_SLICE: {
+      Value obj=eval(ip,n->a,env);
+      int len;
+      if(obj.t==V_LIST) len=obj.list->n;
+      else if(obj.t==V_STR) len=(int)strlen(obj.str);
+      else { runtime_error(ip,"LarzTypeError","cannot slice that value"); return V_nil(); }
+      long long start=0, end=len;
+      if(n->b){ Value s=eval(ip,n->b,env); if(!is_num(s)) runtime_error(ip,"LarzTypeError","slice bounds must be numbers"); start=(long long)s.num; }
+      if(n->c){ Value e=eval(ip,n->c,env); if(!is_num(e)) runtime_error(ip,"LarzTypeError","slice bounds must be numbers"); end=(long long)e.num; }
+      if(start<0) start+=len;
+      if(end<0) end+=len;
+      if(start<0) start=0;
+      if(start>len) start=len;
+      if(end<0) end=0;
+      if(end>len) end=len;
+      if(end<start) end=start;
+      if(obj.t==V_LIST){ List *r=list_new(); for(long long i=start;i<end;i++) list_push(r,obj.list->items[i]); return V_list(r); }
+      return V_string(xstrndup(obj.str+start, end-start));
     }
     case N_INDEX: {
       Value obj=eval(ip,n->a,env), iv=eval(ip,n->b,env);
@@ -862,6 +969,36 @@ static void exec(Interp *ip, Node *n, Env *env){
     }
     case N_BREAK: ip->loopflow=1; return;
     case N_CONTINUE: ip->loopflow=2; return;
+    case N_TRY: {
+      jmp_buf saved; memcpy(saved, ip->jb, sizeof(jmp_buf));
+      if(setjmp(ip->jb)==0){
+        exec(ip, n->a, env);
+        memcpy(ip->jb, saved, sizeof(jmp_buf));       /* normal exit: restore outer */
+      } else {
+        memcpy(ip->jb, saved, sizeof(jmp_buf));       /* error: restore outer first */
+        ip->returning=0; ip->loopflow=0;
+        Dict *d=dict_new();
+        dict_set(d, V_string(xstrdup("type")),    V_string(xstrdup(ip->errname?ip->errname:"Error")));
+        dict_set(d, V_string(xstrdup("message")), V_string(xstrdup(ip->errmsg)));
+        Env *child=env_new(env); env_define(child, n->name, V_dict(d));
+        exec(ip, n->b, child);
+      }
+      return;
+    }
+    case N_THROW: {
+      Value v=eval(ip,n->a,env);
+      const char *ty="Error"; char *msg;
+      if(v.t==V_STR){ msg=v.str; }
+      else if(v.t==V_DICT){
+        Value kt; memset(&kt,0,sizeof kt); kt.t=V_STR; kt.str=(char*)"type";
+        Value km; memset(&km,0,sizeof km); km.t=V_STR; km.str=(char*)"message";
+        Value *t2=dict_find(v.dict,kt); Value *m2=dict_find(v.dict,km);
+        if(t2&&t2->t==V_STR) ty=t2->str;
+        msg = (m2&&m2->t==V_STR)? m2->str : str_of(v);
+      } else { msg=str_of(v); }
+      runtime_error(ip, ty, "%s", msg);
+      return;
+    }
     case N_BLOCK: { Env *child=env_new(env); for(int i=0;i<n->nkids;i++){ exec(ip,n->kids[i],child); if(ip->returning||ip->loopflow) break; } return; }
     case N_EXPR: eval(ip,n->a,env); return;
     default: eval(ip,n,env); return;
@@ -978,6 +1115,11 @@ static Value bi_input(Interp *ip, Value *a, int n){
 }
 static Value bi_keys(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","keys() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].key); return V_list(r); }
 static Value bi_values(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","values() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].val); return V_list(r); }
+static Value bi_map(Interp *ip, Value *a, int n){ if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","map() expects a function and a list"); List *r=list_new(); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; list_push(r, call_value(ip,a[0],&arg,1)); } return V_list(r); }
+static Value bi_filter(Interp *ip, Value *a, int n){ if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","filter() expects a function and a list"); List *r=list_new(); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; if(truthy(call_value(ip,a[0],&arg,1))) list_push(r,arg); } return V_list(r); }
+static Value bi_reduce(Interp *ip, Value *a, int n){ if(n<2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","reduce() expects a function, a list and an optional initial value"); List *l=a[1].list; int i=0; Value acc; if(n>=3) acc=a[2]; else { if(l->n==0) runtime_error(ip,"LarzValueError","reduce() of empty list with no initial value"); acc=l->items[0]; i=1; } for(; i<l->n; i++){ Value args[2]; args[0]=acc; args[1]=l->items[i]; acc=call_value(ip,a[0],args,2); } return acc; }
+static Value bi_join(Interp *ip, Value *a, int n){ if(n<1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","join() expects a list and an optional separator"); const char *sep=(n>=2&&a[1].t==V_STR)?a[1].str:""; SB b; b.s=NULL;b.n=0;b.cap=0; for(int i=0;i<a[0].list->n;i++){ if(i) sb_puts(&b,sep); char *s=str_of(a[0].list->items[i]); sb_puts(&b,s); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
+static Value bi_enumerate(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","enumerate() expects a list"); List *r=list_new(); for(int i=0;i<a[0].list->n;i++){ List *pair=list_new(); list_push(pair,V_number(i)); list_push(pair,a[0].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
 
 static Builtin B_print = {"print", bi_print};
 static Builtin B_money = {"money", bi_money};
@@ -990,11 +1132,12 @@ static Builtin B_sorted={"sorted",bi_sorted}, B_reversed={"reversed",bi_reversed
 static Builtin B_floor={"floor",bi_floor}, B_ceil={"ceil",bi_ceil}, B_round={"round",bi_round}, B_sqrt={"sqrt",bi_sqrt}, B_pow={"pow",bi_pow};
 static Builtin B_chr={"chr",bi_chr}, B_ord={"ord",bi_ord}, B_assert={"assert",bi_assert}, B_input={"input",bi_input};
 static Builtin B_keys={"keys",bi_keys}, B_values={"values",bi_values};
+static Builtin B_map={"map",bi_map}, B_filter={"filter",bi_filter}, B_reduce={"reduce",bi_reduce}, B_join={"join",bi_join}, B_enumerate={"enumerate",bi_enumerate};
 
 /* ===================== REPL ===================== */
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v1.0.0) - type statements; Ctrl-D to exit.\n");
+  printf("Larzscript native REPL (v1.1.0) - type statements; Ctrl-D to exit.\n");
   for(;;){
     printf("larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
@@ -1058,12 +1201,17 @@ static void install_builtins(Interp *ip){
   env_define(ip->globals, "input", V_builtin(&B_input));
   env_define(ip->globals, "keys",  V_builtin(&B_keys));
   env_define(ip->globals, "values",V_builtin(&B_values));
+  env_define(ip->globals, "map",    V_builtin(&B_map));
+  env_define(ip->globals, "filter", V_builtin(&B_filter));
+  env_define(ip->globals, "reduce", V_builtin(&B_reduce));
+  env_define(ip->globals, "join",   V_builtin(&B_join));
+  env_define(ip->globals, "enumerate", V_builtin(&B_enumerate));
 }
 
 int main(int argc, char **argv){
   const char *path=NULL; int show_ledger=0, want_repl=0;
   for(int i=1;i<argc;i++){
-    if(strcmp(argv[i],"--version")==0 || strcmp(argv[i],"-v")==0){ printf("larzscript (native) 1.0.0\n"); return 0; }
+    if(strcmp(argv[i],"--version")==0 || strcmp(argv[i],"-v")==0){ printf("larzscript (native) 1.1.0\n"); return 0; }
     if(strcmp(argv[i],"--help")==0 || strcmp(argv[i],"-h")==0){ printf("usage: larzscript [--ledger] <program.lz>   |   larzscript repl\n"); return 0; }
     if(strcmp(argv[i],"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(argv[i],"repl")==0){ want_repl=1; continue; }

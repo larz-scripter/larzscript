@@ -1,0 +1,7 @@
+let name = "World"
+let x = 7
+print(f"Hello, {name}!")
+print(f"{x} squared is {x * x}")
+print(f"list: {[1, 2, 3]}, half: {10 / 4}")
+print(f"literal braces: {{not interpolated}}")
+print(f"nested {name.upper()} works")

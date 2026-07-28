@@ -1,0 +1,18 @@
+try {
+  let bad = [1, 2][5]
+  print("unreachable")
+} catch e {
+  print("caught", e["type"])
+}
+try {
+  throw "boom"
+} catch e {
+  print("message:", e["message"])
+}
+let result = 0
+try {
+  result = 10 / 0
+} catch e {
+  result = -1
+}
+print("result:", result)

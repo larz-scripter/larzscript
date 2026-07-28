@@ -1,0 +1,3 @@
+caught LarzRuntimeError
+message: boom (line 8)
+result: -1

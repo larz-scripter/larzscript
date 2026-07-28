@@ -1,0 +1,8 @@
+print(2 ** 10, 2 ** 0, 3 ** 3)
+print(17 // 5, -17 // 5, 20 // 6)
+print(3 in [1, 2, 3], 9 in [1, 2, 3])
+print("b" in {"a": 1, "b": 2}, "z" in {"a": 1})
+print("cat" in "concatenate", "dog" in "concatenate")
+let xs = [0, 1, 2, 3, 4, 5]
+print(xs[2:4], xs[:2], xs[4:], xs[-2:], xs[:])
+print("hello world"[6:], "hello"[-2:], "abcdef"[1:4])

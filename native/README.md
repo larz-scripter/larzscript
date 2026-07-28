@@ -75,23 +75,30 @@ nums.sort()
 print("sorted", nums, "sum", sum(nums), "max", max(nums))
 ```
 
-## Language (v1.0 — a general-purpose standalone language)
+## Language (v1.1 — a general-purpose standalone language)
 
 **Values:** numbers · strings · booleans · nil · **lists** · **dicts** ·
+**functions** (incl. anonymous `fn(x){ ... }` **lambdas**) ·
 money (`$` = exact integer cents) · wallets.
+
+**Operators:** `+ - * / % // **` · `== != < <= > >=` · `and or not` ·
+**`in`** (list/dict/string membership) · `has`.
 
 **Syntax:** `let` / assign / **compound assign** (`+= -= *= /= %=`) ·
 `if`/`else`/`else if` · `while` · **`for x in`** lists/dicts/strings ·
-**`break`** / **`continue`** · functions + recursion + closures ·
-**gas-metered functions** · list & dict literals · indexing · **element
-assignment** (`a[i] = x`, `d[k] = v`) · errors reported **with line numbers**.
+**`break`** / **`continue`** · **`try` / `catch` / `throw`** · functions +
+recursion + closures + lambdas · **gas-metered functions** · list & dict
+literals · indexing · **slicing** (`a[i:j]`, negatives) · **element assignment**
+(`a[i] = x`, `d[k] = v`) · **f-strings** (`f"hi {name}, {1+2}"`) · errors
+reported **with line numbers** and **catchable**.
 
 **Methods:** list `push`/`pop`/`insert`/`sort`/`reverse`/`contains`/`index` ·
 dict `keys`/`values`/`has`/`get`/`remove` · string
 `upper`/`lower`/`strip`/`split`/`replace`/`contains`/`starts_with`/`ends_with`/`find`.
 
 **Builtins:** `print len range str int float bool type abs min max sum sorted
-reversed floor ceil round sqrt pow chr ord assert input keys values push money`.
+reversed floor ceil round sqrt pow chr ord assert input keys values push money
+map filter reduce join enumerate`.
 
 **Money-native:** `price` · `pay ... from ... to ...` · `require` ·
 `paywall` / `subscribe` / `has`.

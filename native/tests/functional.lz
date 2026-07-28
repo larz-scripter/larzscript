@@ -1,0 +1,8 @@
+let double = fn(x) { return x * 2 }
+print(double(21))
+print(map(fn(x){ return x + 1 }, [10, 20, 30]))
+print(filter(fn(x){ return x > 2 }, [1, 2, 3, 4]))
+print(reduce(fn(a, b){ return a + b }, [1, 2, 3, 4, 5], 0))
+print(reduce(fn(a, b){ return a * b }, [1, 2, 3, 4]))
+print(join(["2026", "07", "28"], "-"))
+for pair in enumerate(["a", "b"]) { print(pair[0], pair[1]) }
