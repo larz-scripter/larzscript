@@ -1,58 +1,69 @@
 # larzscript
 
-**A money-native programming language — where payments, wallets, revenue splits
-and metering are *keywords*, not a library you bolt on.**
+**A real, standalone programming language — general-purpose, and the first with
+money as a first-class citizen.** Payments, wallets, revenue splits and metering
+are *keywords*, not a library you bolt on.
 
-Every language can *call* a payments API. Larzscript makes money part of the
-grammar: `$3.50` is a value, a `wallet` is a type, `pay ... from ... to ...` moves
-funds and records a ledger, `require` is a guardrail the runtime enforces, and
-functions can be **gas-metered** so untrusted or billable code can't run past its
-budget. It's the "build software people pay for" idea, turned into syntax.
+Larzscript is its own language, implemented in C and shipped as a single
+**statically-linked binary with zero dependencies** (no Python, no runtime, no
+pip). You write `.lz` files and run them — just like any other language.
 
-Pure Python, zero dependencies. Tokenizer → recursive-descent parser →
-tree-walking interpreter — all readable.
+> **The official Larzscript is the native standalone** (`native/`). The Python
+> package under `larzscript/` is now a **legacy reference implementation**, kept
+> for study — new work targets the native binary so there is one language, not two.
 
-## Install
+## Get it & run it
+
+Download a prebuilt binary from
+[Releases](https://github.com/larz-scripter/larzscript/releases) (Linux
+x86_64 / ARM64), or build it — one C file, no dependencies:
 
 ```bash
-pip install larzscript
+cc -O2 -o larzscript native/larzscript.c     # or: make -C native
+./larzscript program.lz                        # run a file
+./larzscript repl                              # interactive REPL
 ```
 
-## A taste
+## A taste — general-purpose *and* money-native
 
-```python
-from larzscript import run
-
-program = '''
-    wallet customer = $20.00
-    wallet platform
-    wallet creator
-    price premium = $9.00
-
-    fn buy_premium(buyer) {
-        require buyer.balance >= premium, "not enough funds"
-        pay premium from buyer to platform
-        pay premium * 0.8 from platform to creator   # revenue split, in the language
-    }
-
-    buy_premium(customer)
-    print("creator earned:", creator.balance)        # $7.20
-'''
-
-result = run(program)
-result.output              # 'creator earned: $7.20'
-result.ledger              # the recorded transactions
-result.get("creator").balance   # Money(720) -> '$7.20'
 ```
+# It's a real general-purpose language.
+fn fib(n) {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+let words = "the cat the dog the bird".split(" ")
+let counts = {}
+for w in words { counts[w] = counts.get(w, 0) + 1 }
+print(f"fib(10) = {fib(10)}, counts = {counts}")
+
+# And money is part of the grammar.
+wallet customer = $20.00
+wallet platform
+wallet creator
+price premium = $9.00
+
+fn buy(buyer) {
+    require buyer.balance >= premium, "not enough funds"
+    pay premium from buyer to platform
+    pay premium * 0.8 from platform to creator     # revenue split, in the language
+}
+buy(customer)
+print(f"creator earned: {creator.balance}")        # creator earned: $7.20
+```
+
+See **[native/README.md](native/README.md)** for the full language reference.
 
 ### Gas-metered execution (fails closed)
 
-```python
-src = 'fn scan() gas 500 { return 1 }\nscan()\nscan()\nscan()'
-run(src, gas=1200)         # raises OutOfGasError on the 3rd call
+```
+fn scan() gas 500 { return 1 }
+scan()
+scan()
+scan()          # OutOfGasError: out of gas calling 'scan'  (with gas budget 1200)
 ```
 
-### Subscriptions & paywalls (new in 0.2)
+### Subscriptions & paywalls
 
 ```
 wallet customer = $20.00
@@ -72,7 +83,6 @@ fn premium(user) {
 ```bash
 larzscript program.lz     # run a file
 larzscript repl           # interactive REPL (state persists across lines)
-python -m larzscript program.lz
 ```
 
 ## Lists & loops (new in 0.4)
@@ -214,35 +224,36 @@ fn analyze(img) gas 500 { ... }   # metered: each call costs gas
 
 ## Roadmap
 
-- **v0.1** — tree-walking interpreter, in-memory settlement.
-- **v0.2** — subscriptions/paywalls, the `has` operator, and a CLI + REPL.
-- **v0.3** — a bytecode compiler + stack VM (the compiled path).
-- **v0.4** — lists, for-loops, and stdlib builtins.
-- **v1.0 (this release)** — **pluggable settlement**: `pay`/`subscribe` settle
-  through a swappable backend that can authorize against, and record to, a real
-  ledger (fiat gateway / on-chain), with the program unchanged.
-- **On-chain settlement (shipped)** — [LarzChain](https://github.com/larz-scripter/larzchain)
-  ships a `LarzChainSettlement` backend (`larzchain.larzscript_settlement`): the
-  same `.lz` program settles every `pay`/`subscribe` as a real signed LARZ
-  transaction, authorized against on-chain balances. Plug it in with
-  `run(program, settlement=LarzChainSettlement(node))`.
-- **Fiat settlement (shipped, 1.1)** — `larzscript.adapters` ships
-  `CreditSettlement` + `GemVaultSettlement` (card / PayPal / crypto via checkout,
-  no silent charges). Same seam as on-chain, different rail.
-- **Next** — a native standalone build already runs `.lz` with zero Python (see
-  `native/`); deploying `.lz` as on-chain contracts that also speak fiat is the
-  ongoing direction.
+The **native standalone** (`native/`) is the official implementation and where
+all development happens:
+
+- **native v1.0** — grew from money-native core into a real general-purpose
+  language: dictionaries, element assignment, `break`/`continue`, a full standard
+  library, line-numbered errors.
+- **native v1.1** — `try`/`catch`/`throw`, f-strings, slicing, lambdas +
+  `map`/`filter`/`reduce`, and the `**` `//` `in` operators.
+- **Next** — string interpolation extras, modules/`import`, a real allocator,
+  and tooling (formatter, spec, editor support). Money-native primitives
+  (`pay`/`require`/`paywall`/`subscribe`) remain first-class throughout.
+
+### Legacy Python reference (`larzscript/`)
+
+The original implementation was a pure-Python interpreter/VM plus settlement
+adapters (in-memory, fiat via GemVault, on-chain via
+[LarzChain](https://github.com/larz-scripter/larzchain)). It's **kept as a
+reference** but is no longer the standard — the native binary is. Its docs and
+tests live under `larzscript/` and `tests/`.
 
 ## Learn to code with Larz
 
 Part of the [Larz stack](https://github.com/larz-scripter) — see the
-[Learn to Code platform](https://larzos.com/learn/). Built on the same ideas as
-the stack's `larzcalc` (a tiny interpreter) and gas-metered VM.
+[Learn to Code platform](https://larzos.com/learn/).
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v   # 53 tests
+sh native/run_tests.sh                    # the official native language: 14 tests
+python -m unittest discover -s tests -v   # legacy Python reference: 53 tests
 ```
 
 ## License
