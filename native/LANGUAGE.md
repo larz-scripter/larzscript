@@ -144,8 +144,31 @@ import "lib.lz" as lib
 print(lib.double(21), lib.VERSION)
 ```
 
-Paths resolve relative to the importing file. Modules are executed once and
-cached; re-importing returns the same module.
+Import resolution searches, in order: relative to the importing file, then each
+directory in `$LARZSCRIPT_PATH`, then `~/.larzscript/lib`, then `./lz_modules`.
+A bare name like `import "mathx"` also matches `mathx.lz`, `mathx/mathx.lz` or
+`mathx/main.lz` — which is how packages installed with **larzpkg** are found.
+Modules are executed once and cached.
+
+### Packages (larzpkg)
+
+`larzpkg` is the package manager (itself written in Larzscript, `tools/larzpkg.lz`):
+
+```
+larzscript larzpkg.lz install mathx     # git-clones into ~/.larzscript/lib
+larzscript larzpkg.lz list
+larzscript larzpkg.lz search math
+```
+
+Then `import "mathx"` just works. Packages are git repos with a `main.lz` (or
+`<name>.lz`) at their root, listed in a registry.
+
+## OS / system builtins
+
+For real scripting: `env(name[, default])` · `run(cmd)` (shell, returns the exit
+code) · `capture(cmd)` (returns stdout) · `cwd()` · `chdir(path)` ·
+`listdir(path)` · `mkdir(path)` · `remove(path)` · `rename(from, to)` ·
+`time()` (unix seconds) · `clock()` (monotonic seconds) · `sleep(seconds)`.
 
 ---
 

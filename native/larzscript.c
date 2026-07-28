@@ -31,6 +31,10 @@
  *             keys values push map filter reduce join enumerate zip exit
  *             all any count unique hex bin oct gcd factorial sign clamp list dict
  *             read_file write_file append_file file_exists; `args` = argv list
+ *   os:       env run capture cwd chdir listdir mkdir remove rename time clock sleep
+ *   modules:  import searches relative, $LARZSCRIPT_PATH, ~/.larzscript/lib,
+ *             ./lz_modules - so packages installed by `larzpkg` just import
+ *   repl:     multi-line (keeps reading until brackets balance)
  *   strings/lists also support repetition: "ab"*3, [0]*5
  *   money:    $ = integer cents; price; pay .. from .. to ..; require;
  *             paywall / subscribe / has (money-native primitives)

@@ -112,6 +112,29 @@ map filter reduce join enumerate zip exit read_file write_file append_file
 file_exists all any count unique hex bin oct gcd factorial sign clamp list dict`
 · `args` (command-line args) · `"ab"*3` / `[0]*5` repetition.
 
+**OS / scripting:** `env run capture cwd chdir listdir mkdir remove rename time
+clock sleep` — enough to write real OS scripts.
+
+## Packages (`larzpkg`)
+
+Larzscript has a package manager — written in Larzscript itself — that installs
+libraries from a registry into `~/.larzscript/lib`, where `import` finds them:
+
+```bash
+larzscript tools/larzpkg.lz install mathx     # git-clones the package
+larzscript tools/larzpkg.lz list
+larzscript tools/larzpkg.lz search math
+```
+
+```
+import "mathx" as m
+print(m.mean([1, 2, 3, 4]), m.fib(10))
+```
+
+Import resolution searches: relative to the file, then `$LARZSCRIPT_PATH`, then
+`~/.larzscript/lib`, then `./lz_modules`. Add a package by PR-ing a line to
+`packages/registry.txt`.
+
 **Editor support:** syntax highlighting for VS Code and Vim — see
 [`../editors/`](../editors/).
 
