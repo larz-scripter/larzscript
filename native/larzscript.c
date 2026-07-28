@@ -723,6 +723,31 @@ static Builtin B_len   = {"len",   bi_len};
 static Builtin B_push  = {"push",  bi_push};
 static Builtin B_range = {"range", bi_range};
 
+/* ===================== REPL ===================== */
+static void repl(Interp *ip){
+  char line[8192];
+  printf("Larzscript native REPL (v0.3.0) - type statements; Ctrl-D to exit.\n");
+  for(;;){
+    printf("larz> "); fflush(stdout);
+    if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
+    /* re-arm the error handlers for each line so an error doesn't exit */
+    if(setjmp(g_err)){ fprintf(stderr,"SyntaxError: %s\n", g_errmsg); continue; }
+    if(setjmp(ip->jb)){ fprintf(stderr,"%s: %s\n", ip->errname, ip->errmsg); continue; }
+    Token *toks = lex(line);
+    Node *prog = parse_program(toks);
+    ip->returning = 0;
+    for(int i=0;i<prog->nkids;i++){
+      Node *st = prog->kids[i];
+      if(st->kind==N_EXPR){                        /* echo expression results */
+        Value v = eval(ip, st->a, ip->globals);
+        if(v.t!=V_NIL){ print_value(v); printf("\n"); }
+      } else {
+        exec(ip, st, ip->globals);
+      }
+    }
+  }
+}
+
 /* ===================== main ===================== */
 static char *read_all(const char *path){
   FILE *f = path ? fopen(path,"rb") : stdin;
@@ -735,14 +760,33 @@ static char *read_all(const char *path){
   return buf;
 }
 
+static void install_builtins(Interp *ip){
+  ip->globals = env_new(NULL);
+  ip->has_gas = 0;                 /* unlimited by default */
+  env_define(ip->globals, "print", V_builtin(&B_print));
+  env_define(ip->globals, "money", V_builtin(&B_money));
+  env_define(ip->globals, "len",   V_builtin(&B_len));
+  env_define(ip->globals, "push",  V_builtin(&B_push));
+  env_define(ip->globals, "range", V_builtin(&B_range));
+}
+
 int main(int argc, char **argv){
-  const char *path=NULL; int show_ledger=0;
+  const char *path=NULL; int show_ledger=0, want_repl=0;
   for(int i=1;i<argc;i++){
-    if(strcmp(argv[i],"--version")==0 || strcmp(argv[i],"-v")==0){ printf("larzscript (native) 0.2.0\n"); return 0; }
-    if(strcmp(argv[i],"--help")==0 || strcmp(argv[i],"-h")==0){ printf("usage: larzscript [--ledger] <program.lz>\n"); return 0; }
+    if(strcmp(argv[i],"--version")==0 || strcmp(argv[i],"-v")==0){ printf("larzscript (native) 0.3.0\n"); return 0; }
+    if(strcmp(argv[i],"--help")==0 || strcmp(argv[i],"-h")==0){ printf("usage: larzscript [--ledger] <program.lz>   |   larzscript repl\n"); return 0; }
     if(strcmp(argv[i],"--ledger")==0){ show_ledger=1; continue; }
+    if(strcmp(argv[i],"repl")==0){ want_repl=1; continue; }
     path=argv[i];
   }
+
+  if(want_repl){
+    Interp ip; memset(&ip,0,sizeof(ip));
+    install_builtins(&ip);
+    repl(&ip);
+    return 0;
+  }
+
   char *src = read_all(path);
 
   if(setjmp(g_err)){ fprintf(stderr,"SyntaxError: %s\n", g_errmsg); return 1; }
@@ -750,13 +794,7 @@ int main(int argc, char **argv){
   Node *prog = parse_program(toks);
 
   Interp ip; memset(&ip,0,sizeof(ip));
-  ip.globals = env_new(NULL);
-  ip.has_gas = 0;                 /* unlimited by default */
-  env_define(ip.globals, "print", V_builtin(&B_print));
-  env_define(ip.globals, "money", V_builtin(&B_money));
-  env_define(ip.globals, "len",   V_builtin(&B_len));
-  env_define(ip.globals, "push",  V_builtin(&B_push));
-  env_define(ip.globals, "range", V_builtin(&B_range));
+  install_builtins(&ip);
 
   if(setjmp(ip.jb)){ fprintf(stderr,"%s: %s\n", ip.errname, ip.errmsg); return 1; }
   for(int i=0;i<prog->nkids;i++){ exec(&ip, prog->kids[i], ip.globals); if(ip.returning) break; }

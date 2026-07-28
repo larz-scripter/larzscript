@@ -28,6 +28,7 @@ It has zero dependencies — copy it anywhere and run it.
 cc -O2 -o larzscript native/larzscript.c        # or: make -C native
 ./larzscript program.lz
 ./larzscript --ledger program.lz                # also print the ledger + gas
+./larzscript repl                               # interactive REPL
 sudo make -C native install                     # -> /usr/local/bin/larzscript
 ```
 
