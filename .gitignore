@@ -8,3 +8,7 @@ dist/
 native/larzscript
 *.o
 /tmp/_larzscript_test
+kernel/*.o
+kernel/*.elf
+kernel/*.iso
+kernel/iso/

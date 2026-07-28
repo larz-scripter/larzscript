@@ -26,7 +26,7 @@ Larzscript, which is already true in Stage 0.
 you interact with — written in Larzscript, running on the Linux kernel. Usable
 today. This is the userland that every later stage will carry unchanged.
 
-### Stage 1 — our own kernel, Larzscript as userland
+### Stage 1 — our own kernel, Larzscript as userland  🚧 (skeleton BOOTS)
 A minimal freestanding kernel (a small seed of C/asm: boot, memory manager,
 interrupts, keyboard + screen + serial drivers, a syscall layer) with the
 Larzscript interpreter **ported to run with no libc and no Linux** — its own heap
@@ -34,13 +34,21 @@ on kernel-provided memory, its I/O through kernel syscalls instead of `fopen`/
 `printf`. Then the *same* `init.lz` / `larzsh.lz` from Stage 0 run as the first
 Larzscript process. "Boots into a Larzscript prompt."
 
-- Build + test host: **srv66** (x86_64, root, `gcc`, `ld`, `grub-mkrescue`).
-  Add `qemu-system-x86 nasm xorriso` to boot the kernel **headlessly** over
-  QEMU's serial console — no display needed.
-- First milestone: boot → print to VGA/serial → read the keyboard → a serial
-  shell. A weekend-sized deliverable, then grow it.
-- The porting work on the interpreter: replace libc dependencies (`malloc`,
-  `printf`, `fgets`, `fopen`) with a freestanding runtime the kernel provides.
+**Done so far** (see [`kernel/`](../kernel/)): a real **64-bit** multiboot kernel
+that GRUB loads at 1 MiB and that brings the CPU up into **long mode by hand**
+(page tables + PAE + paging + 64-bit GDT), then runs a serial shell — with the
+money-native **compute wallet already at the kernel level** (`balance`/`earn`/
+`spend`, fails closed). Builds a `larzos.iso` bootable in QEMU, **VirtualBox**, or
+off a USB stick on a real 64-bit laptop.
+
+- Build + test host: **srv66** (x86_64, root, `gcc`, `ld`, `grub-mkrescue`,
+  `qemu-system-x86_64`, `xorriso`). Tested **headlessly** over QEMU's serial
+  console. Note: QEMU's `-kernel` is 32-bit-only, so 64-bit kernels boot via the
+  GRUB ISO — the same path VirtualBox / real hardware use.
+- First milestone ✅: boot → long mode → serial shell.
+- Next: a memory allocator, PS/2 keyboard + framebuffer, a syscall layer, then
+  the interpreter port — replace each libc dependency (`malloc`, `printf`,
+  `fgets`, `fopen`) with a freestanding runtime the kernel provides.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most
