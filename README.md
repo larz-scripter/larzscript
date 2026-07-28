@@ -32,6 +32,8 @@ cc -O2 -o larzscript native/larzscript.c     # or: make -C native
 ./larzscript tools/larzdoc.lz module.lz        # generate Markdown API docs
 ```
 
+**Docs & site:** [larz-scripter.github.io/larzscript](https://larz-scripter.github.io/larzscript/) · [language reference](native/LANGUAGE.md) · [browser playground](https://larzos.com/larzscript/)
+
 ## Packages
 
 Larzscript has a package manager (`larzpkg`) that installs libraries into
@@ -64,6 +66,8 @@ Available packages:
 | **random** | a small seeded PRNG (deterministic) |
 | **fs** | filesystem helpers (read/write/ls/copy/...) |
 | **base64** | base64 encode/decode (pure Larzscript) |
+| **cli** | build CLI tools (subcommands + help) |
+| **html** | build HTML safely (auto-escaping) |
 | **table** | render tabular data as an aligned ASCII table |
 | **log** | leveled logging with timestamps |
 | **mathx** | small math helpers (mean, fib, primes) |

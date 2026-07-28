@@ -16,3 +16,5 @@ fs      https://github.com/larz-scripter/lz-fs
 base64  https://github.com/larz-scripter/lz-base64
 table   https://github.com/larz-scripter/lz-table
 log     https://github.com/larz-scripter/lz-log
+cli     https://github.com/larz-scripter/lz-cli
+html    https://github.com/larz-scripter/lz-html
