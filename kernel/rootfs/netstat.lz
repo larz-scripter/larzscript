@@ -1,0 +1,2 @@
+# netstat - show LarzOS network status
+fn run(args) { print(read_file("/net/status").strip()) }

@@ -7,6 +7,7 @@
  */
 #include "libc/stdio.h"
 #include "console.h"
+#include "net.h"
 
 /* the interpreter's main(), renamed via -Dmain=larz_main at compile time */
 int larz_main(int argc, char **argv);
@@ -15,6 +16,7 @@ void kernel_main(void){
     console_init();
     vfs_init();                    /* mount the writable filesystem */
     printf("\n");
+    net_selftest();                /* detect the NIC + ping the gateway */
     printf("  LarzOS  -  the money-native operating system\n");
     printf("  kernel (Stage 1): 64-bit long mode, no Linux underneath.\n");
     printf("  The Larzscript interpreter is running on bare metal.\n");

@@ -1,0 +1,5 @@
+# ping - send an ICMP echo request.  usage: ping [IP]   (default: gateway)
+fn run(args) {
+  let ip = len(args) > 0 ? args[0] : "10.0.2.2"
+  print(ip + ": " + read_file("/net/ping/" + ip).strip())
+}

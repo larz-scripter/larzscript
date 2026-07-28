@@ -601,7 +601,8 @@ static void fs_load(void){
     free(blob);
 }
 
-struct _LZ_FILE { int kind; VNode *vn; unsigned pos; int writing; };  /* 0..2=std, 3=vfs file */
+char *net_vfile(const char *path);   /* from net.c: virtual /net/ file content */
+struct _LZ_FILE { int kind; VNode *vn; unsigned pos; int writing, ephemeral; };  /* 0..2=std, 3=vfs file */
 static FILE _stdin={0,0,0,0}, _stdout={1,0,0,0}, _stderr={2,0,0,0};
 FILE *stdin=&_stdin, *stdout=&_stdout, *stderr=&_stderr;
 static int is_std(FILE *f){ return f==&_stdin||f==&_stdout||f==&_stderr; }
@@ -653,15 +654,30 @@ char *fgets(char *buf, int size, FILE *f){
     return 0;
 }
 FILE *fopen(const char *path, const char *mode){
+    int reading = !mode || mode[0]=='r';
+    if(reading && strncmp(path,"/net/",5)==0){        /* virtual networking files */
+        char *c=net_vfile(path); if(!c) return 0;
+        VNode *e=vn_new("net",0); if(!e){ free(c); return 0; }
+        e->data=(unsigned char*)c; e->size=(unsigned)strlen(c); e->cap=e->size+1;
+        FILE *f=malloc(sizeof(FILE)); if(!f) return 0;
+        f->kind=3; f->vn=e; f->pos=0; f->writing=0; f->ephemeral=1; return f;
+    }
     VNode *vn; int writing=0; unsigned pos=0;
     if(mode && mode[0]=='w'){ vn=vn_open_write(path,1); writing=1; }
     else if(mode && mode[0]=='a'){ vn=vn_open_write(path,0); writing=1; }
     else { vn=vn_resolve(path); if(vn && vn->is_dir) return 0; }
     if(!vn) return 0;
     FILE *f=malloc(sizeof(FILE)); if(!f) return 0;
-    f->kind=3; f->vn=vn; f->pos=pos; f->writing=writing; return f;
+    f->kind=3; f->vn=vn; f->pos=pos; f->writing=writing; f->ephemeral=0; return f;
 }
-int fclose(FILE *f){ int w = f && !is_std(f) && f->writing; if(f && !is_std(f)) free(f); if(w) fs_sync(); return 0; }
+int fclose(FILE *f){
+    if(!f || is_std(f)) return 0;
+    int w=f->writing;
+    if(f->ephemeral){ if(f->vn){ if(f->vn->data) free(f->vn->data); free(f->vn); } }
+    free(f);
+    if(w) fs_sync();
+    return 0;
+}
 FILE *popen(const char *c, const char *m){ (void)c;(void)m; return 0; }
 int pclose(FILE *f){ (void)f; return -1; }
 
