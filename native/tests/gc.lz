@@ -1,0 +1,9 @@
+# allocate enough per-iteration garbage to trigger the GC and confirm correctness
+let total = 0
+for i in range(300000) {
+  let d = {"a": i, "b": [i, i, i]}
+  let f = fn(x) { return d["a"] + x }
+  total = total + f(0)
+}
+print(total)
+print("done")

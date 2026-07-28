@@ -33,8 +33,12 @@
  *   money:    $ = integer cents; price; pay .. from .. to ..; require;
  *             paywall / subscribe / has (money-native primitives)
  *   errors:   reported with line numbers; catchable with try/catch.
- * Memory: a simple grow-only allocator (freed by the OS on exit) - a bootstrap
- * interpreter, honest about it. Zero third-party dependencies (libc only).
+ * Memory: a precise mark-sweep garbage collector reclaims container objects
+ * (lists, dicts, envs, closures, wallets, paywalls) so long-running programs
+ * stay bounded; it runs between statements and protects in-flight temporaries
+ * with a temp-root stack. (Strings are not yet collected.) Verified under
+ * AddressSanitizer with the GC forced on every statement. Zero third-party
+ * dependencies (libc only).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,11 +52,25 @@ static void *xmalloc(size_t n){ void *p = malloc(n); if(!p){ fprintf(stderr,"out
 static char *xstrndup(const char *s, size_t n){ char *p = xmalloc(n+1); memcpy(p,s,n); p[n]=0; return p; }
 static char *xstrdup(const char *s){ return xstrndup(s, strlen(s)); }
 
+/* ===================== garbage collector (mark-sweep) ===================== *
+ * A precise mark-sweep GC over the container objects (lists, dicts, envs,
+ * entries, closures, wallets, paywalls). Each such object begins with a GCObj
+ * header and is threaded on a global list. Strings are NOT collected (they may
+ * point into the permanent AST), so they leak - honest, and the containers are
+ * what pile up in loops. GC runs only between statements (at exec entry), where
+ * no half-built object is unrooted; the few builders that hold an object across
+ * a user call (arrays, dicts, map/filter/reduce) protect it via temp roots. */
+typedef struct GCObj { struct GCObj *gc_next; unsigned char gc_kind; unsigned char gc_marked; } GCObj;
+enum { GC_LIST=1, GC_DICT, GC_ENV, GC_ENTRY, GC_CLOSURE, GC_WALLET, GC_PAYWALL };
+static GCObj *g_gc_head=NULL;
+static long g_gc_count=0, g_gc_threshold=200000;
+static void gc_register(void *p, unsigned char kind){ GCObj *o=(GCObj*)p; o->gc_kind=kind; o->gc_marked=0; o->gc_next=g_gc_head; g_gc_head=o; g_gc_count++; }
+
 /* ===================== values ===================== */
 typedef enum { V_NIL, V_BOOL, V_NUM, V_MONEY, V_STR, V_WALLET, V_FUNC, V_BUILTIN, V_LIST, V_PAYWALL, V_DICT, V_MODULE } VType;
 struct Node; struct Env; struct Interp; struct List; struct Paywall; struct Dict;
-typedef struct Wallet { char *name; long long cents; } Wallet;
-typedef struct Closure { struct Node *decl; struct Env *env; const char *name; } Closure;
+typedef struct Wallet { GCObj gc; char *name; long long cents; } Wallet;
+typedef struct Closure { GCObj gc; struct Node *decl; struct Env *env; const char *name; } Closure;
 typedef struct Value Value;
 typedef Value (*BuiltinFn)(struct Interp*, Value*, int);
 typedef struct Builtin { const char *name; BuiltinFn fn; } Builtin;
@@ -82,17 +100,17 @@ static Value V_wallet(Wallet *w){ Value v; v.t=V_WALLET; v.wal=w; return v; }
 static Value V_func(Closure *c){ Value v; v.t=V_FUNC; v.fn=c; return v; }
 static Value V_builtin(Builtin *b){ Value v; v.t=V_BUILTIN; v.bi=b; return v; }
 
-typedef struct List { Value *items; int n, cap; } List;
-typedef struct Paywall { char *name; long long price; char *period; char *payee; } Paywall;
+typedef struct List { GCObj gc; Value *items; int n, cap; } List;
+typedef struct Paywall { GCObj gc; char *name; long long price; char *period; char *payee; } Paywall;
 typedef struct Pair { Value key, val; } Pair;
-typedef struct Dict { Pair *items; int n, cap; } Dict;
+typedef struct Dict { GCObj gc; Pair *items; int n, cap; } Dict;
 static Value V_list(List *l){ Value v; v.t=V_LIST; v.list=l; return v; }
 static Value V_paywall(Paywall *pw){ Value v; v.t=V_PAYWALL; v.pw=pw; return v; }
 static Value V_dict(Dict *d){ Value v; v.t=V_DICT; v.dict=d; return v; }
 static Value V_module(struct Env *e, char *name){ Value v; v.t=V_MODULE; v.mod=e; v.modname=name; return v; }
-static List *list_new(void){ List *l=xmalloc(sizeof(List)); l->items=NULL; l->n=0; l->cap=0; return l; }
+static List *list_new(void){ List *l=xmalloc(sizeof(List)); l->items=NULL; l->n=0; l->cap=0; gc_register(l,GC_LIST); return l; }
 static void list_push(List *l, Value v){ if(l->n==l->cap){ l->cap=l->cap?l->cap*2:8; l->items=realloc(l->items,l->cap*sizeof(Value)); } l->items[l->n++]=v; }
-static Dict *dict_new(void){ Dict *d=xmalloc(sizeof(Dict)); d->items=NULL; d->n=0; d->cap=0; return d; }
+static Dict *dict_new(void){ Dict *d=xmalloc(sizeof(Dict)); d->items=NULL; d->n=0; d->cap=0; gc_register(d,GC_DICT); return d; }
 
 static long long money_round(double x){ return (long long)(x>=0 ? x+0.5 : x-0.5); }
 
@@ -649,16 +667,16 @@ static Node *parse_program(Token *toks){
 }
 
 /* ===================== environment ===================== */
-typedef struct Entry { char *name; Value val; struct Entry *next; } Entry;
-typedef struct Env { Entry *head; struct Env *parent; } Env;
-static Env *env_new(Env *parent){ Env *e=xmalloc(sizeof(Env)); e->head=NULL; e->parent=parent; return e; }
+typedef struct Entry { GCObj gc; char *name; Value val; struct Entry *next; } Entry;
+typedef struct Env { GCObj gc; Entry *head; struct Env *parent; } Env;
+static Env *env_new(Env *parent){ Env *e=xmalloc(sizeof(Env)); e->head=NULL; e->parent=parent; gc_register(e,GC_ENV); return e; }
 static Value *env_find(Env *e, const char *name){
   for(; e; e=e->parent) for(Entry *it=e->head; it; it=it->next) if(strcmp(it->name,name)==0) return &it->val;
   return NULL;
 }
 static void env_define(Env *e, const char *name, Value v){
   for(Entry *it=e->head; it; it=it->next) if(strcmp(it->name,name)==0){ it->val=v; return; }
-  Entry *n=xmalloc(sizeof(Entry)); n->name=xstrdup(name); n->val=v; n->next=e->head; e->head=n;
+  Entry *n=xmalloc(sizeof(Entry)); gc_register(n,GC_ENTRY); n->name=xstrdup(name); n->val=v; n->next=e->head; e->head=n;
 }
 
 /* ===================== interpreter ===================== */
@@ -672,10 +690,58 @@ typedef struct Interp {
   int curline;                  /* line currently executing, for errors */
   char *basedir;                /* directory of the current file, for imports */
   struct ModRec { char *path; Value val; } *modcache; int nmod, modcap;
+  Env **rootstack; int nroots, rootcap;   /* live scope envs (GC roots) */
+  Value *temproots; int ntemp, tempcap;   /* objects held mid-build (GC roots) */
   Txn *ledger; int nled, ledcap;
   Sub *subs; int nsub, subcap;
   jmp_buf jb; char errmsg[256]; const char *errname;
 } Interp;
+
+/* -- GC roots + mark/sweep (defined here; needs Interp + the object structs) -- */
+static void gc_root_push(Interp *ip, Env *e){ if(ip->nroots==ip->rootcap){ ip->rootcap=ip->rootcap?ip->rootcap*2:64; ip->rootstack=realloc(ip->rootstack,ip->rootcap*sizeof(Env*)); } ip->rootstack[ip->nroots++]=e; }
+static void gc_root_pop(Interp *ip){ if(ip->nroots>0) ip->nroots--; }
+static void gc_temp_push(Interp *ip, Value v){ if(ip->ntemp==ip->tempcap){ ip->tempcap=ip->tempcap?ip->tempcap*2:64; ip->temproots=realloc(ip->temproots,ip->tempcap*sizeof(Value)); } ip->temproots[ip->ntemp++]=v; }
+static void gc_temp_pop(Interp *ip, int to){ ip->ntemp=to; }
+
+static void gc_mark_env(Env *e);
+static void gc_mark_value(Value v){
+  switch(v.t){
+    case V_LIST: { GCObj *o=(GCObj*)v.list; if(!o->gc_marked){ o->gc_marked=1; for(int i=0;i<v.list->n;i++) gc_mark_value(v.list->items[i]); } break; }
+    case V_DICT: { GCObj *o=(GCObj*)v.dict; if(!o->gc_marked){ o->gc_marked=1; for(int i=0;i<v.dict->n;i++){ gc_mark_value(v.dict->items[i].key); gc_mark_value(v.dict->items[i].val); } } break; }
+    case V_WALLET: ((GCObj*)v.wal)->gc_marked=1; break;
+    case V_PAYWALL: ((GCObj*)v.pw)->gc_marked=1; break;
+    case V_FUNC: { GCObj *o=(GCObj*)v.fn; if(!o->gc_marked){ o->gc_marked=1; gc_mark_env(v.fn->env); } break; }
+    case V_MODULE: gc_mark_env(v.mod); break;
+    default: break;
+  }
+}
+static void gc_mark_env(Env *e){
+  if(!e) return;
+  GCObj *o=(GCObj*)e; if(o->gc_marked) return; o->gc_marked=1;
+  for(Entry *it=e->head; it; it=it->next){ ((GCObj*)it)->gc_marked=1; gc_mark_value(it->val); }
+  gc_mark_env(e->parent);
+}
+static void gc_collect(Interp *ip){
+  for(GCObj *o=g_gc_head; o; o=o->gc_next) o->gc_marked=0;
+  gc_mark_env(ip->globals);
+  for(int i=0;i<ip->nroots;i++) gc_mark_env(ip->rootstack[i]);
+  for(int i=0;i<ip->ntemp;i++) gc_mark_value(ip->temproots[i]);
+  gc_mark_value(ip->retval);
+  for(int i=0;i<ip->nmod;i++) gc_mark_value(ip->modcache[i].val);
+  GCObj **pp=&g_gc_head;
+  while(*pp){
+    GCObj *o=*pp;
+    if(o->gc_marked){ pp=&o->gc_next; }
+    else {
+      *pp=o->gc_next;
+      if(o->gc_kind==GC_LIST) free(((List*)o)->items);
+      else if(o->gc_kind==GC_DICT) free(((Dict*)o)->items);
+      free(o); g_gc_count--;
+    }
+  }
+  g_gc_threshold = g_gc_count*2 + 200000;
+}
+static void maybe_gc(Interp *ip){ if(g_gc_count > g_gc_threshold) gc_collect(ip); }
 
 static void define_builtins(Env *e);   /* forward: used by import */
 
@@ -758,6 +824,56 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
 
 static Value call_value(Interp *ip, Value callee, Value *args, int nargs);
 
+static Value method_call(Interp *ip, Value obj, const char *name, Value *args, int nargs){
+      if(obj.t==V_MODULE){
+        Value *fn=env_find(obj.mod, name);
+        if(!fn) runtime_error(ip,"LarzNameError","module '%s' has no member '%s'", obj.modname?obj.modname:"?", name);
+        return call_value(ip, *fn, args, nargs);
+      }
+      if(obj.t==V_WALLET){
+        if(strcmp(name,"credit")==0 || strcmp(name,"debit")==0){
+          if(nargs!=1 || args[0].t!=V_MONEY) runtime_error(ip,"LarzTypeError","wallet.%s expects one money argument", name);
+          if(strcmp(name,"credit")==0) obj.wal->cents += args[0].cents;
+          else { if(args[0].cents>obj.wal->cents) runtime_error(ip,"MoneyError","wallet '%s' has insufficient funds", obj.wal->name); obj.wal->cents -= args[0].cents; }
+          return V_nil();
+        }
+        runtime_error(ip,"LarzTypeError","a wallet has no method '%s'", name);
+      }
+      if(obj.t==V_LIST){
+        List *l=obj.list; const char *m=name; int na=nargs;
+        if(strcmp(m,"push")==0||strcmp(m,"append")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","%s expects one argument",m); list_push(l,args[0]); return V_nil(); }
+        if(strcmp(m,"pop")==0){ if(l->n==0) runtime_error(ip,"LarzRuntimeError","pop from empty list"); long long i = na>=1 ? (long long)args[0].num : l->n-1; if(i<0) i+=l->n; if(i<0||i>=l->n) runtime_error(ip,"LarzRuntimeError","pop index out of range"); Value r=l->items[i]; for(int j=i+1;j<l->n;j++) l->items[j-1]=l->items[j]; l->n--; return r; }
+        if(strcmp(m,"insert")==0){ if(na!=2||!is_num(args[0])) runtime_error(ip,"LarzTypeError","insert expects an index and a value"); long long i=(long long)args[0].num; if(i<0) i+=l->n; if(i<0) i=0; if(i>l->n) i=l->n; list_push(l,V_nil()); for(int j=l->n-1;j>i;j--) l->items[j]=l->items[j-1]; l->items[i]=args[1]; return V_nil(); }
+        if(strcmp(m,"contains")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","contains expects one argument"); for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) return V_bool(1); return V_bool(0); }
+        if(strcmp(m,"index")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","index expects one argument"); for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) return V_number(i); return V_number(-1); }
+        if(strcmp(m,"sort")==0){ qsort(l->items,l->n,sizeof(Value),qsort_value_cmp); return V_nil(); }
+        if(strcmp(m,"reverse")==0){ for(int i=0,j=l->n-1;i<j;i++,j--){ Value t=l->items[i]; l->items[i]=l->items[j]; l->items[j]=t; } return V_nil(); }
+        runtime_error(ip,"LarzTypeError","a list has no method '%s'", m);
+      }
+      if(obj.t==V_DICT){
+        Dict *d=obj.dict; const char *m=name; int na=nargs;
+        if(strcmp(m,"keys")==0){ List *r=list_new(); for(int i=0;i<d->n;i++) list_push(r,d->items[i].key); return V_list(r); }
+        if(strcmp(m,"values")==0){ List *r=list_new(); for(int i=0;i<d->n;i++) list_push(r,d->items[i].val); return V_list(r); }
+        if(strcmp(m,"has")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","has expects one argument"); return V_bool(dict_find(d,args[0])!=NULL); }
+        if(strcmp(m,"get")==0){ if(na<1) runtime_error(ip,"LarzTypeError","get expects a key"); Value *s=dict_find(d,args[0]); if(s) return *s; return na>=2?args[1]:V_nil(); }
+        if(strcmp(m,"remove")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","remove expects one argument"); return V_bool(dict_del(d,args[0])); }
+        runtime_error(ip,"LarzTypeError","a dict has no method '%s'", m);
+      }
+      if(obj.t==V_STR){
+        const char *s=obj.str; const char *m=name; int na=nargs;
+        if(strcmp(m,"upper")==0||strcmp(m,"lower")==0){ int up=m[0]=='u'; char *r=xstrdup(s); for(char *p=r;*p;p++) *p= up?toupper((unsigned char)*p):tolower((unsigned char)*p); return V_string(r); }
+        if(strcmp(m,"strip")==0){ int a=0,b=(int)strlen(s); while(a<b&&isspace((unsigned char)s[a])) a++; while(b>a&&isspace((unsigned char)s[b-1])) b--; return V_string(xstrndup(s+a,b-a)); }
+        if(strcmp(m,"contains")==0||strcmp(m,"find")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","%s expects a string",m); const char *f=strstr(s,args[0].str); if(m[0]=='c') return V_bool(f!=NULL); return V_number(f?(double)(f-s):-1); }
+        if(strcmp(m,"starts_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","starts_with expects a string"); size_t ln=strlen(args[0].str); return V_bool(strncmp(s,args[0].str,ln)==0); }
+        if(strcmp(m,"ends_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ends_with expects a string"); size_t ls=strlen(s), le=strlen(args[0].str); return V_bool(ls>=le && strcmp(s+ls-le,args[0].str)==0); }
+        if(strcmp(m,"replace")==0){ if(na!=2||args[0].t!=V_STR||args[1].t!=V_STR) runtime_error(ip,"LarzTypeError","replace expects two strings"); const char *from=args[0].str,*to=args[1].str; size_t lf=strlen(from); if(lf==0) return V_string(xstrdup(s)); SB b; b.s=NULL;b.n=0;b.cap=0; const char *p=s; while(*p){ if(strncmp(p,from,lf)==0){ sb_puts(&b,to); p+=lf; } else sb_putc(&b,*p++); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
+        if(strcmp(m,"split")==0){ List *r=list_new(); if(na==0||args[0].t!=V_STR||args[0].str[0]==0){ for(const char *p=s;*p;p++){ char *c=xstrndup(p,1); list_push(r,V_string(c)); } return V_list(r); } const char *sep=args[0].str; size_t ls=strlen(sep); const char *p=s,*q; while((q=strstr(p,sep))){ list_push(r,V_string(xstrndup(p,q-p))); p=q+ls; } list_push(r,V_string(xstrdup(p))); return V_list(r); }
+        runtime_error(ip,"LarzTypeError","a string has no method '%s'", m);
+      }
+      runtime_error(ip,"LarzTypeError","cannot call a method on that value");
+      return V_nil();
+}
+
 static Value eval(Interp *ip, Node *n, Env *env){
   if(n->line) ip->curline=n->line;
   switch(n->kind){
@@ -789,33 +905,39 @@ static Value eval(Interp *ip, Node *n, Env *env){
         if(b.t==V_STR && a.t==V_STR) return V_bool(strstr(b.str,a.str)!=NULL);
         runtime_error(ip,"LarzTypeError","'in' needs a list, dict or string on the right");
       }
-      return do_binop(ip,n->op, eval(ip,n->a,env), eval(ip,n->b,env));
+      { int tr=ip->ntemp; Value l=eval(ip,n->a,env); gc_temp_push(ip,l);
+        Value r=eval(ip,n->b,env); gc_temp_pop(ip,tr);
+        return do_binop(ip,n->op,l,r); }
     }
     case N_ARRAY: {
-      List *l=list_new();
+      List *l=list_new(); int tr=ip->ntemp; gc_temp_push(ip, V_list(l));  /* protect while building */
       for(int i=0;i<n->nkids;i++) list_push(l, eval(ip,n->kids[i],env));
+      gc_temp_pop(ip, tr);
       return V_list(l);
     }
     case N_DICT: {
-      Dict *d=dict_new();
+      Dict *d=dict_new(); int tr=ip->ntemp; gc_temp_push(ip, V_dict(d));
       for(int i=0;i+1<n->nkids;i+=2){
         Value k=eval(ip,n->kids[i],env), v=eval(ip,n->kids[i+1],env);
         dict_set(d, k, v);
       }
+      gc_temp_pop(ip, tr);
       return V_dict(d);
     }
-    case N_FN: { Closure *c=xmalloc(sizeof(Closure)); c->decl=n; c->env=env; c->name=n->name; return V_func(c); }
+    case N_FN: { Closure *c=xmalloc(sizeof(Closure)); gc_register(c,GC_CLOSURE); c->decl=n; c->env=env; c->name=n->name; return V_func(c); }
     case N_FSTR: return eval(ip, n->a, env);
     case N_TERNARY: return truthy(eval(ip,n->a,env)) ? eval(ip,n->b,env) : eval(ip,n->c,env);
     case N_SLICE: {
-      Value obj=eval(ip,n->a,env);
+      int tr=ip->ntemp;
+      Value obj=eval(ip,n->a,env); gc_temp_push(ip,obj);
       int len;
       if(obj.t==V_LIST) len=obj.list->n;
       else if(obj.t==V_STR) len=(int)strlen(obj.str);
-      else { runtime_error(ip,"LarzTypeError","cannot slice that value"); return V_nil(); }
+      else { gc_temp_pop(ip,tr); runtime_error(ip,"LarzTypeError","cannot slice that value"); return V_nil(); }
       long long start=0, end=len;
       if(n->b){ Value s=eval(ip,n->b,env); if(!is_num(s)) runtime_error(ip,"LarzTypeError","slice bounds must be numbers"); start=(long long)s.num; }
       if(n->c){ Value e=eval(ip,n->c,env); if(!is_num(e)) runtime_error(ip,"LarzTypeError","slice bounds must be numbers"); end=(long long)e.num; }
+      gc_temp_pop(ip,tr);
       if(start<0) start+=len;
       if(end<0) end+=len;
       if(start<0) start=0;
@@ -827,7 +949,9 @@ static Value eval(Interp *ip, Node *n, Env *env){
       return V_string(xstrndup(obj.str+start, end-start));
     }
     case N_INDEX: {
-      Value obj=eval(ip,n->a,env), iv=eval(ip,n->b,env);
+      int tr=ip->ntemp;
+      Value obj=eval(ip,n->a,env); gc_temp_push(ip,obj);
+      Value iv=eval(ip,n->b,env); gc_temp_pop(ip,tr);
       if(obj.t==V_DICT){
         Value *slot=dict_find(obj.dict, iv);
         if(!slot) runtime_error(ip,"LarzKeyError","key not found");
@@ -840,10 +964,14 @@ static Value eval(Interp *ip, Node *n, Env *env){
       runtime_error(ip,"LarzTypeError","cannot index that value");
     }
     case N_CALL: {
-      Value callee=eval(ip,n->a,env);
-      Value args[64]; if(n->nkids>64) runtime_error(ip,"LarzTypeError","too many arguments");
-      for(int i=0;i<n->nkids;i++) args[i]=eval(ip,n->kids[i],env);
-      return call_value(ip, callee, args, n->nkids);
+      if(n->nkids>64) runtime_error(ip,"LarzTypeError","too many arguments");
+      int tr=ip->ntemp;
+      Value callee=eval(ip,n->a,env); gc_temp_push(ip,callee);
+      Value args[64];
+      for(int i=0;i<n->nkids;i++){ args[i]=eval(ip,n->kids[i],env); gc_temp_push(ip,args[i]); }
+      Value r=call_value(ip, callee, args, n->nkids);
+      gc_temp_pop(ip,tr);
+      return r;
     }
     case N_GET: {
       Value obj=eval(ip,n->a,env);
@@ -860,55 +988,14 @@ static Value eval(Interp *ip, Node *n, Env *env){
       runtime_error(ip,"LarzTypeError","cannot read '%s'", n->name);
     }
     case N_METHOD: {
-      Value obj=eval(ip,n->a,env);
-      Value args[64]; if(n->nkids>64) runtime_error(ip,"LarzTypeError","too many arguments");
-      for(int i=0;i<n->nkids;i++) args[i]=eval(ip,n->kids[i],env);
-      if(obj.t==V_MODULE){
-        Value *fn=env_find(obj.mod, n->name);
-        if(!fn) runtime_error(ip,"LarzNameError","module '%s' has no member '%s'", obj.modname?obj.modname:"?", n->name);
-        return call_value(ip, *fn, args, n->nkids);
-      }
-      if(obj.t==V_WALLET){
-        if(strcmp(n->name,"credit")==0 || strcmp(n->name,"debit")==0){
-          if(n->nkids!=1 || args[0].t!=V_MONEY) runtime_error(ip,"LarzTypeError","wallet.%s expects one money argument", n->name);
-          if(strcmp(n->name,"credit")==0) obj.wal->cents += args[0].cents;
-          else { if(args[0].cents>obj.wal->cents) runtime_error(ip,"MoneyError","wallet '%s' has insufficient funds", obj.wal->name); obj.wal->cents -= args[0].cents; }
-          return V_nil();
-        }
-        runtime_error(ip,"LarzTypeError","a wallet has no method '%s'", n->name);
-      }
-      if(obj.t==V_LIST){
-        List *l=obj.list; const char *m=n->name; int na=n->nkids;
-        if(strcmp(m,"push")==0||strcmp(m,"append")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","%s expects one argument",m); list_push(l,args[0]); return V_nil(); }
-        if(strcmp(m,"pop")==0){ if(l->n==0) runtime_error(ip,"LarzRuntimeError","pop from empty list"); long long i = na>=1 ? (long long)args[0].num : l->n-1; if(i<0) i+=l->n; if(i<0||i>=l->n) runtime_error(ip,"LarzRuntimeError","pop index out of range"); Value r=l->items[i]; for(int j=i+1;j<l->n;j++) l->items[j-1]=l->items[j]; l->n--; return r; }
-        if(strcmp(m,"insert")==0){ if(na!=2||!is_num(args[0])) runtime_error(ip,"LarzTypeError","insert expects an index and a value"); long long i=(long long)args[0].num; if(i<0) i+=l->n; if(i<0) i=0; if(i>l->n) i=l->n; list_push(l,V_nil()); for(int j=l->n-1;j>i;j--) l->items[j]=l->items[j-1]; l->items[i]=args[1]; return V_nil(); }
-        if(strcmp(m,"contains")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","contains expects one argument"); for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) return V_bool(1); return V_bool(0); }
-        if(strcmp(m,"index")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","index expects one argument"); for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) return V_number(i); return V_number(-1); }
-        if(strcmp(m,"sort")==0){ qsort(l->items,l->n,sizeof(Value),qsort_value_cmp); return V_nil(); }
-        if(strcmp(m,"reverse")==0){ for(int i=0,j=l->n-1;i<j;i++,j--){ Value t=l->items[i]; l->items[i]=l->items[j]; l->items[j]=t; } return V_nil(); }
-        runtime_error(ip,"LarzTypeError","a list has no method '%s'", m);
-      }
-      if(obj.t==V_DICT){
-        Dict *d=obj.dict; const char *m=n->name; int na=n->nkids;
-        if(strcmp(m,"keys")==0){ List *r=list_new(); for(int i=0;i<d->n;i++) list_push(r,d->items[i].key); return V_list(r); }
-        if(strcmp(m,"values")==0){ List *r=list_new(); for(int i=0;i<d->n;i++) list_push(r,d->items[i].val); return V_list(r); }
-        if(strcmp(m,"has")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","has expects one argument"); return V_bool(dict_find(d,args[0])!=NULL); }
-        if(strcmp(m,"get")==0){ if(na<1) runtime_error(ip,"LarzTypeError","get expects a key"); Value *s=dict_find(d,args[0]); if(s) return *s; return na>=2?args[1]:V_nil(); }
-        if(strcmp(m,"remove")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","remove expects one argument"); return V_bool(dict_del(d,args[0])); }
-        runtime_error(ip,"LarzTypeError","a dict has no method '%s'", m);
-      }
-      if(obj.t==V_STR){
-        const char *s=obj.str; const char *m=n->name; int na=n->nkids;
-        if(strcmp(m,"upper")==0||strcmp(m,"lower")==0){ int up=m[0]=='u'; char *r=xstrdup(s); for(char *p=r;*p;p++) *p= up?toupper((unsigned char)*p):tolower((unsigned char)*p); return V_string(r); }
-        if(strcmp(m,"strip")==0){ int a=0,b=(int)strlen(s); while(a<b&&isspace((unsigned char)s[a])) a++; while(b>a&&isspace((unsigned char)s[b-1])) b--; return V_string(xstrndup(s+a,b-a)); }
-        if(strcmp(m,"contains")==0||strcmp(m,"find")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","%s expects a string",m); const char *f=strstr(s,args[0].str); if(m[0]=='c') return V_bool(f!=NULL); return V_number(f?(double)(f-s):-1); }
-        if(strcmp(m,"starts_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","starts_with expects a string"); size_t ln=strlen(args[0].str); return V_bool(strncmp(s,args[0].str,ln)==0); }
-        if(strcmp(m,"ends_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ends_with expects a string"); size_t ls=strlen(s), le=strlen(args[0].str); return V_bool(ls>=le && strcmp(s+ls-le,args[0].str)==0); }
-        if(strcmp(m,"replace")==0){ if(na!=2||args[0].t!=V_STR||args[1].t!=V_STR) runtime_error(ip,"LarzTypeError","replace expects two strings"); const char *from=args[0].str,*to=args[1].str; size_t lf=strlen(from); if(lf==0) return V_string(xstrdup(s)); SB b; b.s=NULL;b.n=0;b.cap=0; const char *p=s; while(*p){ if(strncmp(p,from,lf)==0){ sb_puts(&b,to); p+=lf; } else sb_putc(&b,*p++); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
-        if(strcmp(m,"split")==0){ List *r=list_new(); if(na==0||args[0].t!=V_STR||args[0].str[0]==0){ for(const char *p=s;*p;p++){ char *c=xstrndup(p,1); list_push(r,V_string(c)); } return V_list(r); } const char *sep=args[0].str; size_t ls=strlen(sep); const char *p=s,*q; while((q=strstr(p,sep))){ list_push(r,V_string(xstrndup(p,q-p))); p=q+ls; } list_push(r,V_string(xstrdup(p))); return V_list(r); }
-        runtime_error(ip,"LarzTypeError","a string has no method '%s'", m);
-      }
-      runtime_error(ip,"LarzTypeError","cannot call a method on that value");
+      if(n->nkids>64) runtime_error(ip,"LarzTypeError","too many arguments");
+      int tr=ip->ntemp;
+      Value obj=eval(ip,n->a,env); gc_temp_push(ip,obj);
+      Value args[64];
+      for(int i=0;i<n->nkids;i++){ args[i]=eval(ip,n->kids[i],env); gc_temp_push(ip,args[i]); }
+      Value r=method_call(ip, obj, n->name, args, n->nkids);
+      gc_temp_pop(ip,tr);
+      return r;
     }
     default: runtime_error(ip,"LarzRuntimeError","cannot evaluate that node"); return V_nil();
   }
@@ -931,7 +1018,9 @@ static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
       else runtime_error(ip,"LarzTypeError","%s missing argument '%s'", fname, decl->params[i]);
     }
     ip->returning=0;
+    gc_root_push(ip, call_env);
     for(int i=0;i<decl->b->nkids;i++){ exec(ip, decl->b->kids[i], call_env); if(ip->returning) break; }
+    gc_root_pop(ip);
     Value r = ip->returning ? ip->retval : V_nil();
     ip->returning=0;
     return r;
@@ -941,6 +1030,7 @@ static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
 }
 
 static void exec(Interp *ip, Node *n, Env *env){
+  maybe_gc(ip);                 /* safe point: between statements, nothing half-built is unrooted */
   if(n->line) ip->curline=n->line;
   switch(n->kind){
     case N_LET: env_define(env, n->name, eval(ip,n->a,env)); return;
@@ -949,7 +1039,7 @@ static void exec(Interp *ip, Node *n, Env *env){
     case N_WALLET: {
       long long c=0;
       if(n->a){ Value v=eval(ip,n->a,env); if(v.t!=V_MONEY) runtime_error(ip,"LarzTypeError","a wallet balance must be money"); c=v.cents; }
-      Wallet *w=xmalloc(sizeof(Wallet)); w->name=xstrdup(n->name); w->cents=c;
+      Wallet *w=xmalloc(sizeof(Wallet)); gc_register(w,GC_WALLET); w->name=xstrdup(n->name); w->cents=c;
       env_define(env,n->name, V_wallet(w)); return;
     }
     case N_PAY: {
@@ -966,7 +1056,7 @@ static void exec(Interp *ip, Node *n, Env *env){
     case N_PAYWALL: {
       Value v=eval(ip,n->a,env);
       if(v.t!=V_MONEY) runtime_error(ip,"LarzTypeError","a paywall price must be money");
-      Paywall *pw=xmalloc(sizeof(Paywall));
+      Paywall *pw=xmalloc(sizeof(Paywall)); gc_register(pw,GC_PAYWALL);
       pw->name=xstrdup(n->name); pw->price=v.cents; pw->period=xstrdup(n->period); pw->payee=xstrdup(n->dst);
       env_define(env, n->name, V_paywall(pw));
       return;
@@ -985,7 +1075,7 @@ static void exec(Interp *ip, Node *n, Env *env){
       return;
     }
     case N_REQUIRE: { if(!truthy(eval(ip,n->a,env))) runtime_error(ip,"RequireError","%s", n->str?n->str:"requirement not met"); return; }
-    case N_FN: { Closure *c=xmalloc(sizeof(Closure)); c->decl=n; c->env=env; c->name=n->name; env_define(env,n->name,V_func(c)); return; }
+    case N_FN: { Closure *c=xmalloc(sizeof(Closure)); gc_register(c,GC_CLOSURE); c->decl=n; c->env=env; c->name=n->name; env_define(env,n->name,V_func(c)); return; }
     case N_RETURN: { ip->retval = n->a ? eval(ip,n->a,env) : V_nil(); ip->returning=1; return; }
     case N_IF: {
       if(truthy(eval(ip,n->a,env))) exec(ip,n->b,env);
@@ -1003,23 +1093,31 @@ static void exec(Interp *ip, Node *n, Env *env){
     }
     case N_FOR: {
       Value it=eval(ip,n->a,env);
+      int fortr=ip->ntemp; gc_temp_push(ip,it);      /* protect the iterator for the whole loop */
       int len; Value *arr=NULL; Dict *d=NULL; const char *sp=NULL;
       if(it.t==V_LIST){ len=it.list->n; arr=it.list->items; }
       else if(it.t==V_DICT){ len=it.dict->n; d=it.dict; }
       else if(it.t==V_STR){ len=(int)strlen(it.str); sp=it.str; }
-      else { runtime_error(ip,"LarzTypeError","cannot iterate that value"); return; }
+      else { gc_temp_pop(ip,fortr); runtime_error(ip,"LarzTypeError","cannot iterate that value"); return; }
       for(int i=0;i<len;i++){
         Value item = arr ? arr[i] : d ? d->items[i].key : V_string(xstrndup(sp+i,1));
         Env *child=env_new(env); env_define(child,n->name,item);
+        gc_root_push(ip,child);
         exec(ip,n->b,child);
+        gc_root_pop(ip);
         if(ip->returning) break;
         if(ip->loopflow==1){ ip->loopflow=0; break; }
         if(ip->loopflow==2){ ip->loopflow=0; continue; }
       }
+      gc_temp_pop(ip,fortr);
       return;
     }
     case N_SETINDEX: {
-      Value obj=eval(ip,n->a,env), key=eval(ip,n->b,env), val=eval(ip,n->c,env);
+      int tr=ip->ntemp;
+      Value obj=eval(ip,n->a,env); gc_temp_push(ip,obj);
+      Value key=eval(ip,n->b,env); gc_temp_push(ip,key);
+      Value val=eval(ip,n->c,env);
+      gc_temp_pop(ip,tr);
       if(obj.t==V_LIST){
         if(!is_num(key)||key.num!=(long long)key.num) runtime_error(ip,"LarzTypeError","list index must be a whole number");
         long long i=(long long)key.num; if(i<0) i+=obj.list->n;
@@ -1033,17 +1131,21 @@ static void exec(Interp *ip, Node *n, Env *env){
     case N_CONTINUE: ip->loopflow=2; return;
     case N_TRY: {
       jmp_buf saved; memcpy(saved, ip->jb, sizeof(jmp_buf));
+      int nr=ip->nroots, nt=ip->ntemp;              /* restore GC roots if the try unwinds */
       if(setjmp(ip->jb)==0){
         exec(ip, n->a, env);
         memcpy(ip->jb, saved, sizeof(jmp_buf));       /* normal exit: restore outer */
       } else {
         memcpy(ip->jb, saved, sizeof(jmp_buf));       /* error: restore outer first */
+        ip->nroots=nr; ip->ntemp=nt;
         ip->returning=0; ip->loopflow=0;
         Dict *d=dict_new();
         dict_set(d, V_string(xstrdup("type")),    V_string(xstrdup(ip->errname?ip->errname:"Error")));
         dict_set(d, V_string(xstrdup("message")), V_string(xstrdup(ip->errmsg)));
         Env *child=env_new(env); env_define(child, n->name, V_dict(d));
+        gc_root_push(ip,child);
         exec(ip, n->b, child);
+        gc_root_pop(ip);
       }
       return;
     }
@@ -1081,7 +1183,9 @@ static void exec(Interp *ip, Node *n, Env *env){
       { char *sl=strrchr(moddir,'/'); if(sl)*sl=0; else snprintf(moddir,sizeof moddir,"."); }
       ip->basedir=xstrdup(moddir);
       int saved_ret=ip->returning; ip->returning=0;
+      gc_root_push(ip,modenv);
       for(int i=0;i<prog->nkids;i++){ exec(ip,prog->kids[i],modenv); if(ip->returning) break; }
+      gc_root_pop(ip);
       ip->returning=saved_ret; ip->basedir=saved_base;
       Value mod=V_module(modenv, xstrdup(alias));
       if(ip->nmod==ip->modcap){ ip->modcap=ip->modcap?ip->modcap*2:8; ip->modcache=realloc(ip->modcache,ip->modcap*sizeof(*ip->modcache)); }
@@ -1089,7 +1193,7 @@ static void exec(Interp *ip, Node *n, Env *env){
       env_define(env, alias, mod);
       return;
     }
-    case N_BLOCK: { Env *child=env_new(env); for(int i=0;i<n->nkids;i++){ exec(ip,n->kids[i],child); if(ip->returning||ip->loopflow) break; } return; }
+    case N_BLOCK: { Env *child=env_new(env); gc_root_push(ip,child); for(int i=0;i<n->nkids;i++){ exec(ip,n->kids[i],child); if(ip->returning||ip->loopflow) break; } gc_root_pop(ip); return; }
     case N_EXPR: eval(ip,n->a,env); return;
     default: eval(ip,n,env); return;
   }
@@ -1205,9 +1309,9 @@ static Value bi_input(Interp *ip, Value *a, int n){
 }
 static Value bi_keys(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","keys() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].key); return V_list(r); }
 static Value bi_values(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","values() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].val); return V_list(r); }
-static Value bi_map(Interp *ip, Value *a, int n){ if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","map() expects a function and a list"); List *r=list_new(); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; list_push(r, call_value(ip,a[0],&arg,1)); } return V_list(r); }
-static Value bi_filter(Interp *ip, Value *a, int n){ if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","filter() expects a function and a list"); List *r=list_new(); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; if(truthy(call_value(ip,a[0],&arg,1))) list_push(r,arg); } return V_list(r); }
-static Value bi_reduce(Interp *ip, Value *a, int n){ if(n<2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","reduce() expects a function, a list and an optional initial value"); List *l=a[1].list; int i=0; Value acc; if(n>=3) acc=a[2]; else { if(l->n==0) runtime_error(ip,"LarzValueError","reduce() of empty list with no initial value"); acc=l->items[0]; i=1; } for(; i<l->n; i++){ Value args[2]; args[0]=acc; args[1]=l->items[i]; acc=call_value(ip,a[0],args,2); } return acc; }
+static Value bi_map(Interp *ip, Value *a, int n){ if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","map() expects a function and a list"); List *r=list_new(); int tr=ip->ntemp; gc_temp_push(ip,V_list(r)); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; list_push(r, call_value(ip,a[0],&arg,1)); } gc_temp_pop(ip,tr); return V_list(r); }
+static Value bi_filter(Interp *ip, Value *a, int n){ if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","filter() expects a function and a list"); List *r=list_new(); int tr=ip->ntemp; gc_temp_push(ip,V_list(r)); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; if(truthy(call_value(ip,a[0],&arg,1))) list_push(r,arg); } gc_temp_pop(ip,tr); return V_list(r); }
+static Value bi_reduce(Interp *ip, Value *a, int n){ if(n<2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","reduce() expects a function, a list and an optional initial value"); List *l=a[1].list; int i=0; Value acc; if(n>=3) acc=a[2]; else { if(l->n==0) runtime_error(ip,"LarzValueError","reduce() of empty list with no initial value"); acc=l->items[0]; i=1; } int tr=ip->ntemp; gc_temp_push(ip,acc); for(; i<l->n; i++){ Value args[2]; args[0]=acc; args[1]=l->items[i]; acc=call_value(ip,a[0],args,2); ip->temproots[tr]=acc; } gc_temp_pop(ip,tr); return acc; }
 static Value bi_join(Interp *ip, Value *a, int n){ if(n<1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","join() expects a list and an optional separator"); const char *sep=(n>=2&&a[1].t==V_STR)?a[1].str:""; SB b; b.s=NULL;b.n=0;b.cap=0; for(int i=0;i<a[0].list->n;i++){ if(i) sb_puts(&b,sep); char *s=str_of(a[0].list->items[i]); sb_puts(&b,s); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
 static Value bi_enumerate(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","enumerate() expects a list"); List *r=list_new(); for(int i=0;i<a[0].list->n;i++){ List *pair=list_new(); list_push(pair,V_number(i)); list_push(pair,a[0].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
 static Value bi_zip(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_LIST||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","zip() expects two lists"); int m=a[0].list->n<a[1].list->n?a[0].list->n:a[1].list->n; List *r=list_new(); for(int i=0;i<m;i++){ List *pair=list_new(); list_push(pair,a[0].list->items[i]); list_push(pair,a[1].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
@@ -1234,7 +1338,7 @@ static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_w
 /* ===================== REPL ===================== */
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v1.4.0) - type statements; Ctrl-D to exit.\n");
+  printf("Larzscript native REPL (v1.5.0) - type statements; Ctrl-D to exit.\n");
   for(;;){
     printf("larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
@@ -1427,11 +1531,12 @@ static const char *USAGE =
   "  larzscript --version | --help\n";
 
 int main(int argc, char **argv){
+  if(getenv("LZ_GC_STRESS")) g_gc_threshold=0;   /* collect on every statement (test mode) */
   const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0;
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.4.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.5.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }

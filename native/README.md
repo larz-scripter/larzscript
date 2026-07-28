@@ -128,10 +128,19 @@ import "mathx.lz" as m
 print(m.square(5), m.PI)      # 25 3.14159
 ```
 
+## Memory
+
+A **precise mark-sweep garbage collector** reclaims container objects (lists,
+dicts, environments, closures, wallets, paywalls), so long-running programs and
+loops stay memory-bounded instead of growing without limit. It runs between
+statements and protects in-flight temporaries with a temp-root stack. The GC is
+verified under AddressSanitizer with collection forced on every statement.
+(Strings are not yet collected.)
+
 ## Tests
 
 ```bash
-sh native/run_tests.sh      # builds and checks against expected outputs
+sh native/run_tests.sh      # runs each test; also checks GC + formatter invariants
 ```
 
 ## License
