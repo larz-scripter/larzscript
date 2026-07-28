@@ -372,8 +372,21 @@ int printf(const char *fmt, ...){ Sink s={0,0,0,1}; va_list ap; va_start(ap,fmt)
 /* ======================================================================
  * FILE layer - std streams go to serial; real files don't exist yet
  * ==================================================================== */
-struct _LZ_FILE { int kind; };      /* 0=stdin 1=stdout 2=stderr */
-static FILE _stdin={0}, _stdout={1}, _stderr={2};
+/* the baked-in RAM filesystem (see mkramfs.py / ramfs_gen.c) */
+typedef struct { const char *path; const unsigned char *data; unsigned size; } RamFile;
+extern const RamFile g_ramfs[];
+extern const int g_ramfs_count;
+
+static const char *basename_of(const char *p){ const char *b=strrchr(p,'/'); return b?b+1:p; }
+static const RamFile *ramfs_find(const char *path){
+    for(int i=0;i<g_ramfs_count;i++) if(strcmp(g_ramfs[i].path,path)==0) return &g_ramfs[i];
+    const char *b=basename_of(path);                      /* flat fs: fall back to basename */
+    for(int i=0;i<g_ramfs_count;i++) if(strcmp(basename_of(g_ramfs[i].path),b)==0) return &g_ramfs[i];
+    return 0;
+}
+
+struct _LZ_FILE { int kind; const unsigned char *data; unsigned size, pos; };  /* 0..2=std, 3=ramfile */
+static FILE _stdin={0,0,0,0}, _stdout={1,0,0,0}, _stderr={2,0,0,0};
 FILE *stdin=&_stdin, *stdout=&_stdout, *stderr=&_stderr;
 
 static int is_std(FILE *f){ return f==&_stdin||f==&_stdout||f==&_stderr; }
@@ -392,20 +405,42 @@ size_t fwrite(const void *p, size_t sz, size_t nm, FILE *f){
     if(is_std(f)){ const char *b=p; size_t t=sz*nm; while(t--) serial_putc(*b++); }
     return nm;
 }
-size_t fread(void *p, size_t sz, size_t nm, FILE *f){ (void)p;(void)sz;(void)nm;(void)f; return 0; }
-/* line editor on stdin: echo + backspace; returns NULL only never (serial has no EOF) */
-char *fgets(char *buf, int size, FILE *f){
-    if(f!=&_stdin) return 0;
-    int n=0;
-    for(;;){
-        char c=serial_getc();
-        if(c=='\r'||c=='\n'){ serial_putc('\n'); buf[n++]='\n'; buf[n]=0; return buf; }
-        if((c==0x7F||c==0x08)){ if(n>0){ n--; con_puts("\b \b"); } continue; }
-        if(c>=32 && c<127 && n<size-2){ buf[n++]=c; serial_putc(c); }
-    }
+size_t fread(void *p, size_t sz, size_t nm, FILE *f){
+    if(f->kind!=3) return 0;
+    size_t want=sz*nm, avail=f->size - f->pos;
+    if(want>avail) want=avail;
+    memcpy(p, f->data + f->pos, want);
+    f->pos += (unsigned)want;
+    return sz? want/sz : 0;
 }
-FILE *fopen(const char *path, const char *mode){ (void)path;(void)mode; return 0; }   /* no filesystem */
-int fclose(FILE *f){ (void)f; return 0; }
+/* stdin: serial line editor (echo + backspace). ramfile: read one line. */
+char *fgets(char *buf, int size, FILE *f){
+    if(f==&_stdin){
+        int n=0;
+        for(;;){
+            char c=serial_getc();
+            if(c=='\r'||c=='\n'){ serial_putc('\n'); buf[n++]='\n'; buf[n]=0; return buf; }
+            if((c==0x7F||c==0x08)){ if(n>0){ n--; con_puts("\b \b"); } continue; }
+            if(c>=32 && c<127 && n<size-2){ buf[n++]=c; serial_putc(c); }
+        }
+    }
+    if(f->kind==3){
+        if(f->pos>=f->size) return 0;
+        int n=0;
+        while(f->pos<f->size && n<size-1){ char c=(char)f->data[f->pos++]; buf[n++]=c; if(c=='\n') break; }
+        buf[n]=0; return buf;
+    }
+    return 0;
+}
+FILE *fopen(const char *path, const char *mode){
+    if(mode && (mode[0]=='w'||mode[0]=='a')) return 0;    /* read-only fs */
+    const RamFile *rf=ramfs_find(path);
+    if(!rf) return 0;
+    FILE *f=malloc(sizeof(FILE)); if(!f) return 0;
+    f->kind=3; f->data=rf->data; f->size=rf->size; f->pos=0;
+    return f;
+}
+int fclose(FILE *f){ if(f && !is_std(f)) free(f); return 0; }
 FILE *popen(const char *c, const char *m){ (void)c;(void)m; return 0; }
 int pclose(FILE *f){ (void)f; return -1; }
 
@@ -424,12 +459,26 @@ int unlink(const char *p){ (void)p; return -1; }
 int access(const char *p, int m){ (void)p;(void)m; return -1; }
 int usleep(unsigned us){ for(volatile unsigned i=0;i<us*20u;i++){} return 0; }
 unsigned sleep(unsigned s){ (void)s; return 0; }
-int stat(const char *p, struct stat *b){ (void)p;(void)b; return -1; }
-int mkdir(const char *p, mode_t m){ (void)p;(void)m; return -1; }
+int stat(const char *p, struct stat *b){
+    const RamFile *rf=ramfs_find(p);
+    if(!rf) return -1;
+    if(b){ b->st_mode=S_IFREG; b->st_size=rf->size; }
+    return 0;
+}
+int mkdir(const char *p, mode_t m){ (void)p;(void)m; return -1; }   /* read-only fs */
 int rename(const char *o, const char *nw){ (void)o;(void)nw; return -1; }
 int remove(const char *p){ (void)p; return -1; }
-DIR *opendir(const char *n){ (void)n; return 0; }
-struct dirent *readdir(DIR *d){ (void)d; return 0; }
-int closedir(DIR *d){ (void)d; return 0; }
+
+/* opendir enumerates the whole (flat) ramfs; readdir yields basenames */
+struct _LZ_DIR { int idx; struct dirent ent; };
+DIR *opendir(const char *n){ (void)n; DIR *d=malloc(sizeof(DIR)); if(d) d->idx=0; return d; }
+struct dirent *readdir(DIR *d){
+    if(!d || d->idx>=g_ramfs_count) return 0;
+    const char *b=basename_of(g_ramfs[d->idx++].path);
+    strncpy(d->ent.d_name, b, sizeof(d->ent.d_name)-1);
+    d->ent.d_name[sizeof(d->ent.d_name)-1]=0;
+    return &d->ent;
+}
+int closedir(DIR *d){ if(d) free(d); return 0; }
 time_t time(time_t *t){ if(t)*t=0; return 0; }
 int clock_gettime(int id, struct timespec *tp){ (void)id; if(tp){ tp->tv_sec=0; tp->tv_nsec=0; } return 0; }

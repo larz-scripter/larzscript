@@ -23,7 +23,8 @@ AFLAGS := -m64 -ffreestanding -fno-pie
 LDFLAGS := -m elf_x86_64 -T linker.ld -nostdlib -no-pie -z max-page-size=0x1000
 
 KERNEL := larzkernel.elf
-OBJS   := boot.o setjmp.o kernel.o libk.o larzscript.o
+OBJS   := boot.o setjmp.o kernel.o libk.o ramfs_gen.o larzscript.o
+ROOTFS := $(wildcard rootfs/*)
 
 QEMU   := qemu-system-x86_64
 
@@ -37,6 +38,11 @@ kernel.o: kernel.c console.h
 	$(CC) $(CFLAGS) -c kernel.c -o kernel.o
 libk.o: libk.c console.h
 	$(CC) $(CFLAGS) -c libk.c -o libk.o
+# bake rootfs/ into an in-kernel RAM filesystem
+ramfs_gen.c: mkramfs.py $(ROOTFS)
+	python3 mkramfs.py rootfs > ramfs_gen.c
+ramfs_gen.o: ramfs_gen.c
+	$(CC) $(CFLAGS) -c ramfs_gen.c -o ramfs_gen.o
 # the interpreter, unmodified; its main() is renamed so the kernel is the entry
 larzscript.o: $(INTERP)
 	$(CC) $(FREE) -w -Dmain=larz_main -c $(INTERP) -o larzscript.o
@@ -52,13 +58,11 @@ iso: $(KERNEL)
 	grub-mkrescue -o larzos.iso iso 2>/dev/null
 	@echo "built larzos.iso"
 
-# Boot the ISO headlessly and drive the Larzscript REPL over serial from
-# demo.lzin. Input is throttled (a boot delay + a pause per line) because the
-# kernel uses polled serial with no flow control, so a burst would overflow the
-# 16-byte UART FIFO. A human typing never hits this.
+# Boot the ISO headlessly. The kernel runs /boot.lz from the RAM filesystem -
+# deterministic, no serial input needed. (Build with CFLAGS+=-DLARZ_REPL for an
+# interactive larz> prompt instead.)
 test: iso
-	( sleep 4; while IFS= read -r l; do printf '%s\n' "$$l"; sleep 0.5; done < demo.lzin ) | \
-	  timeout 90 $(QEMU) -m 128 -cdrom larzos.iso -display none -serial stdio \
+	timeout 40 $(QEMU) -m 128 -cdrom larzos.iso -display none -serial stdio \
 	    -monitor none -no-reboot \
 	    -device isa-debug-exit,iobase=0xf4,iosize=0x04 ; \
 	  echo "(qemu exited $$?)"
@@ -68,7 +72,7 @@ run: iso
 	        -device isa-debug-exit,iobase=0xf4,iosize=0x04
 
 clean:
-	rm -f $(OBJS) $(KERNEL) larzos.iso
+	rm -f $(OBJS) $(KERNEL) larzos.iso ramfs_gen.c
 	rm -rf iso
 
 .PHONY: all iso test run clean

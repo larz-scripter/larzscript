@@ -1,0 +1,28 @@
+# /boot.lz - the LarzOS boot program, loaded from the in-kernel RAM filesystem.
+# Proves multi-file Larzscript (import), file I/O, and money-native code all run
+# on bare metal with no operating system underneath.
+import "mathlib" as math
+
+fn fact(n) { if n <= 1 { return 1 } return n * fact(n-1) }
+
+print("")
+print("  LarzOS boot program - running from the RAM filesystem.")
+print("  " + read_file("/motd.txt").strip())
+print("")
+print("[math]  2^16       = " + str(math.pow2(16)))
+print("[math]  gcd(48,36) = " + str(math.gcd(48, 36)))
+print("[math]  primes<30  = " + str(math.primes(30)))
+print("")
+print("[money] a marketplace sale, settled in-language:")
+wallet buyer = $100.00
+wallet seller
+wallet platform
+price item = $40.00
+pay item from buyer to seller
+pay item * 0.1 from seller to platform
+print(f"        buyer={buyer.balance}  seller={seller.balance}  platform={platform.balance}")
+print("")
+print("[lang]  factorials  = " + str([fact(n) for n in range(1, 8)]))
+print("")
+print("  All of that ran on our own kernel. No Linux underneath.")
+exit(0)

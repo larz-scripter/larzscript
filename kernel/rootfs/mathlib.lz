@@ -1,0 +1,12 @@
+# /mathlib.lz - a small math module, imported by the boot program.
+fn pow2(n) { let r = 1; for i in range(n) { r = r * 2 } return r }
+fn gcd(a, b) { while b != 0 { let t = b; b = a % b; a = t } return a }
+fn primes(limit) {
+  let out = []
+  for n in range(2, limit) {
+    let ok = true
+    for d in range(2, n) { if n % d == 0 { ok = false } }
+    if ok { out.push(n) }
+  }
+  return out
+}

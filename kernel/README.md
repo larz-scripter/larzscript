@@ -1,21 +1,22 @@
 # LarzOS kernel — Stage 1
 
 A from-scratch **64-bit** kernel that boots on bare metal with **no Linux
-underneath** and runs the **unmodified Larzscript interpreter** as its shell.
-This is the milestone the roadmap was aiming at: Larzscript running directly on
-the hardware, money-native and all.
+underneath** and runs the **unmodified Larzscript interpreter**. It boots a
+multi-file Larzscript program straight from a baked-in RAM filesystem — `import`,
+file reads, and money-native code all working on the hardware.
 
 ```
-larz> wallet a = $20.00
-larz> price coffee = $3.50
-larz> pay coffee from a to shop
-larz> print(f"a={a.balance}  shop={shop.balance}")
-a=$16.50  shop=$3.50
-larz> print([x*x for x in range(6)])
-[0, 1, 4, 9, 16, 25]
-larz> print("fib(15) =", fib(15))
-fib(15) = 610
+  LarzOS boot program - running from the RAM filesystem.
+  Welcome to LarzOS - the money-native operating system.
+
+[math]  primes<30  = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]     (from an imported module)
+[money] a marketplace sale, settled in-language:
+        buyer=$60.00  seller=$36.00  platform=$4.00
+[lang]  factorials  = [1, 2, 6, 24, 120, 720, 5040]
 ```
+
+Build with `CFLAGS+=-DLARZ_REPL` instead for an interactive `larz>` prompt over
+serial (wallets, pay, f-strings, recursion, dicts, floats — all evaluate live).
 
 ## How it works
 
@@ -28,9 +29,14 @@ fib(15) = 610
   **zero source changes**: a K&R heap allocator over a 32 MiB arena, string/
   memory/ctype helpers, a streaming `printf` with a `%g` float formatter,
   `strtod`, freestanding math (`sqrt`/`floor`/`ceil`/`round`/`pow`/`exp`/`log`),
-  and a FILE layer that routes `stdin`/`stdout`/`stderr` to the serial console.
-  OS-facing calls (files, dirs, env, exec, clocks) are stubbed — bare metal has
-  no filesystem yet, so those Larzscript builtins fail gracefully.
+  and a FILE layer. `stdin`/`stdout`/`stderr` route to the serial console;
+  `fopen`/`fread`/`stat`/`opendir`/`readdir` are backed by a **read-only RAM
+  filesystem** baked into the kernel (so `import`, `read_file`, and `listdir`
+  work). Writes and OS/process/clock calls are stubbed — those builtins fail
+  gracefully.
+- **`rootfs/` + `mkramfs.py`** — the files baked into the image. `mkramfs.py`
+  turns `rootfs/` into `ramfs_gen.c` (a C table of `{path, bytes, size}`); the
+  kernel boots `/boot.lz`, which `import`s `/mathlib.lz` and reads `/motd.txt`.
 - **`setjmp.S`** — a real x86_64 `setjmp`/`longjmp` (the interpreter's try/catch
   save/restores `jmp_buf` with `memcpy`, so `__builtin_setjmp` won't do).
 - **`kernel.c`** — brings up the console and calls the interpreter's `main()`
@@ -64,8 +70,9 @@ RAM**). At the `larz>` prompt, type Larzscript. End a session with `exit(0)`.
   so a *burst* of pasted/piped input can overflow it and drop bytes. A human
   typing is fine; `make test` throttles its scripted input for the same reason.
   A future revision adds interrupt-driven input with a ring buffer.
-- **No filesystem**, so `import`, `read_file`, `run`, `listdir`, `env`, and the
-  clock builtins are stubbed. Core language + money-native primitives all work.
+- The filesystem is a **read-only RAM image** baked into the kernel, so `import`,
+  `read_file`, and `listdir` work but writes (`write_file`, `mkdir`) and
+  process/env/clock builtins are stubbed. A writable + disk-backed FS is next.
 - 64-bit multiboot kernels can't use QEMU's 32-bit-only `-kernel`; they boot via
   the GRUB ISO — the same path VirtualBox / real hardware use.
 

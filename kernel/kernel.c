@@ -18,15 +18,14 @@ void kernel_main(void){
     printf("  kernel (Stage 1): 64-bit long mode, no Linux underneath.\n");
     printf("  The Larzscript interpreter is running on bare metal.\n");
     printf("\n");
-    printf("  Try it at the larz> prompt, for example:\n");
-    printf("    wallet a = $20.00\n");
-    printf("    price p = $9.00\n");
-    printf("    pay p from a to a\n");
-    printf("    print(f\"balance: {a.balance}\")\n");
-    printf("  End the session with:  exit(0)\n");
-    printf("\n");
-
+#ifdef LARZ_REPL
+    printf("  Try it at the larz> prompt, e.g.  wallet a = $20.00\n");
+    printf("  End the session with:  exit(0)\n\n");
     char *argv[] = { "larzscript", "repl", 0 };
+#else
+    printf("  Loading /boot.lz from the RAM filesystem...\n");
+    char *argv[] = { "larzscript", "/boot.lz", 0 };
+#endif
     larz_main(2, argv);
 
     printf("\n  LarzOS halted.\n");

@@ -12,3 +12,4 @@ kernel/*.o
 kernel/*.elf
 kernel/*.iso
 kernel/iso/
+kernel/ramfs_gen.c

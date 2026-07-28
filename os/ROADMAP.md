@@ -50,10 +50,13 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   `qemu-system-x86_64`, `xorriso`). Tested **headlessly** over QEMU's serial
   console. QEMU's `-kernel` is 32-bit-only, so 64-bit kernels boot via the GRUB
   ISO — the same path VirtualBox / real hardware use.
-- Milestones ✅: boot → long mode → **the interpreter runs on bare metal**.
-- Next: interrupt-driven serial + a PS/2 keyboard + framebuffer (local use), then
-  a storage/filesystem layer so `import`/files work — at which point `init.lz`
-  and `larzsh.lz` from Stage 0 run directly on this kernel.
+- Milestones ✅: boot → long mode → the interpreter runs on bare metal →
+  **a read-only RAM filesystem** (baked into the kernel) so `import`, `read_file`
+  and `listdir` work — the kernel now boots a multi-file `/boot.lz` that imports
+  a module and reads a file, no serial input needed.
+- Next: interrupt-driven serial + a PS/2 keyboard + framebuffer (local use), and
+  a **writable / disk-backed** filesystem — at which point `init.lz` and
+  `larzsh.lz` from Stage 0 run directly on this kernel and LarzOS self-hosts.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most
