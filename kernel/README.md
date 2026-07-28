@@ -61,6 +61,11 @@ REPL only.
   that seeds the writable FS at boot). `mkramfs.py` turns `rootfs/` into
   `ramfs_gen.c` (a C table of `{path, bytes, size}`). Ships `/boot.lz`,
   `/mathlib.lz`, `/motd.txt`, and **`/larzsh.lz`** (the shell).
+- **ATA disk + persistence** (in `libk.c`) — a polled ATA PIO driver (primary
+  master) plus **LarzFS**, a small on-disk format that serializes the `/home`
+  subtree. `/home` is restored from disk at boot and re-synced on every write/
+  `mkdir`/`rm`/`rename`, so files there — including the compute wallet —
+  **persist across reboots**. No disk attached ⇒ it cleanly runs RAM-only.
 - **PS/2 keyboard + VGA console** (in `libk.c`) — a polled scancode-set-1
   keyboard driver (shift/caps) gives **local input on real hardware / a VM**, and
   a scrolling VGA text console with a hardware cursor gives local output. Input
@@ -91,8 +96,12 @@ make run      # boot interactively; your terminal is the serial console
 
 Boot on a **real 64-bit laptop** (write `larzos.iso` to a USB stick) or in
 **VirtualBox** (type "Other/Unknown 64-bit", attach the ISO, give it **≥ 128 MiB
-RAM**). You'll see the demo, then a `larz>` prompt — **type Larzscript on the
-keyboard**. End a session with `exit(0)`.
+RAM**). You'll see the demo, then the `larzsh` shell — **type on the keyboard**.
+
+For **persistent storage**, attach a hard disk: in QEMU add `-hda disk.img`
+(create one with `dd if=/dev/zero of=disk.img bs=1M count=16`); in VirtualBox add
+an IDE hard disk. Anything you put under `/home` survives reboots. Run `make
+persist` for a two-boot demo (writes a file, reboots, reads it back).
 
 ## Known limitations (Stage 1)
 
@@ -100,10 +109,10 @@ keyboard**. End a session with `exit(0)`.
   of pasted/piped *serial* input can overflow and drop bytes. A human typing (on
   the keyboard or a serial terminal) is fine. Interrupt-driven input with a ring
   buffer is a future revision.
-- The filesystem is **in-memory** (seeded from the baked initramfs), so files
-  created at runtime **do not persist across a reboot**. Disk-backed storage is
-  next. Process/exec/clock builtins remain stubbed, so `larzsh`'s external-command
-  and `pkg` paths are no-ops (its builtins all work).
+- Files under `/home` persist to disk (LarzFS); `/tmp` and system files are
+  in-memory. With no disk attached everything is RAM-only. Process/exec/clock
+  builtins remain stubbed, so `larzsh`'s external-command and `pkg` paths are
+  no-ops (its builtins all work).
 - 64-bit multiboot kernels can't use QEMU's 32-bit-only `-kernel`; they boot via
   the GRUB ISO — the same path VirtualBox / real hardware use.
 

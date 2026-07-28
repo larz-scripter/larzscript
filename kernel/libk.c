@@ -438,7 +438,10 @@ typedef struct VNode {
     unsigned char *data; unsigned size, cap;      /* file contents */
     struct VNode *child, *next, *parent;          /* directory tree */
 } VNode;
-static VNode *g_root, *g_cwd;
+static VNode *g_root, *g_cwd, *g_home;
+static int  ata_init(void);      /* disk driver + persistence, defined below */
+static void fs_load(void);
+void        fs_sync(void);
 
 static VNode *vn_new(const char *name, int dir){
     VNode *n=malloc(sizeof(VNode)); if(!n) return 0;
@@ -489,12 +492,111 @@ static VNode *vn_open_write(const char *path, int trunc){
 }
 void vfs_init(void){
     g_root=vn_new("",1); g_cwd=g_root;
-    vn_add(g_root, vn_new("home",1));
+    g_home=vn_new("home",1); vn_add(g_root,g_home);
     vn_add(g_root, vn_new("tmp",1));
     for(int i=0;i<g_ramfs_count;i++){
         VNode *f=vn_open_write(g_ramfs[i].path,1);
         if(f && g_ramfs[i].size){ vn_grow(f,g_ramfs[i].size+1); memcpy(f->data,g_ramfs[i].data,g_ramfs[i].size); f->size=g_ramfs[i].size; f->data[f->size]=0; }
     }
+    ata_init();      /* detect a disk */
+    fs_load();       /* restore /home from disk (LarzFS), if present */
+}
+
+/* ======================================================================
+ * ATA PIO disk (primary master) + LarzFS: persist /home across reboots.
+ * Everything no-ops when no disk is attached, so the OS still runs RAM-only.
+ * ==================================================================== */
+#define ATA_IO 0x1F0
+static int g_disk=0;
+static void insw(u16 port, void *buf, int cnt){ __asm__ volatile("cld; rep insw":"+D"(buf),"+c"(cnt):"d"(port):"memory"); }
+static void outsw(u16 port, const void *buf, int cnt){ __asm__ volatile("cld; rep outsw":"+S"(buf),"+c"(cnt):"d"(port)); }
+static int ata_wait(unsigned char mask, unsigned char val){
+    for(unsigned i=0;i<20000000u;i++) if((inb(ATA_IO+7)&mask)==val) return 1;
+    return 0;
+}
+static int ata_init(void){
+    outb(ATA_IO+6,0xA0);                       /* select master */
+    for(int i=0;i<4;i++) inb(ATA_IO+7);        /* 400ns settle */
+    outb(ATA_IO+2,0); outb(ATA_IO+3,0); outb(ATA_IO+4,0); outb(ATA_IO+5,0);
+    outb(ATA_IO+7,0xEC);                        /* IDENTIFY */
+    if(inb(ATA_IO+7)==0) return g_disk=0;       /* no drive present */
+    if(!ata_wait(0x80,0)) return g_disk=0;
+    if(inb(ATA_IO+4)||inb(ATA_IO+5)) return g_disk=0;   /* not ATA */
+    if(!ata_wait(0x08,0x08)) return g_disk=0;
+    unsigned short id[256]; insw(ATA_IO,id,256); (void)id;
+    return g_disk=1;
+}
+static void ata_lba(unsigned lba){
+    ata_wait(0x80,0);
+    outb(ATA_IO+6, 0xE0 | ((lba>>24)&0x0F));
+    outb(ATA_IO+2, 1);
+    outb(ATA_IO+3, lba&0xFF); outb(ATA_IO+4, (lba>>8)&0xFF); outb(ATA_IO+5, (lba>>16)&0xFF);
+}
+static void ata_read(unsigned lba, void *buf){
+    if(!g_disk) return;
+    ata_lba(lba); outb(ATA_IO+7,0x20);
+    if(!ata_wait(0x80,0)||!ata_wait(0x08,0x08)) return;
+    insw(ATA_IO, buf, 256);
+}
+static void ata_write(unsigned lba, const void *buf){
+    if(!g_disk) return;
+    ata_lba(lba); outb(ATA_IO+7,0x30);
+    if(!ata_wait(0x80,0)||!ata_wait(0x08,0x08)) return;
+    outsw(ATA_IO, buf, 256);
+    outb(ATA_IO+7,0xE7); ata_wait(0x80,0);      /* flush cache */
+}
+
+/* LarzFS: a flat serialization of the /home subtree (path + bytes records). */
+typedef struct { unsigned char *p; unsigned len, cap; } Buf;
+static void buf_put(Buf *b, const void *d, unsigned n){
+    if(b->len+n > b->cap){ unsigned nc=b->cap?b->cap:512; while(nc<b->len+n) nc*=2; b->p=realloc(b->p,nc); b->cap=nc; }
+    memcpy(b->p+b->len,d,n); b->len+=n;
+}
+static void buf_u16(Buf*b,unsigned v){ unsigned char t[2]={(unsigned char)v,(unsigned char)(v>>8)}; buf_put(b,t,2); }
+static void buf_u32(Buf*b,unsigned v){ unsigned char t[4]={(unsigned char)v,(unsigned char)(v>>8),(unsigned char)(v>>16),(unsigned char)(v>>24)}; buf_put(b,t,4); }
+static void ser_dir(VNode *d, const char *prefix, Buf *b, int *count){
+    for(VNode *c=d->child; c; c=c->next){
+        char path[512];
+        if(prefix[0]) snprintf(path,sizeof path,"%s/%s",prefix,c->name);
+        else          snprintf(path,sizeof path,"%s",c->name);
+        if(c->is_dir) ser_dir(c, path, b, count);
+        else { unsigned pl=(unsigned)strlen(path); buf_u16(b,pl); buf_put(b,path,pl); buf_u32(b,c->size); buf_put(b,c->data?c->data:(const unsigned char*)"",c->size); (*count)++; }
+    }
+}
+void fs_sync(void){
+    if(!g_disk || !g_home) return;
+    Buf b={0,0,0}; int count=0;
+    ser_dir(g_home, "", &b, &count);
+    unsigned char sb[512]; memset(sb,0,512);
+    memcpy(sb,"LZF1",4); unsigned len=b.len; memcpy(sb+4,&len,4); memcpy(sb+8,&count,4);
+    ata_write(0,sb);
+    unsigned secs=(b.len+511)/512;
+    for(unsigned i=0;i<secs;i++){ unsigned char s[512]; memset(s,0,512); unsigned n=b.len-i*512; if(n>512)n=512; memcpy(s,b.p+i*512,n); ata_write(1+i,s); }
+    if(b.p) free(b.p);
+}
+static void fs_load(void){
+    if(!g_disk || !g_home) return;
+    unsigned char sb[512]; ata_read(0,sb);
+    if(memcmp(sb,"LZF1",4)!=0) return;
+    unsigned len,count; memcpy(&len,sb+4,4); memcpy(&count,sb+8,4);
+    if(len==0 || len>8u*1024*1024) return;
+    unsigned secs=(len+511)/512;
+    unsigned char *blob=malloc(secs*512); if(!blob) return;
+    for(unsigned i=0;i<secs;i++) ata_read(1+i, blob+i*512);
+    unsigned off=0;
+    for(unsigned k=0;k<count && off+2<=len;k++){
+        unsigned pl=blob[off]|(blob[off+1]<<8); off+=2;
+        if(pl>=512 || off+pl>len) break;
+        char path[512]; memcpy(path,blob+off,pl); path[pl]=0; off+=pl;
+        if(off+4>len) break;
+        unsigned dl; memcpy(&dl,blob+off,4); off+=4;
+        if(off+dl>len) break;
+        char full[600]; snprintf(full,sizeof full,"/home/%s",path);
+        VNode *f=vn_open_write(full,1);
+        if(f && dl){ vn_grow(f,dl+1); memcpy(f->data,blob+off,dl); f->size=dl; f->data[dl]=0; }
+        off+=dl;
+    }
+    free(blob);
 }
 
 struct _LZ_FILE { int kind; VNode *vn; unsigned pos; int writing; };  /* 0..2=std, 3=vfs file */
@@ -557,7 +659,7 @@ FILE *fopen(const char *path, const char *mode){
     FILE *f=malloc(sizeof(FILE)); if(!f) return 0;
     f->kind=3; f->vn=vn; f->pos=pos; f->writing=writing; return f;
 }
-int fclose(FILE *f){ if(f && !is_std(f)) free(f); return 0; }
+int fclose(FILE *f){ int w = f && !is_std(f) && f->writing; if(f && !is_std(f)) free(f); if(w) fs_sync(); return 0; }
 FILE *popen(const char *c, const char *m){ (void)c;(void)m; return 0; }
 int pclose(FILE *f){ (void)f; return -1; }
 
@@ -593,6 +695,7 @@ static int vn_unlink(const char *p){
     else for(VNode *c=par->child;c;c=c->next) if(c->next==n){ c->next=n->next; break; }
     if(n->data) free(n->data);
     free(n);
+    fs_sync();
     return 0;
 }
 int rmdir(const char *p){ return vn_unlink(p); }
@@ -609,14 +712,14 @@ int stat(const char *p, struct stat *b){
 int mkdir(const char *p, mode_t m){
     (void)m; char leaf[64]; VNode *par=vn_parent(p,leaf,sizeof leaf,1);
     if(!par || vn_child(par,leaf)) return -1;
-    VNode *d=vn_new(leaf,1); if(!d) return -1; vn_add(par,d); return 0;
+    VNode *d=vn_new(leaf,1); if(!d) return -1; vn_add(par,d); fs_sync(); return 0;
 }
 int rename(const char *o, const char *nw){
     VNode *n=vn_resolve(o); if(!n) return -1;
     char leaf[64]; VNode *np=vn_parent(nw,leaf,sizeof leaf,1); if(!np) return -1;
     VNode *par=n->parent;
     if(par){ if(par->child==n) par->child=n->next; else for(VNode*c=par->child;c;c=c->next) if(c->next==n){ c->next=n->next; break; } }
-    strncpy(n->name,leaf,sizeof(n->name)-1); n->name[sizeof(n->name)-1]=0; vn_add(np,n); return 0;
+    strncpy(n->name,leaf,sizeof(n->name)-1); n->name[sizeof(n->name)-1]=0; vn_add(np,n); fs_sync(); return 0;
 }
 struct _LZ_DIR { VNode *cur; struct dirent ent; };
 DIR *opendir(const char *n){ VNode *d=(n&&n[0])?vn_resolve(n):g_cwd; if(!d||!d->is_dir) return 0; DIR *dp=malloc(sizeof(DIR)); if(dp) dp->cur=d->child; return dp; }

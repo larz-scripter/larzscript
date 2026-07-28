@@ -51,14 +51,13 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   console. QEMU's `-kernel` is 32-bit-only, so 64-bit kernels boot via the GRUB
   ISO — the same path VirtualBox / real hardware use.
 - Milestones ✅: boot → long mode → interpreter on bare metal → RAM filesystem →
-  PS/2 keyboard + scrolling VGA (local I/O) → **a writable filesystem +
-  `larzsh` running on the kernel = SELF-HOSTING.** The Stage 0 shell runs
-  unmodified on our own kernel: `mkdir`/`cd`/`write`/`cat`/`ls`/`rm` against a
-  real in-memory directory tree, money-native compute wallet and all. The
-  shipped ISO boots the demo, then the shell.
-- Next: **disk-backed storage** (ATA/AHCI + an on-disk filesystem) so files
-  survive a reboot; then interrupt-driven input, more drivers, and `init.lz`
-  managing the system. The userland is already 100% Larzscript.
+  PS/2 keyboard + scrolling VGA (local I/O) → writable filesystem + `larzsh` =
+  self-hosting → **an ATA disk driver + LarzFS = PERSISTENT STORAGE.** Files
+  under `/home` (including the money-native compute wallet) survive reboots:
+  verified booting twice against one disk — the file and the balance came back.
+- Next: interrupt-driven input, a proper on-disk filesystem (directories/larger
+  files), more drivers (timer, RTC clock, framebuffer graphics), and `init.lz`
+  managing services. The userland is already 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most

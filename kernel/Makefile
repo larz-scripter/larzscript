@@ -71,8 +71,21 @@ run: iso
 	$(QEMU) -m 128 -cdrom larzos.iso -display none -serial stdio -monitor none -no-reboot \
 	        -device isa-debug-exit,iobase=0xf4,iosize=0x04
 
+# Two-boot persistence demo: write a file to /home, reboot, read it back.
+persist:
+	$(MAKE) clean >/dev/null 2>&1; $(MAKE) EXTRA=-DLARZ_SHELL >/dev/null && $(MAKE) iso >/dev/null
+	dd if=/dev/zero of=disk.img bs=1M count=16 2>/dev/null
+	@echo "--- boot 1: write /home/note.txt, then exit ---"
+	@( sleep 6; printf 'cd /home\nwrite note.txt hello-from-a-previous-boot\nexit\n'; sleep 2 ) | \
+	  timeout 60 $(QEMU) -m 128 -cdrom larzos.iso -hda disk.img -display none -serial stdio \
+	    -monitor none -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 2>/dev/null | tail -2
+	@echo "--- boot 2: same disk, read it back ---"
+	@( sleep 6; printf 'cat /home/note.txt\nexit\n'; sleep 2 ) | \
+	  timeout 60 $(QEMU) -m 128 -cdrom larzos.iso -hda disk.img -display none -serial stdio \
+	    -monitor none -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 2>/dev/null | grep -A1 "cat /home"
+
 clean:
-	rm -f $(OBJS) $(KERNEL) larzos.iso ramfs_gen.c
+	rm -f $(OBJS) $(KERNEL) larzos.iso ramfs_gen.c disk.img
 	rm -rf iso
 
 .PHONY: all iso test run clean
