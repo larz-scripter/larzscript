@@ -1,0 +1,107 @@
+# larzpkg - the Larzscript package manager, written in Larzscript itself.
+#
+# Installs packages from a registry into ~/.larzscript/lib, where `import "name"`
+# finds them. A registry is a plain text file of `name  git-url` lines; packages
+# are git repos with a main.lz (or <name>.lz) at their root.
+#
+#   larzscript larzpkg.lz install <name>
+#   larzscript larzpkg.lz list
+#   larzscript larzpkg.lz remove <name>
+#   larzscript larzpkg.lz search <term>
+
+let HOME = env("HOME", ".")
+let LIB = HOME + "/.larzscript/lib"
+let REGISTRY_URL = "https://raw.githubusercontent.com/larz-scripter/larzscript/main/packages/registry.txt"
+
+# Fetch the registry and parse it into a {name: url} dict.
+fn load_registry() {
+  let tmp = "/tmp/larzpkg_registry.txt"
+  run("curl -fsSL " + REGISTRY_URL + " -o " + tmp + " 2>/dev/null")
+  let reg = {}
+  if not file_exists(tmp) {
+    print("warning: could not reach the registry (offline?)")
+    return reg
+  }
+  for line in read_file(tmp).split("\n") {
+    let t = line.strip()
+    if len(t) == 0 or t[0] == "#" { continue }
+    let parts = [p for p in t.split(" ") if p != ""]
+    if len(parts) >= 2 { reg[parts[0]] = parts[1] }
+  }
+  return reg
+}
+
+fn install(name) {
+  let reg = load_registry()
+  if not reg.has(name) {
+    print("package '" + name + "' not found in the registry")
+    print("run 'larzpkg search' to see what's available")
+    return
+  }
+  let url = reg[name]
+  run("mkdir -p " + LIB)
+  let dest = LIB + "/" + name
+  run("rm -rf " + dest)
+  print("installing " + name + " from " + url + " ...")
+  let rc = run("git clone --depth 1 --quiet " + url + " " + dest)
+  if rc == 0 {
+    print("installed " + name + "  ->  " + dest)
+    print("use it with:  import \"" + name + "\"")
+  } else {
+    print("failed to install " + name + " (is git installed and the repo public?)")
+  }
+}
+
+fn list_installed() {
+  if not file_exists(LIB) {
+    print("(no packages installed)")
+    return
+  }
+  let names = listdir(LIB)
+  if len(names) == 0 { print("(no packages installed)"); return }
+  print("installed packages (" + str(len(names)) + "):")
+  for name in sorted(names) { print("  " + name) }
+}
+
+fn remove_pkg(name) {
+  let dest = LIB + "/" + name
+  if file_exists(dest) {
+    run("rm -rf " + dest)
+    print("removed " + name)
+  } else {
+    print("not installed: " + name)
+  }
+}
+
+fn search(term) {
+  let reg = load_registry()
+  let hits = 0
+  for name in sorted(keys(reg)) {
+    if term == "" or name.contains(term) {
+      print("  " + name.ljust(20) + reg[name])
+      hits = hits + 1
+    }
+  }
+  if hits == 0 { print("(no matching packages)") }
+}
+
+# ---- dispatch ----
+fn usage() {
+  print("larzpkg - the Larzscript package manager")
+  print("usage:")
+  print("  larzscript larzpkg.lz install <name>")
+  print("  larzscript larzpkg.lz remove <name>")
+  print("  larzscript larzpkg.lz list")
+  print("  larzscript larzpkg.lz search [term]")
+}
+
+if len(args) == 0 {
+  usage()
+} else {
+  let cmd = args[0]
+  if cmd == "install" and len(args) >= 2 { install(args[1]) }
+  else if cmd == "remove" and len(args) >= 2 { remove_pkg(args[1]) }
+  else if cmd == "list" { list_installed() }
+  else if cmd == "search" { search(len(args) >= 2 ? args[1] : "") }
+  else { usage() }
+}

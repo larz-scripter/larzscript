@@ -1,0 +1,5 @@
+# Larzscript package registry - `name  git-url` per line.
+# Install with:  larzscript tools/larzpkg.lz install <name>
+# Add your package by opening a PR that appends a line here.
+mathx  https://github.com/larz-scripter/lz-mathx
+greet  https://github.com/larz-scripter/lz-greet

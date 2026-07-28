@@ -42,12 +42,17 @@
  * AddressSanitizer with the GC forced on every statement. Zero third-party
  * dependencies (libc only).
  */
+#define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <setjmp.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
 
 /* ===================== small helpers ===================== */
 static void *xmalloc(size_t n){ void *p = malloc(n); if(!p){ fprintf(stderr,"out of memory\n"); exit(2);} return p; }
@@ -833,6 +838,40 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
 
 static Value call_value(Interp *ip, Value callee, Value *args, int nargs);
 
+/* ---- import resolution: relative first, then the package search path ---- *
+ * Search dirs: $LARZSCRIPT_PATH (colon-separated), then ~/.larzscript/lib, then
+ * ./lz_modules. A bare name like "coolmath" also matches coolmath.lz and the
+ * package layout coolmath/coolmath.lz or coolmath/main.lz. */
+static int _lz_isfile(const char *p){ struct stat st; return stat(p,&st)==0 && S_ISREG(st.st_mode); }
+static int _lz_try(const char *cand, char *out, size_t outsz){
+  if(!_lz_isfile(cand)) return 0;
+  char *rp=realpath(cand,NULL); if(rp){ snprintf(out,outsz,"%s",rp); free(rp); } else snprintf(out,outsz,"%s",cand);
+  return 1;
+}
+static int _lz_indir(const char *dir, const char *path, int has_ext, char *out, size_t outsz){
+  char cand[4096];
+  snprintf(cand,sizeof cand,"%s/%s", dir, path); if(_lz_try(cand,out,outsz)) return 1;
+  if(!has_ext){
+    snprintf(cand,sizeof cand,"%s/%s.lz", dir, path); if(_lz_try(cand,out,outsz)) return 1;
+    const char *base=strrchr(path,'/'); base=base?base+1:path;
+    snprintf(cand,sizeof cand,"%s/%s/%s.lz", dir, path, base); if(_lz_try(cand,out,outsz)) return 1;
+    snprintf(cand,sizeof cand,"%s/%s/main.lz", dir, path); if(_lz_try(cand,out,outsz)) return 1;
+  }
+  return 0;
+}
+static int resolve_import(const char *path, const char *basedir, char *out, size_t outsz){
+  int has_ext = strstr(path,".lz")!=NULL;
+  char cand[4096];
+  if(path[0]=='/'){ if(_lz_try(path,out,outsz)) return 1; }
+  else { snprintf(cand,sizeof cand,"%s/%s", basedir?basedir:".", path); if(_lz_try(cand,out,outsz)) return 1; }
+  const char *lp=getenv("LARZSCRIPT_PATH");
+  if(lp && *lp){ char buf[8192]; snprintf(buf,sizeof buf,"%s",lp); char *save=NULL; for(char *d=strtok_r(buf,":",&save); d; d=strtok_r(NULL,":",&save)) if(_lz_indir(d,path,has_ext,out,outsz)) return 1; }
+  const char *home=getenv("HOME");
+  if(home){ char dir[4096]; snprintf(dir,sizeof dir,"%s/.larzscript/lib",home); if(_lz_indir(dir,path,has_ext,out,outsz)) return 1; }
+  if(_lz_indir("lz_modules",path,has_ext,out,outsz)) return 1;
+  return 0;
+}
+
 static Value method_call(Interp *ip, Value obj, const char *name, Value *args, int nargs){
       if(obj.t==V_MODULE){
         Value *fn=env_find(obj.mod, name);
@@ -1214,11 +1253,9 @@ static void exec(Interp *ip, Node *n, Env *env){
       return;
     }
     case N_IMPORT: {
-      char full[4096];
-      if(n->str[0]=='/') snprintf(full,sizeof full,"%s",n->str);
-      else snprintf(full,sizeof full,"%s/%s", ip->basedir?ip->basedir:".", n->str);
       char resolved[4096];
-      { char *rp=realpath(full,NULL); if(rp){ snprintf(resolved,sizeof resolved,"%s",rp); free(rp); } else snprintf(resolved,sizeof resolved,"%s",full); }
+      if(!resolve_import(n->str, ip->basedir, resolved, sizeof resolved))
+        runtime_error(ip,"ImportError","cannot find module '%s' (searched relative, $LARZSCRIPT_PATH, ~/.larzscript/lib, ./lz_modules)", n->str);
       const char *alias=n->name; char abuf[256];
       if(!alias){ const char *base=strrchr(n->str,'/'); base=base?base+1:n->str; snprintf(abuf,sizeof abuf,"%s",base); char *dot=strrchr(abuf,'.'); if(dot)*dot=0; alias=abuf; }
       for(int i=0;i<ip->nmod;i++) if(strcmp(ip->modcache[i].path,resolved)==0){ env_define(env, alias, ip->modcache[i].val); return; }
@@ -1384,6 +1421,19 @@ static Value bi_sign(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"La
 static Value bi_clamp(Interp *ip, Value *a, int n){ if(n!=3) runtime_error(ip,"LarzTypeError","clamp() expects a value, low and high"); if(value_compare(a[0],a[1])<0) return a[1]; if(value_compare(a[0],a[2])>0) return a[2]; return a[0]; }
 static Value bi_list(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","list() expects one argument"); List *r=list_new(); if(a[0].t==V_LIST){ for(int i=0;i<a[0].list->n;i++) list_push(r,a[0].list->items[i]); } else if(a[0].t==V_DICT){ for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].key); } else if(a[0].t==V_STR){ for(const char *p=a[0].str;*p;p++) list_push(r,V_string(xstrndup(p,1))); } else runtime_error(ip,"LarzTypeError","list() expects a list, dict or string"); return V_list(r); }
 static Value bi_dict(Interp *ip, Value *a, int n){ Dict *d=dict_new(); if(n==0) return V_dict(d); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","dict() expects a list of [key, value] pairs"); for(int i=0;i<a[0].list->n;i++){ Value pr=a[0].list->items[i]; if(pr.t!=V_LIST||pr.list->n!=2) runtime_error(ip,"LarzTypeError","dict() pairs must be [key, value] lists"); dict_set(d, pr.list->items[0], pr.list->items[1]); } return V_dict(d); }
+/* ---- OS / system builtins (general-purpose scripting) ---- */
+static Value bi_env(Interp *ip, Value *a, int n){ if(n<1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","env() expects a name"); char *v=getenv(a[0].str); if(v) return V_string(xstrdup(v)); return n>=2?a[1]:V_nil(); }
+static Value bi_run(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","run() expects a command string"); int rc=system(a[0].str); return V_number((double)(rc==-1?-1:(rc>>8)&0xff)); }
+static Value bi_capture(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","capture() expects a command string"); FILE *f=popen(a[0].str,"r"); if(!f) runtime_error(ip,"IOError","could not run command"); size_t cap=1<<16,len=0; char *b=xmalloc(cap); size_t r; while((r=fread(b+len,1,cap-len,f))>0){ len+=r; if(len==cap){ cap*=2; b=realloc(b,cap);} } b[len]=0; pclose(f); return V_string(b); }
+static Value bi_cwd(Interp *ip, Value *a, int n){ (void)a;(void)n; char buf[4096]; if(!getcwd(buf,sizeof buf)) runtime_error(ip,"IOError","cannot get cwd"); return V_string(xstrdup(buf)); }
+static Value bi_chdir(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","chdir() expects a path"); return V_bool(chdir(a[0].str)==0); }
+static Value bi_listdir(Interp *ip, Value *a, int n){ const char *path=(n>=1&&a[0].t==V_STR)?a[0].str:"."; DIR *d=opendir(path); if(!d) runtime_error(ip,"IOError","cannot list directory '%s'", path); List *r=list_new(); struct dirent *e; while((e=readdir(d))){ if(strcmp(e->d_name,".")==0||strcmp(e->d_name,"..")==0) continue; list_push(r,V_string(xstrdup(e->d_name))); } closedir(d); return V_list(r); }
+static Value bi_mkdir(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","mkdir() expects a path"); return V_bool(mkdir(a[0].str,0755)==0); }
+static Value bi_remove(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","remove() expects a path"); return V_bool(remove(a[0].str)==0); }
+static Value bi_rename(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","rename() expects two paths"); return V_bool(rename(a[0].str,a[1].str)==0); }
+static Value bi_time(Interp *ip, Value *a, int n){ (void)ip;(void)a;(void)n; return V_number((double)time(NULL)); }
+static Value bi_clock(Interp *ip, Value *a, int n){ (void)ip;(void)a;(void)n; struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts); return V_number((double)ts.tv_sec + ts.tv_nsec/1e9); }
+static Value bi_sleep(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","sleep() expects a number of seconds"); double s=a[0].num; if(s>0) usleep((useconds_t)(s*1e6)); return V_nil(); }
 
 static Builtin B_print = {"print", bi_print};
 static Builtin B_money = {"money", bi_money};
@@ -1400,18 +1450,36 @@ static Builtin B_map={"map",bi_map}, B_filter={"filter",bi_filter}, B_reduce={"r
 static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_write_file={"write_file",bi_write_file}, B_append_file={"append_file",bi_append_file}, B_file_exists={"file_exists",bi_file_exists}, B_exit={"exit",bi_exit};
 static Builtin B_all={"all",bi_all}, B_any={"any",bi_any}, B_count={"count",bi_count}, B_unique={"unique",bi_unique};
 static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct}, B_gcd={"gcd",bi_gcd}, B_factorial={"factorial",bi_factorial}, B_sign={"sign",bi_sign}, B_clamp={"clamp",bi_clamp}, B_list={"list",bi_list}, B_dict={"dict",bi_dict};
+static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
 
 /* ===================== REPL ===================== */
+/* net open brackets in s, ignoring string contents and comments (for the REPL) */
+static int bracket_depth(const char *s){
+  int depth=0, i=0;
+  while(s[i]){
+    char c=s[i];
+    if(c=='#'){ while(s[i] && s[i]!='\n') i++; continue; }
+    if(c=='"'){ i++; while(s[i] && s[i]!='"'){ if(s[i]=='\\' && s[i+1]) i+=2; else i++; } if(s[i]) i++; continue; }
+    if(c=='{'||c=='('||c=='[') depth++;
+    else if(c=='}'||c==')'||c==']') depth--;
+    i++;
+  }
+  return depth;
+}
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v1.7.0) - type statements; Ctrl-D to exit.\n");
+  static char buf[1<<16]; buf[0]=0;
+  printf("Larzscript native REPL (v1.8.0) - type statements; Ctrl-D to exit.\n"
+         "Definitions can span multiple lines; the '..... ' prompt means more is expected.\n");
   for(;;){
-    printf("larz> "); fflush(stdout);
+    printf(buf[0] ? "..... " : "larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
-    /* re-arm the error handlers for each line so an error doesn't exit */
-    if(setjmp(g_err)){ fprintf(stderr,"SyntaxError: %s\n", g_errmsg); continue; }
-    if(setjmp(ip->jb)){ fprintf(stderr,"%s: %s\n", ip->errname, ip->errmsg); continue; }
-    Token *toks = lex(line);
+    if(strlen(buf)+strlen(line)+1 >= sizeof buf){ fprintf(stderr,"input too long\n"); buf[0]=0; continue; }
+    strcat(buf, line);
+    if(bracket_depth(buf) > 0) continue;            /* keep reading until brackets balance */
+    if(setjmp(g_err)){ fprintf(stderr,"SyntaxError: %s\n", g_errmsg); buf[0]=0; continue; }
+    if(setjmp(ip->jb)){ fprintf(stderr,"%s: %s\n", ip->errname, ip->errmsg); buf[0]=0; continue; }
+    Token *toks = lex(buf);
     Node *prog = parse_program(toks);
     ip->returning = 0;
     for(int i=0;i<prog->nkids;i++){
@@ -1423,6 +1491,7 @@ static void repl(Interp *ip){
         exec(ip, st, ip->globals);
       }
     }
+    buf[0]=0;
   }
 }
 
@@ -1490,6 +1559,18 @@ static void define_builtins(Env *g){
   env_define(g, "clamp",  V_builtin(&B_clamp));
   env_define(g, "list",   V_builtin(&B_list));
   env_define(g, "dict",   V_builtin(&B_dict));
+  env_define(g, "env",    V_builtin(&B_env));
+  env_define(g, "run",    V_builtin(&B_run));
+  env_define(g, "capture",V_builtin(&B_capture));
+  env_define(g, "cwd",    V_builtin(&B_cwd));
+  env_define(g, "chdir",  V_builtin(&B_chdir));
+  env_define(g, "listdir",V_builtin(&B_listdir));
+  env_define(g, "mkdir",  V_builtin(&B_mkdir));
+  env_define(g, "remove", V_builtin(&B_remove));
+  env_define(g, "rename", V_builtin(&B_rename));
+  env_define(g, "time",   V_builtin(&B_time));
+  env_define(g, "clock",  V_builtin(&B_clock));
+  env_define(g, "sleep",  V_builtin(&B_sleep));
 }
 
 static void install_builtins(Interp *ip){
@@ -1619,7 +1700,7 @@ int main(int argc, char **argv){
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.7.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.8.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
