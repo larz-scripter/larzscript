@@ -58,6 +58,10 @@ Available packages:
 | **args** | command-line argument parsing |
 | **color** | ANSI terminal colors |
 | **test** | a tiny test framework (assert/report) |
+| **time** | time & duration helpers (`humanize`, stopwatch) |
+| **string** | string helpers (center, wrap, reverse, snake, ...) |
+| **random** | a small seeded PRNG (deterministic) |
+| **fs** | filesystem helpers (read/write/ls/copy/...) |
 | **mathx** | small math helpers (mean, fib, primes) |
 | **greet** | a tiny example package |
 
