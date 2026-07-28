@@ -56,11 +56,14 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   package manager (`pkg`).** Larzscript packages install onto the running OS and
   extend it (new commands + libraries), persisting across reboots — LarzOS grows
   by installing packages, the way a Linux server does.
-- Next: a **timer + RTC clock** (real `time()`/`sleep()`), interrupt-driven
-  input, a bigger on-disk filesystem, **networking** (a NIC driver + a minimal
-  TCP/IP stack) so packages can be fetched from a remote repo and LarzOS can act
-  as a real server, and `init.lz` managing services. Userland stays 100%
-  Larzscript.
+- Also ✅: **a real clock** (RTC wall-time + PIT-calibrated TSC → `time()`/
+  `clock()`/`sleep()`, `date`/`uptime`), and **networking** — an RTL8139 driver
+  + ARP/IPv4/ICMP stack that pings the gateway, exposed to Larzscript via virtual
+  `/net/` files (`netstat`, `ping`). LarzOS talks to the network on bare metal.
+- Next: **TCP** (so `pkg` can fetch from a remote repo and a Larzscript HTTP
+  server can run — a real, money-native web server on bare metal), interrupt-
+  driven I/O, a bigger on-disk filesystem, and `init.lz` managing services.
+  Userland stays 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most

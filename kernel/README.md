@@ -58,6 +58,25 @@ larzos:/ $ todo list
 After a reboot (with a disk attached), `todo` is still installed and its list is
 intact. New packages drop into `/repo` (baked) — or, later, a network repo.
 
+### Clock & networking
+
+A CMOS/RTC driver gives real wall-clock time and a PIT-calibrated TSC gives a
+monotonic clock, so `time()`/`clock()`/`sleep()` work and `date`/`uptime` are
+real. A polled **RTL8139** driver plus a tiny **ARP/IPv4/ICMP** stack let LarzOS
+talk to the network — exposed to Larzscript through virtual `/net/` files:
+
+```
+larzos:/ $ netstat
+link: up
+mac: 52:54:00:12:34:56
+ip: 10.0.2.15
+larzos:/ $ ping 10.0.2.2
+10.0.2.2: reply
+```
+
+Boot with a NIC in QEMU: `-netdev user,id=n0 -device rtl8139,netdev=n0`
+(VirtualBox: set the adapter type to PCnet/PCI or, ideally, add an RTL8139).
+
 Build variants: default runs `/boot.lz` then halts (deterministic, for
 `make test`); `EXTRA=-DLARZ_SHELL` = demo then the shell (shipped);
 `EXTRA=-DLARZ_DEMO_REPL` = demo then a raw `larz>` REPL; `EXTRA=-DLARZ_REPL` =
