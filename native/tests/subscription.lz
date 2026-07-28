@@ -1,0 +1,8 @@
+wallet u = $30.00
+wallet plat
+wallet creator
+paywall pro = $9.00 / month to plat
+subscribe u to pro
+require u has pro, "must be pro"
+pay $9.00 * 0.7 from plat to creator
+print(u has pro, u.balance, plat.balance, creator.balance)

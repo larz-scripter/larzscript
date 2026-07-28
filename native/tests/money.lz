@@ -1,0 +1,6 @@
+print($3.50 + $2.00)
+print($9.00 * 0.8)
+wallet a = $10.00
+wallet b
+pay $3.50 from a to b
+print(a.balance, b.balance)

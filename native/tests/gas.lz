@@ -1,0 +1,4 @@
+fn work() gas 100 { return "done" }
+print(work())
+print(work())
+print(work())
