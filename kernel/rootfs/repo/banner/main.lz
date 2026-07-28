@@ -1,0 +1,10 @@
+# banner - print text inside a box.  usage: banner TEXT...
+fn run(args) {
+  let text = "  " + (len(args) > 0 ? join(args, " ") : "banner") + "  "
+  let bar = "+"
+  for i in range(len(text)) { bar = bar + "-" }
+  bar = bar + "+"
+  print(bar)
+  print("|" + text + "|")
+  print(bar)
+}

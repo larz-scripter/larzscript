@@ -83,8 +83,9 @@ fn cmd_help() {
   print("  clear           clear the screen")
   print("  balance         show your compute wallet balance")
   print("  earn N          credit N cents of compute (demo)")
-  print("  pkg ARGS...     run the Larzscript package manager (larzpkg)")
+  print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
+  print("  <name> ARGS     run an installed package (e.g. banner, todo, figlet)")
   print("  about           about LarzOS")
   print("  help            this help")
   print("  exit            leave LarzOS")
@@ -182,27 +183,21 @@ fn run_command(argv, state) {
     print("credited " + fmt_money(add) + "; balance " + fmt_money(state["cents"]))
     return state
   }
-  if cmd == "pkg" or cmd == "larzpkg" {
-    let pm = env("HOME") + "/.larzscript/larzpkg.lz"
-    if not file_exists(pm) { print("larzsh: package manager not installed (see install.sh)"); return state }
-    run("larzscript " + pm + " " + join(rest, " "))
-    return state
-  }
-
-  # external program: metered - each launch costs 1 cent of compute, fails closed
+  # Any other word is a command: a Larzscript package (built in, or installed via
+  # `pkg`) that defines `fn run(args)`, imported and executed in-process. Metered
+  # - each run costs 1 cent of compute and fails closed.
   if state["cents"] < 1 {
     print("larzsh: out of compute credit - run 'earn 100' to top up")
     return state
   }
-  # LarzOS utilities are themselves Larzscript programs in the bin directory:
-  # if bin/<cmd>.lz exists, run it with the interpreter. (bin is an absolute
-  # path resolved at startup, so it survives `cd`.)
-  let prog = state["bin"] + "/" + cmd + ".lz"
-  let rc = 0
-  if file_exists(prog) { rc = run("larzscript " + prog + " " + join(rest, " ")) }
-  else { rc = run(join(argv, " ")) }
   state["cents"] = state["cents"] - 1
-  if rc != 0 { print("larzsh: '" + cmd + "' exited with code " + str(rc)) }
+  try {
+    import cmd as _mod
+    _mod.run(rest)
+  } catch e {
+    if e["type"] == "ImportError" { print("larzsh: " + cmd + ": command not found  (try 'pkg list')") }
+    else { print("larzsh: " + cmd + ": " + str(e["message"])) }
+  }
   return state
 }
 

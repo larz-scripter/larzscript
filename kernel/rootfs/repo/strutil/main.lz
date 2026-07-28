@@ -1,0 +1,17 @@
+# strutil - handy string helpers.  usage: import "strutil" as s
+fn slug(text) {
+  let out = ""
+  for ch in text.lower() {
+    if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") { out = out + ch }
+    else if len(out) > 0 and out[len(out)-1] != "-" { out = out + "-" }
+  }
+  if len(out) > 0 and out[len(out)-1] == "-" { out = out[0:len(out)-1] }
+  return out
+}
+fn titlecase(text) {
+  let out = []
+  for w in text.split(" ") { if len(w) > 0 { out.push(w[0:1].upper() + w[1:].lower()) } }
+  return join(out, " ")
+}
+fn repeat(text, n) { let out = ""; for i in range(n) { out = out + text } return out }
+fn run(args) { print("strutil is a library. Use: import \"strutil\" as s") }

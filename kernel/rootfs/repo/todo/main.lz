@@ -1,0 +1,30 @@
+# todo - a persistent to-do list stored in /home/.todo
+let FILE = "/home/.todo"
+fn _load() {
+  if not file_exists(FILE) { return [] }
+  let items = []
+  for line in read_file(FILE).split("\n") { if line.strip() != "" { items.push(line) } }
+  return items
+}
+fn _save(items) { write_file(FILE, join(items, "\n")) }
+fn run(args) {
+  let items = _load()
+  if len(args) == 0 or args[0] == "list" {
+    if len(items) == 0 { print("(no todos)"); return }
+    let i = 1
+    for it in items { print(str(i) + ". " + it); i = i + 1 }
+    return
+  }
+  let cmd = args[0]
+  if cmd == "add" {
+    items.push(join(args[1:], " ")); _save(items); print("added: " + join(args[1:], " "))
+  } else if cmd == "done" {
+    let n = int(args[1])
+    if n >= 1 and n <= len(items) {
+      let out = []; let i = 1
+      for it in items { if i != n { out.push(it) } i = i + 1 }
+      _save(out); print("done: item " + str(n))
+    } else { print("no such item: " + str(n)) }
+  } else if cmd == "clear" { _save([]); print("cleared") }
+  else { print("usage: todo [list | add TEXT | done N | clear]") }
+}

@@ -672,7 +672,7 @@ char *getenv(const char *n){
     if(strcmp(n,"HOME")==0)            return "/home";
     if(strcmp(n,"USER")==0)            return "larz";
     if(strcmp(n,"SHELL")==0)           return "/larzsh.lz";
-    if(strcmp(n,"LARZSCRIPT_PATH")==0) return "/";   /* baked modules live at root */
+    if(strcmp(n,"LARZSCRIPT_PATH")==0) return "/:/home/.larzpkg";  /* baked + installed packages */
     return 0;
 }
 int system(const char *c){ (void)c; return -1; }   /* no processes on bare metal */

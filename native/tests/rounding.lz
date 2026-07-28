@@ -1,0 +1,8 @@
+print(round(3.14159, 2))
+print(round(2.71828, 3))
+print(round(1234.5678, -2))
+print(round(2.7))
+print(round(9.99, 1))
+print(file_exists("tests"))
+print(file_exists("tests/rounding.lz"))
+print(file_exists("tests/nope.lz"))
