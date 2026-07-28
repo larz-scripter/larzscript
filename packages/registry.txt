@@ -5,3 +5,7 @@ mathx  https://github.com/larz-scripter/lz-mathx
 greet  https://github.com/larz-scripter/lz-greet
 json   https://github.com/larz-scripter/lz-json
 http   https://github.com/larz-scripter/lz-http
+test   https://github.com/larz-scripter/lz-test
+color  https://github.com/larz-scripter/lz-color
+csv    https://github.com/larz-scripter/lz-csv
+args   https://github.com/larz-scripter/lz-args
