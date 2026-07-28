@@ -98,7 +98,8 @@ money (`$` = exact integer cents) · wallets.
 **default parameters** + recursion + closures + lambdas · **gas-metered
 functions** · **`import "file.lz" as m`** (relative paths, cached) · list & dict
 literals · indexing · **slicing** (`a[i:j]`, negatives) · **element assignment**
-(`a[i] = x`, `d[k] = v`) · **f-strings** (`f"hi {name}, {1+2}"`) · `;` separates
+(`a[i] = x`, `d[k] = v`) · **comprehensions** (`[x*x for x in xs if c]`,
+`{k: v for x in xs}`) · **f-strings** (`f"hi {name}, {1+2}"`) · `;` separates
 statements · errors reported **with line numbers** and **catchable**.
 
 **Methods:** list `push`/`pop`/`insert`/`sort`/`reverse`/`contains`/`index` ·

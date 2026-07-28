@@ -1,0 +1,12 @@
+print([x * x for x in range(6)])
+print([x for x in range(10) if x % 2 == 0])
+print([n.upper() for n in ["a", "b", "c"]])
+print({k: k * 2 for k in [1, 2, 3]})
+print({w: len(w) for w in "the cat sat".split(" ")})
+print(sum([n for n in range(101)]))
+print([c for c in "hello" if c != "l"])
+fn double(x) { return x * 2 }
+print([double(n) for n in range(5)])
+let evens = [n for n in range(20) if n % 2 == 0]
+print(evens, len(evens))
+print({n: n * n for n in range(5) if n > 1})

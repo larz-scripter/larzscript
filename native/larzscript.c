@@ -19,6 +19,7 @@
  *   funcs:    functions (default params) + recursion + closures + lambdas;
  *             gas-metered functions
  *   data:     list & dict literals, indexing, slicing a[i:j], element assign a[i]=x
+ *   comprehensions: [x*x for x in xs if c] and {k: v for x in xs if c}
  *   strings:  f-strings  f"hi {name}, {1+2}"
  *   cli:      larzscript file.lz | -e "code" | repl | fmt file.lz
  *             ';' separates statements; `fmt` canonically formats a file
@@ -248,7 +249,7 @@ typedef enum {
   N_IF, N_WHILE, N_BLOCK, N_EXPR, N_PAYWALL, N_SUBSCRIBE,
   N_NUM, N_MONEY, N_STR, N_BOOL, N_NIL, N_NAME, N_BIN, N_UN, N_CALL, N_GET, N_METHOD,
   N_ARRAY, N_INDEX, N_DICT, N_SETINDEX, N_BREAK, N_CONTINUE, N_FOR,
-  N_SLICE, N_TRY, N_THROW, N_FSTR, N_IMPORT, N_TERNARY
+  N_SLICE, N_TRY, N_THROW, N_FSTR, N_IMPORT, N_TERNARY, N_LISTCOMP, N_DICTCOMP
 } NodeKind;
 
 typedef struct Node {
@@ -441,25 +442,32 @@ static Node *primary(Parser *p){
   if(t->type==T_IDENT){ padv(p); Node *n=node(N_NAME); n->name=t->text; return n; }
   if(t->type==T_LP){ padv(p); Node *e=expression(p); expect(p,T_RP,"')'"); return e; }
   if(t->type==T_LBK){
-    padv(p); Node *n=node(N_ARRAY);
-    if(pk(p)->type!=T_RBK){
-      push_kid(n, expression(p));
-      while(pk(p)->type==T_COMMA){ padv(p); if(pk(p)->type==T_RBK) break; push_kid(n, expression(p)); }
+    padv(p);
+    if(pk(p)->type==T_RBK){ padv(p); return node(N_ARRAY); }
+    Node *first=expression(p);
+    if(is_kw(pk(p),"for")){          /* list comprehension: [expr for x in it (if c)?] */
+      padv(p); Node *n=node(N_LISTCOMP); n->a=first; n->name=padv(p)->text;
+      expect_kw(p,"in"); n->b=expression(p);
+      if(is_kw(pk(p),"if")){ padv(p); n->c=expression(p); }
+      expect(p, T_RBK, "']'"); return n;
     }
+    Node *n=node(N_ARRAY); push_kid(n, first);
+    while(pk(p)->type==T_COMMA){ padv(p); if(pk(p)->type==T_RBK) break; push_kid(n, expression(p)); }
     expect(p, T_RBK, "']'");
     return n;
   }
-  if(t->type==T_LB){    /* dict literal: { key: value, ... } */
-    padv(p); Node *n=node(N_DICT);
-    if(pk(p)->type!=T_RB){
-      do {
-        if(pk(p)->type==T_RB) break;
-        Node *k=expression(p);
-        expect(p, T_COLON, "':'");
-        Node *v=expression(p);
-        push_kid(n, k); push_kid(n, v);
-      } while(pk(p)->type==T_COMMA && (padv(p),1));
+  if(t->type==T_LB){    /* dict literal or dict comprehension */
+    padv(p);
+    if(pk(p)->type==T_RB){ padv(p); return node(N_DICT); }
+    Node *k=expression(p); expect(p, T_COLON, "':'"); Node *v=expression(p);
+    if(is_kw(pk(p),"for")){          /* dict comprehension: {k: v for x in it (if c)?} */
+      padv(p); Node *n=node(N_DICTCOMP); n->a=k; n->b=v; n->name=padv(p)->text;
+      expect_kw(p,"in"); n->c=expression(p);
+      if(is_kw(pk(p),"if")){ padv(p); push_kid(n, expression(p)); }
+      expect(p, T_RB, "'}'"); return n;
     }
+    Node *n=node(N_DICT); push_kid(n,k); push_kid(n,v);
+    while(pk(p)->type==T_COMMA){ padv(p); if(pk(p)->type==T_RB) break; Node *kk=expression(p); expect(p,T_COLON,"':'"); Node *vv=expression(p); push_kid(n,kk); push_kid(n,vv); }
     expect(p, T_RB, "'}'");
     return n;
   }
@@ -933,6 +941,41 @@ static Value eval(Interp *ip, Node *n, Env *env){
     }
     case N_FN: { Closure *c=xmalloc(sizeof(Closure)); gc_register(c,GC_CLOSURE); c->decl=n; c->env=env; c->name=n->name; return V_func(c); }
     case N_FSTR: return eval(ip, n->a, env);
+    case N_LISTCOMP: {
+      List *r=list_new(); int tr=ip->ntemp; gc_temp_push(ip,V_list(r));
+      Value it=eval(ip,n->b,env); gc_temp_push(ip,it);
+      int len; Value *arr=NULL; Dict *dd=NULL; const char *sp=NULL;
+      if(it.t==V_LIST){ len=it.list->n; arr=it.list->items; }
+      else if(it.t==V_DICT){ len=it.dict->n; dd=it.dict; }
+      else if(it.t==V_STR){ len=(int)strlen(it.str); sp=it.str; }
+      else { gc_temp_pop(ip,tr); runtime_error(ip,"LarzTypeError","cannot iterate that value"); return V_nil(); }
+      for(int i=0;i<len;i++){
+        Value item = arr?arr[i] : dd?dd->items[i].key : V_string(xstrndup(sp+i,1));
+        Env *child=env_new(env); env_define(child,n->name,item); gc_root_push(ip,child);
+        if(!n->c || truthy(eval(ip,n->c,child))) list_push(r, eval(ip,n->a,child));
+        gc_root_pop(ip);
+      }
+      gc_temp_pop(ip,tr);
+      return V_list(r);
+    }
+    case N_DICTCOMP: {
+      Dict *r=dict_new(); int tr=ip->ntemp; gc_temp_push(ip,V_dict(r));
+      Value it=eval(ip,n->c,env); gc_temp_push(ip,it);
+      Node *cond = n->nkids>0 ? n->kids[0] : NULL;
+      int len; Value *arr=NULL; Dict *dd=NULL; const char *sp=NULL;
+      if(it.t==V_LIST){ len=it.list->n; arr=it.list->items; }
+      else if(it.t==V_DICT){ len=it.dict->n; dd=it.dict; }
+      else if(it.t==V_STR){ len=(int)strlen(it.str); sp=it.str; }
+      else { gc_temp_pop(ip,tr); runtime_error(ip,"LarzTypeError","cannot iterate that value"); return V_nil(); }
+      for(int i=0;i<len;i++){
+        Value item = arr?arr[i] : dd?dd->items[i].key : V_string(xstrndup(sp+i,1));
+        Env *child=env_new(env); env_define(child,n->name,item); gc_root_push(ip,child);
+        if(!cond || truthy(eval(ip,cond,child))){ Value k=eval(ip,n->a,child); Value v=eval(ip,n->b,child); dict_set(r,k,v); }
+        gc_root_pop(ip);
+      }
+      gc_temp_pop(ip,tr);
+      return V_dict(r);
+    }
     case N_TERNARY: return truthy(eval(ip,n->a,env)) ? eval(ip,n->b,env) : eval(ip,n->c,env);
     case N_SLICE: {
       int tr=ip->ntemp;
@@ -1361,7 +1404,7 @@ static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct},
 /* ===================== REPL ===================== */
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v1.6.0) - type statements; Ctrl-D to exit.\n");
+  printf("Larzscript native REPL (v1.7.0) - type statements; Ctrl-D to exit.\n");
   for(;;){
     printf("larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
@@ -1513,6 +1556,10 @@ static void fmt_expr(Node *n, int minprec){
     case N_METHOD: fmt_expr(n->a,11); printf(".%s(", n->name); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i],1); } putchar(')'); break;
     case N_FN: printf("fn"); fmt_params(n); if(n->has_gas) printf(" gas %lld", n->gas);
                printf(" { "); for(int i=0;i<n->b->nkids;i++){ if(i) printf("; "); fmt_oneliner(n->b->kids[i]); } printf(" }"); break;
+    case N_LISTCOMP: putchar('['); fmt_expr(n->a,1); printf(" for %s in ", n->name); fmt_expr(n->b,1);
+                     if(n->c){ printf(" if "); fmt_expr(n->c,1); } putchar(']'); break;
+    case N_DICTCOMP: putchar('{'); fmt_expr(n->a,1); printf(": "); fmt_expr(n->b,1); printf(" for %s in ", n->name); fmt_expr(n->c,1);
+                     if(n->nkids>0){ printf(" if "); fmt_expr(n->kids[0],1); } putchar('}'); break;
     default: printf("<expr>"); break;
   }
   if(paren) putchar(')');
@@ -1572,7 +1619,7 @@ int main(int argc, char **argv){
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.6.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.7.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }

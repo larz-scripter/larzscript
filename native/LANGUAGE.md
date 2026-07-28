@@ -106,6 +106,17 @@ d["b"] = 2           # insert / update
 d.keys(); d.values(); d.has("a"); d.get("z", 0); d.remove("a")
 ```
 
+### Comprehensions
+
+```
+[x * x for x in range(6)]                 # [0, 1, 4, 9, 16, 25]
+[n for n in range(20) if n % 2 == 0]      # filter with `if`
+[w.upper() for w in "a b c".split(" ")]   # any expression, incl. calls
+{k: k * k for k in range(5) if k > 1}     # dict comprehension
+```
+
+A comprehension has one `for x in iterable` clause and an optional `if`.
+
 ---
 
 ## 7. Strings
