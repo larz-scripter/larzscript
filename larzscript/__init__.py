@@ -29,8 +29,8 @@ from larzscript.errors import (LarzScriptError, LarzSyntaxError, LarzRuntimeErro
                                LarzNameError, LarzTypeError, MoneyError,
                                RequireError, OutOfGasError)
 
-__version__ = "0.2.0"
-__all__ = ["run", "parse", "tokenize", "Interpreter", "Money", "Wallet",
+__version__ = "0.3.0"
+__all__ = ["run", "compile_source", "parse", "tokenize", "Interpreter", "Money", "Wallet",
            "Transaction", "LarzScriptError", "LarzSyntaxError", "LarzRuntimeError",
            "LarzNameError", "LarzTypeError", "MoneyError", "RequireError",
            "OutOfGasError"]
@@ -41,9 +41,27 @@ def parse(source):
     return _parse(tokenize(source))
 
 
-def run(source, gas=None, output=None):
-    """Run Larzscript source. Returns the Interpreter (inspect .ledger, .output,
-    .get(name), .gas_used). ``gas`` sets a metering budget (None = unlimited)."""
+def compile_source(source):
+    """Parse and compile Larzscript source to a bytecode Chunk (the VM backend)."""
+    from larzscript.compiler import compile_program
+    return compile_program(parse(source))
+
+
+def run(source, gas=None, output=None, backend="tree"):
+    """Run Larzscript source and return the engine (inspect .ledger, .output,
+    .get(name), .gas_used). ``gas`` sets a metering budget (None = unlimited).
+
+    ``backend="tree"`` (default) walks the AST; ``backend="vm"`` compiles to
+    bytecode and runs it on the stack VM. Both produce identical results.
+    """
+    if backend == "vm":
+        from larzscript.vm import VM
+        from larzscript.compiler import compile_program
+        engine = VM(gas=gas, output=output)
+        engine.run(compile_program(parse(source)))
+        return engine
+    if backend != "tree":
+        raise ValueError("backend must be 'tree' or 'vm', got %r" % backend)
     interp = Interpreter(gas=gas, output=output)
     interp.run(parse(source))
     return interp

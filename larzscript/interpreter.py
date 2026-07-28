@@ -1,104 +1,17 @@
 # -*- coding: utf-8 -*-
-"""The Larzscript interpreter - a tree-walking evaluator with money as a value.
+"""The Larzscript tree-walking interpreter (the default backend).
 
-The money-native ideas live here: :class:`Money` (a first-class value in cents),
-:class:`Wallet` (a balance you credit/debit), the ``pay`` statement recording a
-:class:`Transaction` in a ledger, ``require`` as a guardrail, and gas metering on
-functions. Settlement is in-memory here; a real backend (GemVault / LarzChain)
-would implement the same credit/debit/record interface.
+Walks the AST and executes each node, using the shared :mod:`larzscript.runtime`
+for values and semantics. Money, wallets, ``pay``, ``require``, subscriptions and
+gas metering are handled here as node rules.
 """
 
-from larzscript.errors import (LarzNameError, LarzTypeError, MoneyError,
-                               RequireError, OutOfGasError)
+from larzscript.runtime import (Money, Wallet, Paywall, Transaction, Builtin,
+                                Environment, is_num, truthy, stringify,
+                                binop, unary)
+from larzscript.errors import (LarzTypeError, RequireError, OutOfGasError)
 
 __all__ = ["Interpreter", "Money", "Wallet", "Transaction", "Paywall"]
-
-
-# --------------------------------------------------------------------------- #
-#  Values
-# --------------------------------------------------------------------------- #
-
-class Money(object):
-    """An amount of money, stored as an integer number of cents."""
-
-    __slots__ = ("cents",)
-
-    def __init__(self, cents):
-        self.cents = int(round(cents))
-
-    def __add__(self, other):
-        return Money(self.cents + other.cents)
-
-    def __sub__(self, other):
-        return Money(self.cents - other.cents)
-
-    def __eq__(self, other):
-        return isinstance(other, Money) and self.cents == other.cents
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
-
-    def __hash__(self):
-        return hash(("Money", self.cents))
-
-    def __str__(self):
-        c = abs(self.cents)
-        body = "$%d.%02d" % (c // 100, c % 100)
-        return "-" + body if self.cents < 0 else body
-
-    def __repr__(self):
-        return "Money(%d)" % self.cents
-
-
-class Wallet(object):
-    """A named balance you can credit and debit (debiting too much raises)."""
-
-    __slots__ = ("name", "balance")
-
-    def __init__(self, name, balance=None):
-        self.name = name
-        self.balance = balance if balance is not None else Money(0)
-
-    def credit(self, amount):
-        self.balance = self.balance + amount
-
-    def debit(self, amount):
-        if amount.cents > self.balance.cents:
-            raise MoneyError("wallet '%s' has insufficient funds: balance %s, needs %s"
-                             % (self.name, self.balance, amount))
-        self.balance = self.balance - amount
-
-    def __repr__(self):
-        return "Wallet(%r, %s)" % (self.name, self.balance)
-
-
-class Transaction(object):
-    """A recorded money movement between two wallets."""
-
-    __slots__ = ("src", "dst", "amount")
-
-    def __init__(self, src, dst, amount):
-        self.src = src
-        self.dst = dst
-        self.amount = amount
-
-    def __repr__(self):
-        return "Transaction(%s -> %s: %s)" % (self.src, self.dst, self.amount)
-
-
-class Paywall(object):
-    """A subscription product: a price, a period, and the wallet that's paid."""
-
-    __slots__ = ("name", "price", "period", "payee")
-
-    def __init__(self, name, price, period, payee):
-        self.name = name
-        self.price = price
-        self.period = period
-        self.payee = payee
-
-    def __repr__(self):
-        return "Paywall(%r, %s / %s)" % (self.name, self.price, self.period)
 
 
 class _Function(object):
@@ -108,13 +21,8 @@ class _Function(object):
         self.decl = decl
         self.closure = closure
 
-
-class _Builtin(object):
-    __slots__ = ("name", "fn")
-
-    def __init__(self, name, fn):
-        self.name = name
-        self.fn = fn
+    def __repr__(self):
+        return "<fn %s>" % self.decl.name
 
 
 class _Return(Exception):
@@ -122,94 +30,20 @@ class _Return(Exception):
         self.value = value
 
 
-# --------------------------------------------------------------------------- #
-#  Environment
-# --------------------------------------------------------------------------- #
-
-class Environment(object):
-    def __init__(self, parent=None):
-        self.vars = {}
-        self.parent = parent
-
-    def get(self, name):
-        env = self
-        while env is not None:
-            if name in env.vars:
-                return env.vars[name]
-            env = env.parent
-        raise LarzNameError("'%s' is not defined" % name)
-
-    def assign(self, name, value):
-        env = self
-        while env is not None:
-            if name in env.vars:
-                env.vars[name] = value
-                return
-            env = env.parent
-        raise LarzNameError("cannot assign to undefined '%s' (use 'let')" % name)
-
-    def define(self, name, value):
-        self.vars[name] = value
-
-
-# --------------------------------------------------------------------------- #
-#  Helpers
-# --------------------------------------------------------------------------- #
-
-def _is_num(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
-def _truthy(v):
-    if v is None:
-        return False
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, Money):
-        return v.cents != 0
-    if _is_num(v):
-        return v != 0
-    if isinstance(v, str):
-        return len(v) != 0
-    return True
-
-
-def stringify(v):
-    if v is None:
-        return "nil"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, Money):
-        return str(v)
-    if isinstance(v, Wallet):
-        return "<wallet %s: %s>" % (v.name, v.balance)
-    if isinstance(v, Paywall):
-        return "<paywall %s: %s/%s>" % (v.name, v.price, v.period)
-    if isinstance(v, _Function):
-        return "<fn %s>" % v.decl.name
-    if isinstance(v, _Builtin):
-        return "<builtin %s>" % v.name
-    return str(v)
-
-
-# --------------------------------------------------------------------------- #
-#  Interpreter
-# --------------------------------------------------------------------------- #
-
 class Interpreter(object):
-    """Runs a Larzscript program. After :meth:`run`, inspect ``ledger``,
-    ``output`` and ``globals``."""
+    """Runs a Larzscript program by walking the tree. After :meth:`run`, inspect
+    ``ledger``, ``output``, ``gas_used`` and ``.get(name)``."""
 
     def __init__(self, gas=None, output=None):
         self.globals = Environment()
         self.ledger = []
-        self.subscriptions = set()   # {(wallet_name, paywall_name)}
-        self.gas = gas               # None = unlimited
+        self.subscriptions = set()
+        self.gas = gas
         self.gas_used = 0
         self._out = output if output is not None else []
-        self.globals.define("print", _Builtin("print", self._print))
-        self.globals.define("money", _Builtin("money", self._money))
-        self.globals.define("len", _Builtin("len", self._len))
+        self.globals.define("print", Builtin("print", self._print))
+        self.globals.define("money", Builtin("money", self._money))
+        self.globals.define("len", Builtin("len", self._len))
 
     # -- public --
     def run(self, program):
@@ -230,7 +64,7 @@ class Interpreter(object):
         return None
 
     def _money(self, dollars):
-        if not _is_num(dollars):
+        if not is_num(dollars):
             raise LarzTypeError("money() expects a number of dollars")
         return Money(dollars * 100)
 
@@ -273,7 +107,7 @@ class Interpreter(object):
         dst = env.get(node.dst)
         if not isinstance(src, Wallet) or not isinstance(dst, Wallet):
             raise LarzTypeError("pay requires two wallets")
-        src.debit(amount)            # raises MoneyError if insufficient
+        src.debit(amount)
         dst.credit(amount)
         self.ledger.append(Transaction(node.src, node.dst, amount))
 
@@ -293,13 +127,13 @@ class Interpreter(object):
         payee = env.get(plan.payee)
         if not isinstance(payee, Wallet):
             raise LarzTypeError("paywall payee '%s' is not a wallet" % plan.payee)
-        wallet.debit(plan.price)          # charge the subscriber (raises if short)
+        wallet.debit(plan.price)
         payee.credit(plan.price)
         self.ledger.append(Transaction(node.who, plan.payee, plan.price))
         self.subscriptions.add((wallet.name, plan.name))
 
     def exec_Require(self, node, env):
-        if not _truthy(self.evaluate(node.cond, env)):
+        if not truthy(self.evaluate(node.cond, env)):
             raise RequireError(node.message or "requirement not met")
 
     def exec_Fn(self, node, env):
@@ -309,13 +143,13 @@ class Interpreter(object):
         raise _Return(self.evaluate(node.value, env) if node.value is not None else None)
 
     def exec_If(self, node, env):
-        if _truthy(self.evaluate(node.cond, env)):
+        if truthy(self.evaluate(node.cond, env)):
             self.execute(node.then, env)
         elif node.orelse is not None:
             self.execute(node.orelse, env)
 
     def exec_While(self, node, env):
-        while _truthy(self.evaluate(node.cond, env)):
+        while truthy(self.evaluate(node.cond, env)):
             self.execute(node.body, env)
 
     def exec_Block(self, node, env):
@@ -348,29 +182,20 @@ class Interpreter(object):
     def eval_Binary(self, node, env):
         if node.op == "and":
             left = self.evaluate(node.left, env)
-            return self.evaluate(node.right, env) if _truthy(left) else left
+            return self.evaluate(node.right, env) if truthy(left) else left
         if node.op == "or":
             left = self.evaluate(node.left, env)
-            return left if _truthy(left) else self.evaluate(node.right, env)
+            return left if truthy(left) else self.evaluate(node.right, env)
         if node.op == "has":
             wallet = self.evaluate(node.left, env)
             plan = self.evaluate(node.right, env)
             if not isinstance(wallet, Wallet) or not isinstance(plan, Paywall):
                 raise LarzTypeError("'has' needs a wallet and a paywall")
             return (wallet.name, plan.name) in self.subscriptions
-        return self._binop(node.op, self.evaluate(node.left, env),
-                           self.evaluate(node.right, env))
+        return binop(node.op, self.evaluate(node.left, env), self.evaluate(node.right, env))
 
     def eval_Unary(self, node, env):
-        value = self.evaluate(node.operand, env)
-        if node.op == "not":
-            return not _truthy(value)
-        if node.op == "-":
-            if isinstance(value, Money):
-                return Money(-value.cents)
-            if _is_num(value):
-                return -value
-            raise LarzTypeError("cannot negate %s" % stringify(value))
+        return unary(node.op, self.evaluate(node.operand, env))
 
     def eval_Call(self, node, env):
         callee = self.evaluate(node.callee, env)
@@ -401,14 +226,14 @@ class Interpreter(object):
 
     # -- machinery --
     def _call(self, callee, args):
-        if isinstance(callee, _Builtin):
+        if isinstance(callee, Builtin):
             return callee.fn(*args)
         if isinstance(callee, _Function):
             decl = callee.decl
             if len(args) != len(decl.params):
                 raise LarzTypeError("%s expects %d argument(s), got %d"
                                     % (decl.name, len(decl.params), len(args)))
-            self._charge_gas(decl.gas, decl.name)
+            self.charge_gas(decl.gas, decl.name)
             call_env = Environment(callee.closure)
             for param, arg in zip(decl.params, args):
                 call_env.define(param, arg)
@@ -420,7 +245,7 @@ class Interpreter(object):
             return None
         raise LarzTypeError("%s is not callable" % stringify(callee))
 
-    def _charge_gas(self, cost, name):
+    def charge_gas(self, cost, name):
         if not cost:
             return
         self.gas_used += cost
@@ -429,83 +254,3 @@ class Interpreter(object):
                 raise OutOfGasError("out of gas calling '%s' (needed %d, %d left)"
                                     % (name, cost, self.gas))
             self.gas -= cost
-
-    def _binop(self, op, left, right):
-        if op == "==":
-            return left == right
-        if op == "!=":
-            return left != right
-
-        both_money = isinstance(left, Money) and isinstance(right, Money)
-        both_num = _is_num(left) and _is_num(right)
-        both_str = isinstance(left, str) and isinstance(right, str)
-
-        if op == "+":
-            if both_money:
-                return left + right
-            if both_num:
-                return left + right
-            if both_str:
-                return left + right
-            raise LarzTypeError("cannot add %s and %s" % (stringify(left), stringify(right)))
-        if op == "-":
-            if both_money:
-                return left - right
-            if both_num:
-                return left - right
-            raise LarzTypeError("cannot subtract %s from %s" % (stringify(right), stringify(left)))
-        if op == "*":
-            if isinstance(left, Money) and _is_num(right):
-                return Money(left.cents * right)
-            if _is_num(left) and isinstance(right, Money):
-                return Money(right.cents * left)
-            if both_num:
-                return left * right
-            raise LarzTypeError("cannot multiply %s and %s" % (stringify(left), stringify(right)))
-        if op == "/":
-            if isinstance(left, Money) and _is_num(right):
-                if right == 0:
-                    raise MoneyError("cannot divide money by zero")
-                return Money(left.cents / right)
-            if both_num:
-                if right == 0:
-                    raise LarzRuntimeError_divzero()
-                return left / right
-            raise LarzTypeError("cannot divide %s by %s" % (stringify(left), stringify(right)))
-        if op == "%":
-            if both_num:
-                if right == 0:
-                    raise LarzRuntimeError_divzero()
-                return left % right
-            raise LarzTypeError("cannot take %s %% %s" % (stringify(left), stringify(right)))
-
-        # ordering comparisons
-        if op in ("<", "<=", ">", ">="):
-            lv, rv = _order_key(left), _order_key(right)
-            if lv is None or rv is None or lv[0] != rv[0]:
-                raise LarzTypeError("cannot compare %s and %s" % (stringify(left), stringify(right)))
-            a, b = lv[1], rv[1]
-            if op == "<":
-                return a < b
-            if op == "<=":
-                return a <= b
-            if op == ">":
-                return a > b
-            return a >= b
-        raise LarzTypeError("unknown operator %r" % op)  # pragma: no cover
-
-
-def _order_key(v):
-    """A ``(kind, key)`` for ordering - money and numbers won't cross-compare."""
-    if isinstance(v, Money):
-        return ("money", v.cents)
-    if _is_num(v):
-        return ("num", v)
-    if isinstance(v, str):
-        return ("str", v)
-    return None
-
-
-def LarzRuntimeError_divzero():
-    from larzscript.errors import LarzRuntimeError
-    return LarzRuntimeError("division by zero")

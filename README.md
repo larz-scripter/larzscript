@@ -75,6 +75,20 @@ larzscript repl           # interactive REPL (state persists across lines)
 python -m larzscript program.lz
 ```
 
+## Two backends: interpret or compile (new in 0.3)
+
+The same program runs two ways, producing identical results:
+
+```python
+from larzscript import run
+run(program)                    # tree-walking interpreter (default)
+run(program, backend="vm")      # compile to bytecode, run on a stack VM
+```
+
+`larzscript --vm file.lz` runs the compiled path. Both share one runtime, so
+output, ledger, balances and gas are identical whichever you pick - the bytecode
+VM is the step toward v1.0 (a gas-metered VM and on-chain contracts).
+
 ## Why it exists — the selling point
 
 A new general-purpose language competing with Python or Rust is dead on arrival.
@@ -112,7 +126,8 @@ fn analyze(img) gas 500 { ... }   # metered: each call costs gas
 
 - **v0.1 (this release)** — tree-walking interpreter, in-memory settlement.
 - **v0.2 (this release)** — subscriptions/paywalls, the `has` operator, and a CLI + REPL.
-- **v1.0** — compile to bytecode for a gas-metered VM, and deploy `.lz` programs
+- **v0.3 (this release)** — a bytecode compiler + stack VM (the compiled path).
+- **v1.0** — target the gas-metered `larzvm` and deploy `.lz` as on-chain contracts that also speak fiat.
   as on-chain contracts.
 
 ## Learn to code with Larz

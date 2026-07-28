@@ -9,7 +9,7 @@ from larzscript.errors import LarzScriptError
 
 __all__ = ["main", "repl"]
 
-USAGE = "usage: larzscript <file.lz>   |   larzscript repl"
+USAGE = "usage: larzscript [--vm] <file.lz>   |   larzscript repl"
 
 
 def main(argv=None):
@@ -24,6 +24,11 @@ def main(argv=None):
     if argv[0] == "repl":
         return repl()
 
+    backend = "tree"
+    if "--vm" in argv:
+        backend = "vm"
+        argv = [a for a in argv if a != "--vm"]
+
     path = argv[0]
     try:
         with open(path, "r") as f:
@@ -32,7 +37,7 @@ def main(argv=None):
         sys.stderr.write("larzscript: cannot read %s: %s\n" % (path, e))
         return 1
     try:
-        result = run(source)
+        result = run(source, backend=backend)
     except LarzScriptError as e:
         sys.stderr.write("%s: %s\n" % (type(e).__name__, e))
         return 1
