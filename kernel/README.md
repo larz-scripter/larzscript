@@ -34,6 +34,30 @@ Larzscript, running on our own kernel with no Linux. You type on a **real
 keyboard** (or serial); output goes to a scrolling VGA console *and* the serial
 line.
 
+### Packages — extend the OS like `apt`
+
+LarzOS ships **`pkg`**, an on-device package manager. Packages are Larzscript
+modules that define `fn run(args)`; `larzsh` runs a command by importing its
+package in-process and calling `run` (no subprocess needed on bare metal).
+Installs go under `/home`, so — thanks to the disk (below) — **they persist
+across reboots**:
+
+```
+larzos:/ $ pkg list
+    banner      print text in a decorative box
+    todo        a persistent to-do list (survives reboots)
+    figlet      echo text as large block letters
+    strutil     string helpers - a library
+larzos:/ $ pkg install todo
+installed todo
+larzos:/ $ todo add ship larzos
+larzos:/ $ todo list
+1. ship larzos
+```
+
+After a reboot (with a disk attached), `todo` is still installed and its list is
+intact. New packages drop into `/repo` (baked) — or, later, a network repo.
+
 Build variants: default runs `/boot.lz` then halts (deterministic, for
 `make test`); `EXTRA=-DLARZ_SHELL` = demo then the shell (shipped);
 `EXTRA=-DLARZ_DEMO_REPL` = demo then a raw `larz>` REPL; `EXTRA=-DLARZ_REPL` =

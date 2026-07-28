@@ -52,12 +52,15 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   ISO — the same path VirtualBox / real hardware use.
 - Milestones ✅: boot → long mode → interpreter on bare metal → RAM filesystem →
   PS/2 keyboard + scrolling VGA (local I/O) → writable filesystem + `larzsh` =
-  self-hosting → **an ATA disk driver + LarzFS = PERSISTENT STORAGE.** Files
-  under `/home` (including the money-native compute wallet) survive reboots:
-  verified booting twice against one disk — the file and the balance came back.
-- Next: interrupt-driven input, a proper on-disk filesystem (directories/larger
-  files), more drivers (timer, RTC clock, framebuffer graphics), and `init.lz`
-  managing services. The userland is already 100% Larzscript.
+  self-hosting → ATA disk + LarzFS = persistent storage → **an `apt`-like
+  package manager (`pkg`).** Larzscript packages install onto the running OS and
+  extend it (new commands + libraries), persisting across reboots — LarzOS grows
+  by installing packages, the way a Linux server does.
+- Next: a **timer + RTC clock** (real `time()`/`sleep()`), interrupt-driven
+  input, a bigger on-disk filesystem, **networking** (a NIC driver + a minimal
+  TCP/IP stack) so packages can be fetched from a remote repo and LarzOS can act
+  as a real server, and `init.lz` managing services. Userland stays 100%
+  Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most
