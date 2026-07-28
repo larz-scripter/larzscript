@@ -29,6 +29,7 @@ cc -O2 -o larzscript native/larzscript.c     # or: make -C native
 ./larzscript -e "print(1 + 2)"                 # a one-liner
 ./larzscript repl                              # interactive (multi-line) REPL
 ./larzscript fmt program.lz                    # canonical auto-formatter
+./larzscript tools/larzdoc.lz module.lz        # generate Markdown API docs
 ```
 
 ## Packages
@@ -62,6 +63,9 @@ Available packages:
 | **string** | string helpers (center, wrap, reverse, snake, ...) |
 | **random** | a small seeded PRNG (deterministic) |
 | **fs** | filesystem helpers (read/write/ls/copy/...) |
+| **base64** | base64 encode/decode (pure Larzscript) |
+| **table** | render tabular data as an aligned ASCII table |
+| **log** | leveled logging with timestamps |
 | **mathx** | small math helpers (mean, fib, primes) |
 | **greet** | a tiny example package |
 
