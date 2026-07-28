@@ -1,0 +1,14 @@
+let d = {"a": 1, "b": 2}
+d["c"] = 3
+d["a"] = 10
+print(d["a"], d["b"], d["c"])
+print("len", len(d))
+print("has b", d.has("b"), "has z", d.has("z"))
+print("get z", d.get("z", -1))
+print("keys", keys(d))
+print("values", values(d))
+d.remove("b")
+print("after remove", d)
+let sum = 0
+for k in d { sum = sum + d[k] }
+print("sum of values", sum)

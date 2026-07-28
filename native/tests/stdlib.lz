@@ -1,0 +1,8 @@
+print(str(42), int("7") + int(3.9), float("2.5"))
+print(type(1), type("s"), type([1]), type({"a": 1}), type(true), type(nil))
+print(abs(-5), abs(-$3.50))
+print(min(3, 1, 2), max([4, 9, 2]))
+print(sum([1, 2, 3]), sum([$1.00, $2.50]))
+print(sorted([3, 1, 2]), reversed([1, 2, 3]))
+print(floor(3.7), ceil(3.2), round(2.5), sqrt(81), pow(2, 8))
+print(chr(65), ord("A"))

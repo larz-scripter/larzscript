@@ -1,0 +1,7 @@
+let s = "  Hello, World  "
+print(s.strip())
+print(s.strip().upper(), s.strip().lower())
+print("a,b,c,d".split(","))
+print("hello".replace("l", "L"))
+print("hello".contains("ell"), "hello".starts_with("he"), "hello".ends_with("lo"))
+print("hello".find("l"), "hello"[1], len("hello"))

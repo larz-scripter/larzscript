@@ -8,9 +8,21 @@
  *   gcc -O2 -o larzscript larzscript.c
  *   ./larzscript program.lz
  *
- * Core (v0.1 native): numbers, money ($ = integer cents), strings, booleans,
- * nil; let/assign; if/else; while; functions + recursion + closures; gas-metered
- * functions; wallets; price; pay ... from ... to ...; require; print/money.
+ * v1.0 native - a real general-purpose language, standalone:
+ *   values:   numbers, strings, booleans, nil, lists, DICTS, money, wallets
+ *   binding:  let / assign / compound assign (+= -= *= /= %=)
+ *   control:  if/else, while, for-in (lists, dicts, strings), break, continue
+ *   funcs:    functions + recursion + closures; gas-metered functions
+ *   data:     list & dict literals, indexing, element assignment a[i]=x
+ *   methods:  list (push/pop/insert/sort/reverse/contains/index),
+ *             dict (keys/values/has/get/remove), string (upper/lower/strip/
+ *             split/replace/contains/starts_with/ends_with/find)
+ *   stdlib:   print money len range str int float bool type abs min max sum
+ *             sorted reversed floor ceil round sqrt pow chr ord assert input
+ *             keys values push
+ *   money:    $ = integer cents; price; pay .. from .. to ..; require;
+ *             paywall / subscribe / has (money-native primitives)
+ *   errors:   reported with line numbers.
  * Memory: a simple grow-only allocator (freed by the OS on exit) - a bootstrap
  * interpreter, honest about it. Zero third-party dependencies (libc only).
  */
@@ -27,8 +39,8 @@ static char *xstrndup(const char *s, size_t n){ char *p = xmalloc(n+1); memcpy(p
 static char *xstrdup(const char *s){ return xstrndup(s, strlen(s)); }
 
 /* ===================== values ===================== */
-typedef enum { V_NIL, V_BOOL, V_NUM, V_MONEY, V_STR, V_WALLET, V_FUNC, V_BUILTIN, V_LIST, V_PAYWALL } VType;
-struct Node; struct Env; struct Interp; struct List; struct Paywall;
+typedef enum { V_NIL, V_BOOL, V_NUM, V_MONEY, V_STR, V_WALLET, V_FUNC, V_BUILTIN, V_LIST, V_PAYWALL, V_DICT } VType;
+struct Node; struct Env; struct Interp; struct List; struct Paywall; struct Dict;
 typedef struct Wallet { char *name; long long cents; } Wallet;
 typedef struct Closure { struct Node *decl; struct Env *env; const char *name; } Closure;
 typedef struct Value Value;
@@ -46,6 +58,7 @@ struct Value {
   Builtin *bi;
   struct List *list;
   struct Paywall *pw;
+  struct Dict *dict;
 };
 
 static Value V_nil(void){ Value v; v.t=V_NIL; return v; }
@@ -59,14 +72,59 @@ static Value V_builtin(Builtin *b){ Value v; v.t=V_BUILTIN; v.bi=b; return v; }
 
 typedef struct List { Value *items; int n, cap; } List;
 typedef struct Paywall { char *name; long long price; char *period; char *payee; } Paywall;
+typedef struct Pair { Value key, val; } Pair;
+typedef struct Dict { Pair *items; int n, cap; } Dict;
 static Value V_list(List *l){ Value v; v.t=V_LIST; v.list=l; return v; }
 static Value V_paywall(Paywall *pw){ Value v; v.t=V_PAYWALL; v.pw=pw; return v; }
+static Value V_dict(Dict *d){ Value v; v.t=V_DICT; v.dict=d; return v; }
 static List *list_new(void){ List *l=xmalloc(sizeof(List)); l->items=NULL; l->n=0; l->cap=0; return l; }
 static void list_push(List *l, Value v){ if(l->n==l->cap){ l->cap=l->cap?l->cap*2:8; l->items=realloc(l->items,l->cap*sizeof(Value)); } l->items[l->n++]=v; }
+static Dict *dict_new(void){ Dict *d=xmalloc(sizeof(Dict)); d->items=NULL; d->n=0; d->cap=0; return d; }
 
 static long long money_round(double x){ return (long long)(x>=0 ? x+0.5 : x-0.5); }
 
 static int is_num(Value v){ return v.t==V_NUM; }
+
+/* value equality (used by ==, dict keys, list contains) - by value, not identity */
+static int values_equal(Value a, Value b){
+  if(a.t!=b.t) return 0;
+  switch(a.t){
+    case V_NIL: return 1;
+    case V_BOOL: return a.b==b.b;
+    case V_NUM: return a.num==b.num;
+    case V_MONEY: return a.cents==b.cents;
+    case V_STR: return strcmp(a.str,b.str)==0;
+    case V_WALLET: return a.wal==b.wal;
+    case V_PAYWALL: return a.pw==b.pw;
+    case V_LIST: return a.list==b.list;
+    case V_DICT: return a.dict==b.dict;
+    default: return 0;
+  }
+}
+/* order comparison for sort/sorted; returns -1/0/1. Incomparable -> 0 (stable). */
+static int value_compare(Value a, Value b){
+  if(a.t==V_NUM && b.t==V_NUM) return a.num<b.num?-1:(a.num>b.num?1:0);
+  if(a.t==V_MONEY && b.t==V_MONEY) return a.cents<b.cents?-1:(a.cents>b.cents?1:0);
+  if(a.t==V_STR && b.t==V_STR){ int c=strcmp(a.str,b.str); return c<0?-1:(c>0?1:0); }
+  return 0;
+}
+static int qsort_value_cmp(const void *x, const void *y){ return value_compare(*(const Value*)x, *(const Value*)y); }
+
+/* dict get: returns pointer to the stored value, or NULL. Keys compared by value. */
+static Value *dict_find(Dict *d, Value key){
+  for(int i=0;i<d->n;i++) if(values_equal(d->items[i].key, key)) return &d->items[i].val;
+  return NULL;
+}
+static void dict_set(Dict *d, Value key, Value val){
+  Value *slot=dict_find(d,key);
+  if(slot){ *slot=val; return; }
+  if(d->n==d->cap){ d->cap=d->cap?d->cap*2:8; d->items=realloc(d->items,d->cap*sizeof(Pair)); }
+  d->items[d->n].key=key; d->items[d->n].val=val; d->n++;
+}
+static int dict_del(Dict *d, Value key){
+  for(int i=0;i<d->n;i++) if(values_equal(d->items[i].key,key)){ for(int j=i+1;j<d->n;j++) d->items[j-1]=d->items[j]; d->n--; return 1; }
+  return 0;
+}
 
 static int truthy(Value v){
   switch(v.t){
@@ -76,6 +134,7 @@ static int truthy(Value v){
     case V_MONEY: return v.cents!=0;
     case V_STR: return v.str[0]!=0;
     case V_LIST: return v.list->n!=0;
+    case V_DICT: return v.dict->n!=0;
     default: return 1;
   }
 }
@@ -114,19 +173,51 @@ static void print_value(Value v){
       printf("<paywall %s: $%lld.%02lld/%s>", v.pw->name, c/100, c%100, v.pw->period);
       break;
     }
+    case V_DICT: {
+      printf("{");
+      for(int i=0;i<v.dict->n;i++){
+        if(i) printf(", ");
+        print_value(v.dict->items[i].key); printf(": "); print_value(v.dict->items[i].val);
+      }
+      printf("}");
+      break;
+    }
   }
 }
+
+/* build a Value into a heap string (mirrors print_value; strings unquoted) */
+typedef struct { char *s; int n, cap; } SB;
+static void sb_putc(SB *b, char c){ if(b->n+1>=b->cap){ b->cap=b->cap?b->cap*2:32; b->s=realloc(b->s,b->cap);} b->s[b->n++]=c; }
+static void sb_puts(SB *b, const char *s){ while(*s) sb_putc(b,*s++); }
+static void sb_putf(SB *b, const char *fmt, ...){ char t[64]; va_list ap; va_start(ap,fmt); vsnprintf(t,sizeof t,fmt,ap); va_end(ap); sb_puts(b,t); }
+static void val_to_sb(SB *b, Value v){
+  switch(v.t){
+    case V_NIL: sb_puts(b,"nil"); break;
+    case V_BOOL: sb_puts(b, v.b?"true":"false"); break;
+    case V_NUM: if(v.num==(long long)v.num) sb_putf(b,"%lld",(long long)v.num); else sb_putf(b,"%g",v.num); break;
+    case V_MONEY: { long long c=v.cents<0?-v.cents:v.cents; sb_putf(b,"%s$%lld.%02lld", v.cents<0?"-":"", c/100, c%100); break; }
+    case V_STR: sb_puts(b, v.str); break;
+    case V_WALLET: { long long c=v.wal->cents<0?-v.wal->cents:v.wal->cents; sb_putf(b,"<wallet %s: %s$%lld.%02lld>", v.wal->name, v.wal->cents<0?"-":"", c/100, c%100); break; }
+    case V_FUNC: sb_putf(b,"<fn %s>", v.fn->name?v.fn->name:"?"); break;
+    case V_BUILTIN: sb_putf(b,"<builtin %s>", v.bi->name); break;
+    case V_LIST: { sb_putc(b,'['); for(int i=0;i<v.list->n;i++){ if(i) sb_puts(b,", "); val_to_sb(b,v.list->items[i]); } sb_putc(b,']'); break; }
+    case V_DICT: { sb_putc(b,'{'); for(int i=0;i<v.dict->n;i++){ if(i) sb_puts(b,", "); val_to_sb(b,v.dict->items[i].key); sb_puts(b,": "); val_to_sb(b,v.dict->items[i].val); } sb_putc(b,'}'); break; }
+    case V_PAYWALL: { long long c=v.pw->price<0?-v.pw->price:v.pw->price; sb_putf(b,"<paywall %s: $%lld.%02lld/%s>", v.pw->name, c/100, c%100, v.pw->period); break; }
+  }
+}
+static char *str_of(Value v){ SB b; b.s=NULL; b.n=0; b.cap=0; val_to_sb(&b,v); sb_putc(&b,0); return b.s; }
 
 /* ===================== AST ===================== */
 typedef enum {
   N_LET, N_ASSIGN, N_PRICE, N_WALLET, N_PAY, N_REQUIRE, N_FN, N_RETURN,
   N_IF, N_WHILE, N_BLOCK, N_EXPR, N_PAYWALL, N_SUBSCRIBE,
   N_NUM, N_MONEY, N_STR, N_BOOL, N_NIL, N_NAME, N_BIN, N_UN, N_CALL, N_GET, N_METHOD,
-  N_ARRAY, N_INDEX
+  N_ARRAY, N_INDEX, N_DICT, N_SETINDEX, N_BREAK, N_CONTINUE, N_FOR
 } NodeKind;
 
 typedef struct Node {
   NodeKind kind;
+  int line;                   /* source line, for error messages */
   double num; long long cents; char *str; int boolean;
   char *name;                 /* identifier / member / let-name / op holder */
   char *op;
@@ -138,9 +229,8 @@ typedef struct Node {
   char *period;               /* paywall */
 } Node;
 
-static Node *node(NodeKind k){ Node *n = xmalloc(sizeof(Node)); memset(n,0,sizeof(Node)); n->kind=k; return n; }
-static Node *mkname(const char *s){ Node *n=node(N_NAME); n->name=xstrdup(s); return n; }
-static Node *mknum(double d){ Node *n=node(N_NUM); n->num=d; return n; }
+static int g_parse_line=0;   /* line of the most recently consumed token */
+static Node *node(NodeKind k){ Node *n = xmalloc(sizeof(Node)); memset(n,0,sizeof(Node)); n->kind=k; n->line=g_parse_line; return n; }
 static void push_kid(Node *b, Node *k){
   if(b->nkids % 8 == 0) b->kids = realloc(b->kids, (b->nkids+8)*sizeof(Node*));
   b->kids[b->nkids++]=k;
@@ -148,13 +238,13 @@ static void push_kid(Node *b, Node *k){
 
 /* ===================== lexer ===================== */
 typedef enum { T_EOF, T_NUM, T_MONEY, T_STR, T_IDENT, T_KW, T_OP,
-               T_LP, T_RP, T_LB, T_RB, T_COMMA, T_DOT, T_LBK, T_RBK } TokType;
+               T_LP, T_RP, T_LB, T_RB, T_COMMA, T_DOT, T_LBK, T_RBK, T_COLON } TokType;
 typedef struct { TokType type; char *text; double num; long long cents; int line; } Token;
 
 static const char *KEYWORDS[] = {
   "let","fn","return","if","else","while","and","or","not","true","false","nil",
   "price","wallet","pay","from","to","require","gas",
-  "paywall","subscribe","has","for","in", NULL
+  "paywall","subscribe","has","for","in","break","continue", NULL
 };
 static int is_keyword(const char *s, int n){
   for(int i=0; KEYWORDS[i]; i++)
@@ -224,8 +314,9 @@ static Token *lex(const char *src){
       t.type = is_keyword(src+i,j-i) ? T_KW : T_IDENT;
       i=j; tk_push(&tl,t); continue;
     }
-    /* two-char operators */
-    if((c=='='&&src[i+1]=='=')||(c=='!'&&src[i+1]=='=')||(c=='<'&&src[i+1]=='=')||(c=='>'&&src[i+1]=='=')){
+    /* two-char operators (comparison + compound assignment) */
+    if((c=='='&&src[i+1]=='=')||(c=='!'&&src[i+1]=='=')||(c=='<'&&src[i+1]=='=')||(c=='>'&&src[i+1]=='=')
+       ||((c=='+'||c=='-'||c=='*'||c=='/'||c=='%')&&src[i+1]=='=')){
       t.type=T_OP; t.text=xstrndup(src+i,2); i+=2; tk_push(&tl,t); continue;
     }
     if(strchr("+-*/%<>=",c)){ t.type=T_OP; t.text=xstrndup(src+i,1); i++; tk_push(&tl,t); continue; }
@@ -238,6 +329,7 @@ static Token *lex(const char *src){
       case '.': t.type=T_DOT; i++; break;
       case '[': t.type=T_LBK; i++; break;
       case ']': t.type=T_RBK; i++; break;
+      case ':': t.type=T_COLON; i++; break;
       default: fail("unexpected character '%c' on line %d", c, line);
     }
     tk_push(&tl,t);
@@ -249,8 +341,7 @@ static Token *lex(const char *src){
 /* ===================== parser ===================== */
 typedef struct { Token *t; int i; int loopn; } Parser;
 static Token *pk(Parser *p){ return &p->t[p->i]; }
-static Token *pk2(Parser *p){ return &p->t[p->i+1]; }
-static Token *padv(Parser *p){ return &p->t[p->i++]; }
+static Token *padv(Parser *p){ Token *t=&p->t[p->i++]; g_parse_line=t->line; return t; }
 static int is_kw(Token *t, const char *w){ return t->type==T_KW && strcmp(t->text,w)==0; }
 static int is_op(Token *t, const char *o){ return t->type==T_OP && strcmp(t->text,o)==0; }
 static void expect(Parser *p, TokType ty, const char *what){
@@ -308,6 +399,20 @@ static Node *primary(Parser *p){
     expect(p, T_RBK, "']'");
     return n;
   }
+  if(t->type==T_LB){    /* dict literal: { key: value, ... } */
+    padv(p); Node *n=node(N_DICT);
+    if(pk(p)->type!=T_RB){
+      do {
+        if(pk(p)->type==T_RB) break;
+        Node *k=expression(p);
+        expect(p, T_COLON, "':'");
+        Node *v=expression(p);
+        push_kid(n, k); push_kid(n, v);
+      } while(pk(p)->type==T_COMMA && (padv(p),1));
+    }
+    expect(p, T_RB, "'}'");
+    return n;
+  }
   fail("unexpected token on line %d", t->line);
   return NULL;
 }
@@ -317,7 +422,7 @@ static Node *postfix(Parser *p){
   for(;;){
     if(pk(p)->type==T_DOT){
       padv(p);
-      if(pk(p)->type!=T_IDENT) fail("expected a property name on line %d", pk(p)->line);
+      if(pk(p)->type!=T_IDENT && pk(p)->type!=T_KW) fail("expected a property name on line %d", pk(p)->line);
       char *name = padv(p)->text;
       if(pk(p)->type==T_LP){
         Node *m=node(N_METHOD); m->a=n; m->name=name; arglist(p,&m->kids,&m->nkids); n=m;
@@ -393,35 +498,30 @@ static Node *statement(Parser *p){
       n->period=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text; return n; }
   if(is_kw(t,"subscribe")){ padv(p); Node *n=node(N_SUBSCRIBE); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text; return n; }
   if(is_kw(t,"for")){
-      padv(p); char *var=padv(p)->text; expect_kw(p,"in");
-      Node *iter=expression(p); Node *body=block(p);
-      p->loopn++;
-      char xs[32], ix[32];
-      snprintf(xs,sizeof(xs),"__for%d_xs",p->loopn);
-      snprintf(ix,sizeof(ix),"__for%d_i",p->loopn);
-      /* inner block: let var = xs[ix]; <body>; ix = ix + 1 */
-      Node *inner=node(N_BLOCK);
-      Node *letx=node(N_LET); letx->name=var;
-      Node *idxn=node(N_INDEX); idxn->a=mkname(xs); idxn->b=mkname(ix); letx->a=idxn;
-      push_kid(inner, letx);
-      for(int i=0;i<body->nkids;i++) push_kid(inner, body->kids[i]);
-      Node *inc=node(N_ASSIGN); inc->name=xstrdup(ix);
-      Node *add=node(N_BIN); add->op="+"; add->a=mkname(ix); add->b=mknum(1); inc->a=add;
-      push_kid(inner, inc);
-      /* while ix < len(xs) { inner } */
-      Node *cond=node(N_BIN); cond->op="<"; cond->a=mkname(ix);
-      Node *call=node(N_CALL); call->a=mkname("len"); push_kid(call, mkname(xs)); cond->b=call;
-      Node *wh=node(N_WHILE); wh->a=cond; wh->b=inner;
-      /* outer block: let xs = iter; let ix = 0; while ... */
-      Node *outer=node(N_BLOCK);
-      Node *letxs=node(N_LET); letxs->name=xstrdup(xs); letxs->a=iter; push_kid(outer, letxs);
-      Node *leti=node(N_LET); leti->name=xstrdup(ix); leti->a=mknum(0); push_kid(outer, leti);
-      push_kid(outer, wh);
-      return outer;
+      padv(p); Node *n=node(N_FOR); n->name=padv(p)->text; expect_kw(p,"in");
+      n->a=expression(p); n->b=block(p); return n;
   }
+  if(is_kw(t,"break")){ padv(p); return node(N_BREAK); }
+  if(is_kw(t,"continue")){ padv(p); return node(N_CONTINUE); }
   if(t->type==T_LB){ return block(p); }
-  if(t->type==T_IDENT && is_op(pk2(p),"=")){ Node *n=node(N_ASSIGN); n->name=padv(p)->text; padv(p); n->a=expression(p); return n; }
-  Node *n=node(N_EXPR); n->a=expression(p); return n;
+  /* assignment (name or element) or a bare expression statement */
+  {
+    Node *lhs = expression(p);
+    Token *o = pk(p);
+    int isasg = o->type==T_OP && strcmp(o->text,"=")==0;
+    int iscmp = o->type==T_OP && strlen(o->text)==2 && o->text[1]=='=' &&
+                strchr("+-*/%", o->text[0]);
+    if(isasg || iscmp){
+      char baseop[2]; baseop[0]=o->text[0]; baseop[1]=0;
+      padv(p);
+      Node *rhs = expression(p);
+      if(iscmp){ Node *bin=node(N_BIN); bin->op=xstrdup(baseop); bin->a=lhs; bin->b=rhs; rhs=bin; }
+      if(lhs->kind==N_NAME){ Node *n=node(N_ASSIGN); n->name=lhs->name; n->a=rhs; return n; }
+      if(lhs->kind==N_INDEX){ Node *n=node(N_SETINDEX); n->a=lhs->a; n->b=lhs->b; n->c=rhs; return n; }
+      fail("invalid assignment target on line %d", o->line);
+    }
+    Node *n=node(N_EXPR); n->a=lhs; return n;
+  }
 }
 
 static Node *parse_program(Token *toks){
@@ -455,6 +555,8 @@ typedef struct Interp {
   Env *globals;
   int has_gas; long long gas; long long gas_used;
   int returning; Value retval;
+  int loopflow;                 /* 0 none, 1 break, 2 continue */
+  int curline;                  /* line currently executing, for errors */
   Txn *ledger; int nled, ledcap;
   Sub *subs; int nsub, subcap;
   jmp_buf jb; char errmsg[256]; const char *errname;
@@ -462,7 +564,10 @@ typedef struct Interp {
 
 static void runtime_error(Interp *ip, const char *name, const char *fmt, ...){
   ip->errname=name;
-  va_list ap; va_start(ap,fmt); vsnprintf(ip->errmsg,sizeof(ip->errmsg),fmt,ap); va_end(ap);
+  char msg[224];
+  va_list ap; va_start(ap,fmt); vsnprintf(msg,sizeof(msg),fmt,ap); va_end(ap);
+  if(ip->curline>0) snprintf(ip->errmsg,sizeof(ip->errmsg),"%s (line %d)", msg, ip->curline);
+  else snprintf(ip->errmsg,sizeof(ip->errmsg),"%s", msg);
   longjmp(ip->jb,1);
 }
 static void append_txn(Interp *ip, const char *s, const char *d, long long c){
@@ -486,16 +591,7 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
   int bn = is_num(a) && is_num(b);
   int bs = a.t==V_STR && b.t==V_STR;
   if(strcmp(op,"==")==0 || strcmp(op,"!=")==0){
-    int eq=0;
-    if(a.t!=b.t) eq=0;
-    else switch(a.t){
-      case V_NIL: eq=1; break;
-      case V_BOOL: eq=a.b==b.b; break;
-      case V_NUM: eq=a.num==b.num; break;
-      case V_MONEY: eq=a.cents==b.cents; break;
-      case V_STR: eq=strcmp(a.str,b.str)==0; break;
-      default: eq=0;
-    }
+    int eq=values_equal(a,b);
     return V_bool(strcmp(op,"==")==0 ? eq : !eq);
   }
   if(strcmp(op,"+")==0){
@@ -539,6 +635,7 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
 static Value call_value(Interp *ip, Value callee, Value *args, int nargs);
 
 static Value eval(Interp *ip, Node *n, Env *env){
+  if(n->line) ip->curline=n->line;
   switch(n->kind){
     case N_NUM: return V_number(n->num);
     case N_MONEY: return V_money(n->cents);
@@ -568,12 +665,25 @@ static Value eval(Interp *ip, Node *n, Env *env){
       for(int i=0;i<n->nkids;i++) list_push(l, eval(ip,n->kids[i],env));
       return V_list(l);
     }
+    case N_DICT: {
+      Dict *d=dict_new();
+      for(int i=0;i+1<n->nkids;i+=2){
+        Value k=eval(ip,n->kids[i],env), v=eval(ip,n->kids[i+1],env);
+        dict_set(d, k, v);
+      }
+      return V_dict(d);
+    }
     case N_INDEX: {
       Value obj=eval(ip,n->a,env), iv=eval(ip,n->b,env);
+      if(obj.t==V_DICT){
+        Value *slot=dict_find(obj.dict, iv);
+        if(!slot) runtime_error(ip,"LarzKeyError","key not found");
+        return *slot;
+      }
       if(!is_num(iv) || iv.num!=(long long)iv.num) runtime_error(ip,"LarzTypeError","index must be a whole number");
       long long idx=(long long)iv.num;
-      if(obj.t==V_LIST){ if(idx<0||idx>=obj.list->n) runtime_error(ip,"LarzRuntimeError","index %lld out of range (length %d)", idx, obj.list->n); return obj.list->items[idx]; }
-      if(obj.t==V_STR){ int len=(int)strlen(obj.str); if(idx<0||idx>=len) runtime_error(ip,"LarzRuntimeError","index out of range"); char *s=xmalloc(2); s[0]=obj.str[idx]; s[1]=0; return V_string(s); }
+      if(obj.t==V_LIST){ if(idx<0) idx+=obj.list->n; if(idx<0||idx>=obj.list->n) runtime_error(ip,"LarzRuntimeError","index %lld out of range (length %d)", (long long)iv.num, obj.list->n); return obj.list->items[idx]; }
+      if(obj.t==V_STR){ int len=(int)strlen(obj.str); if(idx<0) idx+=len; if(idx<0||idx>=len) runtime_error(ip,"LarzRuntimeError","index out of range"); char *s=xmalloc(2); s[0]=obj.str[idx]; s[1]=0; return V_string(s); }
       runtime_error(ip,"LarzTypeError","cannot index that value");
     }
     case N_CALL: {
@@ -603,6 +713,37 @@ static Value eval(Interp *ip, Node *n, Env *env){
         }
         runtime_error(ip,"LarzTypeError","a wallet has no method '%s'", n->name);
       }
+      if(obj.t==V_LIST){
+        List *l=obj.list; const char *m=n->name; int na=n->nkids;
+        if(strcmp(m,"push")==0||strcmp(m,"append")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","%s expects one argument",m); list_push(l,args[0]); return V_nil(); }
+        if(strcmp(m,"pop")==0){ if(l->n==0) runtime_error(ip,"LarzRuntimeError","pop from empty list"); long long i = na>=1 ? (long long)args[0].num : l->n-1; if(i<0) i+=l->n; if(i<0||i>=l->n) runtime_error(ip,"LarzRuntimeError","pop index out of range"); Value r=l->items[i]; for(int j=i+1;j<l->n;j++) l->items[j-1]=l->items[j]; l->n--; return r; }
+        if(strcmp(m,"insert")==0){ if(na!=2||!is_num(args[0])) runtime_error(ip,"LarzTypeError","insert expects an index and a value"); long long i=(long long)args[0].num; if(i<0) i+=l->n; if(i<0) i=0; if(i>l->n) i=l->n; list_push(l,V_nil()); for(int j=l->n-1;j>i;j--) l->items[j]=l->items[j-1]; l->items[i]=args[1]; return V_nil(); }
+        if(strcmp(m,"contains")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","contains expects one argument"); for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) return V_bool(1); return V_bool(0); }
+        if(strcmp(m,"index")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","index expects one argument"); for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) return V_number(i); return V_number(-1); }
+        if(strcmp(m,"sort")==0){ qsort(l->items,l->n,sizeof(Value),qsort_value_cmp); return V_nil(); }
+        if(strcmp(m,"reverse")==0){ for(int i=0,j=l->n-1;i<j;i++,j--){ Value t=l->items[i]; l->items[i]=l->items[j]; l->items[j]=t; } return V_nil(); }
+        runtime_error(ip,"LarzTypeError","a list has no method '%s'", m);
+      }
+      if(obj.t==V_DICT){
+        Dict *d=obj.dict; const char *m=n->name; int na=n->nkids;
+        if(strcmp(m,"keys")==0){ List *r=list_new(); for(int i=0;i<d->n;i++) list_push(r,d->items[i].key); return V_list(r); }
+        if(strcmp(m,"values")==0){ List *r=list_new(); for(int i=0;i<d->n;i++) list_push(r,d->items[i].val); return V_list(r); }
+        if(strcmp(m,"has")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","has expects one argument"); return V_bool(dict_find(d,args[0])!=NULL); }
+        if(strcmp(m,"get")==0){ if(na<1) runtime_error(ip,"LarzTypeError","get expects a key"); Value *s=dict_find(d,args[0]); if(s) return *s; return na>=2?args[1]:V_nil(); }
+        if(strcmp(m,"remove")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","remove expects one argument"); return V_bool(dict_del(d,args[0])); }
+        runtime_error(ip,"LarzTypeError","a dict has no method '%s'", m);
+      }
+      if(obj.t==V_STR){
+        const char *s=obj.str; const char *m=n->name; int na=n->nkids;
+        if(strcmp(m,"upper")==0||strcmp(m,"lower")==0){ int up=m[0]=='u'; char *r=xstrdup(s); for(char *p=r;*p;p++) *p= up?toupper((unsigned char)*p):tolower((unsigned char)*p); return V_string(r); }
+        if(strcmp(m,"strip")==0){ int a=0,b=(int)strlen(s); while(a<b&&isspace((unsigned char)s[a])) a++; while(b>a&&isspace((unsigned char)s[b-1])) b--; return V_string(xstrndup(s+a,b-a)); }
+        if(strcmp(m,"contains")==0||strcmp(m,"find")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","%s expects a string",m); const char *f=strstr(s,args[0].str); if(m[0]=='c') return V_bool(f!=NULL); return V_number(f?(double)(f-s):-1); }
+        if(strcmp(m,"starts_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","starts_with expects a string"); size_t ln=strlen(args[0].str); return V_bool(strncmp(s,args[0].str,ln)==0); }
+        if(strcmp(m,"ends_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ends_with expects a string"); size_t ls=strlen(s), le=strlen(args[0].str); return V_bool(ls>=le && strcmp(s+ls-le,args[0].str)==0); }
+        if(strcmp(m,"replace")==0){ if(na!=2||args[0].t!=V_STR||args[1].t!=V_STR) runtime_error(ip,"LarzTypeError","replace expects two strings"); const char *from=args[0].str,*to=args[1].str; size_t lf=strlen(from); if(lf==0) return V_string(xstrdup(s)); SB b; b.s=NULL;b.n=0;b.cap=0; const char *p=s; while(*p){ if(strncmp(p,from,lf)==0){ sb_puts(&b,to); p+=lf; } else sb_putc(&b,*p++); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
+        if(strcmp(m,"split")==0){ List *r=list_new(); if(na==0||args[0].t!=V_STR||args[0].str[0]==0){ for(const char *p=s;*p;p++){ char *c=xstrndup(p,1); list_push(r,V_string(c)); } return V_list(r); } const char *sep=args[0].str; size_t ls=strlen(sep); const char *p=s,*q; while((q=strstr(p,sep))){ list_push(r,V_string(xstrndup(p,q-p))); p=q+ls; } list_push(r,V_string(xstrdup(p))); return V_list(r); }
+        runtime_error(ip,"LarzTypeError","a string has no method '%s'", m);
+      }
       runtime_error(ip,"LarzTypeError","cannot call a method on that value");
     }
     default: runtime_error(ip,"LarzRuntimeError","cannot evaluate that node"); return V_nil();
@@ -631,6 +772,7 @@ static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
 }
 
 static void exec(Interp *ip, Node *n, Env *env){
+  if(n->line) ip->curline=n->line;
   switch(n->kind){
     case N_LET: env_define(env, n->name, eval(ip,n->a,env)); return;
     case N_ASSIGN: { Value *slot=env_find(env,n->name); if(!slot) runtime_error(ip,"LarzNameError","cannot assign to undefined '%s' (use 'let')", n->name); *slot=eval(ip,n->a,env); return; }
@@ -681,8 +823,46 @@ static void exec(Interp *ip, Node *n, Env *env){
       else if(n->c) exec(ip,n->c,env);
       return;
     }
-    case N_WHILE: { while(truthy(eval(ip,n->a,env))){ exec(ip,n->b,env); if(ip->returning) break; } return; }
-    case N_BLOCK: { Env *child=env_new(env); for(int i=0;i<n->nkids;i++){ exec(ip,n->kids[i],child); if(ip->returning) break; } return; }
+    case N_WHILE: {
+      while(truthy(eval(ip,n->a,env))){
+        exec(ip,n->b,env);
+        if(ip->returning) break;
+        if(ip->loopflow==1){ ip->loopflow=0; break; }
+        if(ip->loopflow==2){ ip->loopflow=0; continue; }
+      }
+      return;
+    }
+    case N_FOR: {
+      Value it=eval(ip,n->a,env);
+      int len; Value *arr=NULL; Dict *d=NULL; const char *sp=NULL;
+      if(it.t==V_LIST){ len=it.list->n; arr=it.list->items; }
+      else if(it.t==V_DICT){ len=it.dict->n; d=it.dict; }
+      else if(it.t==V_STR){ len=(int)strlen(it.str); sp=it.str; }
+      else { runtime_error(ip,"LarzTypeError","cannot iterate that value"); return; }
+      for(int i=0;i<len;i++){
+        Value item = arr ? arr[i] : d ? d->items[i].key : V_string(xstrndup(sp+i,1));
+        Env *child=env_new(env); env_define(child,n->name,item);
+        exec(ip,n->b,child);
+        if(ip->returning) break;
+        if(ip->loopflow==1){ ip->loopflow=0; break; }
+        if(ip->loopflow==2){ ip->loopflow=0; continue; }
+      }
+      return;
+    }
+    case N_SETINDEX: {
+      Value obj=eval(ip,n->a,env), key=eval(ip,n->b,env), val=eval(ip,n->c,env);
+      if(obj.t==V_LIST){
+        if(!is_num(key)||key.num!=(long long)key.num) runtime_error(ip,"LarzTypeError","list index must be a whole number");
+        long long i=(long long)key.num; if(i<0) i+=obj.list->n;
+        if(i<0||i>=obj.list->n) runtime_error(ip,"LarzRuntimeError","index out of range");
+        obj.list->items[i]=val; return;
+      }
+      if(obj.t==V_DICT){ dict_set(obj.dict,key,val); return; }
+      runtime_error(ip,"LarzTypeError","cannot assign to an index of that value");
+    }
+    case N_BREAK: ip->loopflow=1; return;
+    case N_CONTINUE: ip->loopflow=2; return;
+    case N_BLOCK: { Env *child=env_new(env); for(int i=0;i<n->nkids;i++){ exec(ip,n->kids[i],child); if(ip->returning||ip->loopflow) break; } return; }
     case N_EXPR: eval(ip,n->a,env); return;
     default: eval(ip,n,env); return;
   }
@@ -703,7 +883,8 @@ static Value bi_len(Interp *ip, Value *args, int n){
   if(n!=1) runtime_error(ip,"LarzTypeError","len() expects one argument");
   if(args[0].t==V_STR) return V_number((double)strlen(args[0].str));
   if(args[0].t==V_LIST) return V_number((double)args[0].list->n);
-  runtime_error(ip,"LarzTypeError","len() expects a string or list");
+  if(args[0].t==V_DICT) return V_number((double)args[0].dict->n);
+  runtime_error(ip,"LarzTypeError","len() expects a string, list or dict");
   return V_nil();
 }
 static Value bi_push(Interp *ip, Value *args, int n){
@@ -712,21 +893,108 @@ static Value bi_push(Interp *ip, Value *args, int n){
   return V_nil();
 }
 static Value bi_range(Interp *ip, Value *args, int n){
-  if(n!=1 || !is_num(args[0])) runtime_error(ip,"LarzTypeError","range() expects one number");
-  List *l=list_new(); long long m=(long long)args[0].num;
-  for(long long i=0;i<m;i++) list_push(l, V_number((double)i));
+  /* range(n) or range(start, stop) or range(start, stop, step) */
+  if(n<1||n>3) runtime_error(ip,"LarzTypeError","range() expects 1 to 3 numbers");
+  for(int i=0;i<n;i++) if(!is_num(args[i])) runtime_error(ip,"LarzTypeError","range() expects numbers");
+  long long start=0, stop, step=1;
+  if(n==1){ stop=(long long)args[0].num; }
+  else { start=(long long)args[0].num; stop=(long long)args[1].num; if(n==3) step=(long long)args[2].num; }
+  if(step==0) runtime_error(ip,"LarzRuntimeError","range() step cannot be zero");
+  List *l=list_new();
+  if(step>0) for(long long i=start;i<stop;i+=step) list_push(l,V_number((double)i));
+  else for(long long i=start;i>stop;i+=step) list_push(l,V_number((double)i));
   return V_list(l);
 }
+static const char *type_name(Value v){
+  switch(v.t){ case V_NIL:return "nil"; case V_BOOL:return "bool"; case V_NUM:return "number";
+    case V_MONEY:return "money"; case V_STR:return "string"; case V_WALLET:return "wallet";
+    case V_FUNC:return "function"; case V_BUILTIN:return "function"; case V_LIST:return "list";
+    case V_DICT:return "dict"; case V_PAYWALL:return "paywall"; default:return "value"; }
+}
+static Value bi_str(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","str() expects one argument"); return V_string(str_of(a[0])); }
+static Value bi_type(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","type() expects one argument"); return V_string(xstrdup(type_name(a[0]))); }
+static Value bi_int(Interp *ip, Value *a, int n){
+  if(n!=1) runtime_error(ip,"LarzTypeError","int() expects one argument");
+  if(a[0].t==V_NUM) return V_number((double)(long long)a[0].num);
+  if(a[0].t==V_BOOL) return V_number(a[0].b?1:0);
+  if(a[0].t==V_STR){ char *e; double d=strtod(a[0].str,&e); if(e==a[0].str) runtime_error(ip,"LarzValueError","int(): not a number: '%s'", a[0].str); return V_number((double)(long long)d); }
+  runtime_error(ip,"LarzTypeError","int() expects a number, bool or string"); return V_nil();
+}
+static Value bi_float(Interp *ip, Value *a, int n){
+  if(n!=1) runtime_error(ip,"LarzTypeError","float() expects one argument");
+  if(a[0].t==V_NUM) return a[0];
+  if(a[0].t==V_BOOL) return V_number(a[0].b?1:0);
+  if(a[0].t==V_STR){ char *e; double d=strtod(a[0].str,&e); if(e==a[0].str) runtime_error(ip,"LarzValueError","float(): not a number: '%s'", a[0].str); return V_number(d); }
+  runtime_error(ip,"LarzTypeError","float() expects a number, bool or string"); return V_nil();
+}
+static Value bi_bool(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","bool() expects one argument"); return V_bool(truthy(a[0])); }
+static Value bi_abs(Interp *ip, Value *a, int n){
+  if(n!=1) runtime_error(ip,"LarzTypeError","abs() expects one argument");
+  if(a[0].t==V_NUM) return V_number(a[0].num<0?-a[0].num:a[0].num);
+  if(a[0].t==V_MONEY) return V_money(a[0].cents<0?-a[0].cents:a[0].cents);
+  runtime_error(ip,"LarzTypeError","abs() expects a number or money"); return V_nil();
+}
+static Value _minmax(Interp *ip, Value *a, int n, int want_max){
+  Value *items; int count;
+  if(n==1 && a[0].t==V_LIST){ items=a[0].list->items; count=a[0].list->n; }
+  else { items=a; count=n; }
+  if(count==0) runtime_error(ip,"LarzValueError","%s() of empty sequence", want_max?"max":"min");
+  Value best=items[0];
+  for(int i=1;i<count;i++){ int c=value_compare(items[i],best); if(want_max?c>0:c<0) best=items[i]; }
+  return best;
+}
+static Value bi_min(Interp *ip, Value *a, int n){ return _minmax(ip,a,n,0); }
+static Value bi_max(Interp *ip, Value *a, int n){ return _minmax(ip,a,n,1); }
+static Value bi_sum(Interp *ip, Value *a, int n){
+  if(n!=1 || a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","sum() expects a list");
+  List *l=a[0].list; if(l->n==0) return V_number(0);
+  if(l->items[0].t==V_MONEY){ long long c=0; for(int i=0;i<l->n;i++){ if(l->items[i].t!=V_MONEY) runtime_error(ip,"LarzTypeError","sum(): mixed types"); c+=l->items[i].cents; } return V_money(c); }
+  double s=0; for(int i=0;i<l->n;i++){ if(!is_num(l->items[i])) runtime_error(ip,"LarzTypeError","sum(): expects numbers or money"); s+=l->items[i].num; } return V_number(s);
+}
+static Value bi_sorted(Interp *ip, Value *a, int n){
+  if(n!=1 || a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","sorted() expects a list");
+  List *r=list_new(); for(int i=0;i<a[0].list->n;i++) list_push(r, a[0].list->items[i]);
+  qsort(r->items, r->n, sizeof(Value), qsort_value_cmp);
+  return V_list(r);
+}
+static Value bi_reversed(Interp *ip, Value *a, int n){
+  if(n!=1 || a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","reversed() expects a list");
+  List *r=list_new(); for(int i=a[0].list->n-1;i>=0;i--) list_push(r, a[0].list->items[i]);
+  return V_list(r);
+}
+static Value bi_floor(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","floor() expects a number"); double x=a[0].num; long long d=(long long)x; if(x<0 && (double)d!=x) d--; return V_number((double)d); }
+static Value bi_ceil(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ceil() expects a number"); double x=a[0].num; long long d=(long long)x; if(x>0 && (double)d!=x) d++; return V_number((double)d); }
+static Value bi_round(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","round() expects a number"); double x=a[0].num; return V_number((double)(long long)(x>=0?x+0.5:x-0.5)); }
+static Value bi_sqrt(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","sqrt() expects a number"); double x=a[0].num; if(x<0) runtime_error(ip,"LarzValueError","sqrt() of a negative number"); if(x==0) return V_number(0); double g=x>1?x:1; for(int i=0;i<60;i++) g=0.5*(g+x/g); return V_number(g); }
+static Value bi_pow(Interp *ip, Value *a, int n){ if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","pow() expects two numbers"); double b=a[0].num, e=a[1].num; if(e!=(long long)e) runtime_error(ip,"LarzValueError","pow(): exponent must be a whole number"); long long ex=(long long)e; double r=1, base=b; int neg=ex<0; if(neg) ex=-ex; for(long long i=0;i<ex;i++) r*=base; if(neg){ if(b==0) runtime_error(ip,"LarzRuntimeError","0 to a negative power"); r=1/r; } return V_number(r); }
+static Value bi_chr(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","chr() expects a number"); char *s=xmalloc(2); s[0]=(char)(int)a[0].num; s[1]=0; return V_string(s); }
+static Value bi_ord(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR||a[0].str[0]==0) runtime_error(ip,"LarzTypeError","ord() expects a non-empty string"); return V_number((unsigned char)a[0].str[0]); }
+static Value bi_assert(Interp *ip, Value *a, int n){ if(n<1) runtime_error(ip,"LarzTypeError","assert() expects a condition"); if(!truthy(a[0])) runtime_error(ip,"AssertionError","%s", (n>=2&&a[1].t==V_STR)?a[1].str:"assertion failed"); return V_nil(); }
+static Value bi_input(Interp *ip, Value *a, int n){
+  (void)ip; if(n>=1 && a[0].t==V_STR){ printf("%s", a[0].str); fflush(stdout); }
+  char buf[8192]; if(!fgets(buf,sizeof buf,stdin)) return V_nil();
+  int len=(int)strlen(buf); while(len>0 && (buf[len-1]=='\n'||buf[len-1]=='\r')) buf[--len]=0;
+  return V_string(xstrndup(buf,len));
+}
+static Value bi_keys(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","keys() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].key); return V_list(r); }
+static Value bi_values(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","values() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].val); return V_list(r); }
+
 static Builtin B_print = {"print", bi_print};
 static Builtin B_money = {"money", bi_money};
 static Builtin B_len   = {"len",   bi_len};
 static Builtin B_push  = {"push",  bi_push};
 static Builtin B_range = {"range", bi_range};
+static Builtin B_str={"str",bi_str}, B_int={"int",bi_int}, B_float={"float",bi_float}, B_bool={"bool",bi_bool}, B_type={"type",bi_type};
+static Builtin B_abs={"abs",bi_abs}, B_min={"min",bi_min}, B_max={"max",bi_max}, B_sum={"sum",bi_sum};
+static Builtin B_sorted={"sorted",bi_sorted}, B_reversed={"reversed",bi_reversed};
+static Builtin B_floor={"floor",bi_floor}, B_ceil={"ceil",bi_ceil}, B_round={"round",bi_round}, B_sqrt={"sqrt",bi_sqrt}, B_pow={"pow",bi_pow};
+static Builtin B_chr={"chr",bi_chr}, B_ord={"ord",bi_ord}, B_assert={"assert",bi_assert}, B_input={"input",bi_input};
+static Builtin B_keys={"keys",bi_keys}, B_values={"values",bi_values};
 
 /* ===================== REPL ===================== */
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v0.3.0) - type statements; Ctrl-D to exit.\n");
+  printf("Larzscript native REPL (v1.0.0) - type statements; Ctrl-D to exit.\n");
   for(;;){
     printf("larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
@@ -768,12 +1036,34 @@ static void install_builtins(Interp *ip){
   env_define(ip->globals, "len",   V_builtin(&B_len));
   env_define(ip->globals, "push",  V_builtin(&B_push));
   env_define(ip->globals, "range", V_builtin(&B_range));
+  env_define(ip->globals, "str",   V_builtin(&B_str));
+  env_define(ip->globals, "int",   V_builtin(&B_int));
+  env_define(ip->globals, "float", V_builtin(&B_float));
+  env_define(ip->globals, "bool",  V_builtin(&B_bool));
+  env_define(ip->globals, "type",  V_builtin(&B_type));
+  env_define(ip->globals, "abs",   V_builtin(&B_abs));
+  env_define(ip->globals, "min",   V_builtin(&B_min));
+  env_define(ip->globals, "max",   V_builtin(&B_max));
+  env_define(ip->globals, "sum",   V_builtin(&B_sum));
+  env_define(ip->globals, "sorted",   V_builtin(&B_sorted));
+  env_define(ip->globals, "reversed", V_builtin(&B_reversed));
+  env_define(ip->globals, "floor", V_builtin(&B_floor));
+  env_define(ip->globals, "ceil",  V_builtin(&B_ceil));
+  env_define(ip->globals, "round", V_builtin(&B_round));
+  env_define(ip->globals, "sqrt",  V_builtin(&B_sqrt));
+  env_define(ip->globals, "pow",   V_builtin(&B_pow));
+  env_define(ip->globals, "chr",   V_builtin(&B_chr));
+  env_define(ip->globals, "ord",   V_builtin(&B_ord));
+  env_define(ip->globals, "assert",V_builtin(&B_assert));
+  env_define(ip->globals, "input", V_builtin(&B_input));
+  env_define(ip->globals, "keys",  V_builtin(&B_keys));
+  env_define(ip->globals, "values",V_builtin(&B_values));
 }
 
 int main(int argc, char **argv){
   const char *path=NULL; int show_ledger=0, want_repl=0;
   for(int i=1;i<argc;i++){
-    if(strcmp(argv[i],"--version")==0 || strcmp(argv[i],"-v")==0){ printf("larzscript (native) 0.3.0\n"); return 0; }
+    if(strcmp(argv[i],"--version")==0 || strcmp(argv[i],"-v")==0){ printf("larzscript (native) 1.0.0\n"); return 0; }
     if(strcmp(argv[i],"--help")==0 || strcmp(argv[i],"-h")==0){ printf("usage: larzscript [--ledger] <program.lz>   |   larzscript repl\n"); return 0; }
     if(strcmp(argv[i],"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(argv[i],"repl")==0){ want_repl=1; continue; }

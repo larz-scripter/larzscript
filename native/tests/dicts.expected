@@ -1,0 +1,8 @@
+10 2 3
+len 3
+has b true has z false
+get z -1
+keys [a, b, c]
+values [10, 2, 3]
+after remove {a: 10, c: 3}
+sum of values 13
