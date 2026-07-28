@@ -25,7 +25,7 @@ pdpt:  .skip 4096
 pd:    .skip 4096
 .align 16
 stack_bottom:
-.skip 16384
+.skip 0x800000                         /* 8 MiB kernel stack - the interpreter recurses deeply */
 stack_top:
 
 .section .rodata
@@ -45,6 +45,15 @@ gdt64_pointer:
 .type _start, @function
 _start:
     mov $stack_top, %esp
+
+    /* zero the BSS now, while paging is off - it holds both the page tables
+     * (below) and the kernel heap, and their globals rely on being zero. */
+    mov $__bss_start, %edi
+    mov $__bss_end, %ecx
+    sub %edi, %ecx
+    shr $2, %ecx                 /* bytes -> dwords */
+    xor %eax, %eax
+    rep stosl
 
     /* --- page tables: PML4[0] -> PDPT[0] -> PD, identity map 1 GiB --- */
     movl $pdpt, %eax
@@ -103,6 +112,16 @@ long_mode_start:
     movw %ax, %gs
 
     movq $stack_top, %rsp
+
+    /* enable SSE - the Larzscript interpreter uses xmm for doubles */
+    movq %cr0, %rax
+    andq $0xFFFFFFFFFFFFFFFB, %rax   /* clear CR0.EM (bit 2) */
+    orq  $0x2, %rax                  /* set   CR0.MP (bit 1) */
+    movq %rax, %cr0
+    movq %cr4, %rax
+    orq  $0x600, %rax                /* set CR4.OSFXSR (9) + OSXMMEXCPT (10) */
+    movq %rax, %cr4
+
     call kernel_main
     cli
 1:  hlt

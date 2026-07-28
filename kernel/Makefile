@@ -1,64 +1,74 @@
-# Build the LarzOS Stage 1 kernel (64-bit multiboot ELF, boots to long mode).
+# Build the LarzOS Stage 1 kernel: a 64-bit multiboot kernel that boots to long
+# mode and runs the *unmodified* Larzscript interpreter on bare metal.
 #
 #   make            # build larzkernel.elf
-#   make run        # boot it in QEMU (serial console on your terminal)
-#   make test       # boot headlessly, feed scripted input, print output
-#   make iso        # build a GRUB ISO for VirtualBox / real hardware (needs grub-mkrescue)
+#   make iso        # build larzos.iso (GRUB) for QEMU / VirtualBox / real hardware
+#   make test       # boot the ISO headlessly, drive the REPL over serial
+#   make run        # boot interactively (your terminal is the serial console)
 #
-# Requires: gcc, ld, qemu-system-x86_64. ISO also needs grub-mkrescue + xorriso.
+# Requires: gcc, ld, qemu-system-x86_64; ISO also needs grub-mkrescue + xorriso.
 
-CC      := gcc
-LD      := ld
-# Freestanding, no libc, no SIMD/red-zone (no FPU state set up yet).
-CFLAGS  := -m64 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pie \
-           -mno-red-zone -mgeneral-regs-only \
-           -Wall -Wextra -O2 -nostdlib
-ASFLAGS := -m64 -ffreestanding -fno-pie
+CC     := gcc
+LD     := ld
+INTERP := ../native/larzscript.c            # the official Larzscript interpreter
+GCCINC := $(shell $(CC) -print-file-name=include)
+
+# Freestanding + our headers replace libc. SSE stays ON (doubles use xmm);
+# only -mno-red-zone (kernel code) and no stack protector / PIE.
+FREE   := -m64 -std=gnu11 -ffreestanding -fno-stack-protector -fno-pie \
+          -mno-red-zone -fno-asynchronous-unwind-tables -O2 -nostdlib \
+          -nostdinc -isystem $(GCCINC) -Ilibc -I.
+CFLAGS := $(FREE) -Wall
+AFLAGS := -m64 -ffreestanding -fno-pie
 LDFLAGS := -m elf_x86_64 -T linker.ld -nostdlib -no-pie -z max-page-size=0x1000
 
-KERNEL  := larzkernel.elf
-OBJS    := boot.o kernel.o
+KERNEL := larzkernel.elf
+OBJS   := boot.o setjmp.o kernel.o libk.o larzscript.o
 
-QEMU     := qemu-system-x86_64
+QEMU   := qemu-system-x86_64
 
 all: $(KERNEL)
 
 boot.o: boot.S
-	$(CC) $(ASFLAGS) -c boot.S -o boot.o
-
-kernel.o: kernel.c
+	$(CC) $(AFLAGS) -c boot.S -o boot.o
+setjmp.o: setjmp.S
+	$(CC) $(AFLAGS) -c setjmp.S -o setjmp.o
+kernel.o: kernel.c console.h
 	$(CC) $(CFLAGS) -c kernel.c -o kernel.o
+libk.o: libk.c console.h
+	$(CC) $(CFLAGS) -c libk.c -o libk.o
+# the interpreter, unmodified; its main() is renamed so the kernel is the entry
+larzscript.o: $(INTERP)
+	$(CC) $(FREE) -w -Dmain=larz_main -c $(INTERP) -o larzscript.o
 
 $(KERNEL): $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $(KERNEL) $(OBJS)
 	@echo "built $(KERNEL)"
 
-# Interactive: your terminal becomes the serial console. Ctrl-A X to quit QEMU.
-run: iso
-	$(QEMU) -cdrom larzos.iso -display none -serial stdio -monitor none -no-reboot \
-	        -device isa-debug-exit,iobase=0xf4,iosize=0x04
-
-# Headless smoke test: boot the ISO, feed commands, capture output.
-# QEMU's -kernel loader is 32-bit-only, so a 64-bit multiboot kernel is tested
-# via the same GRUB ISO that VirtualBox/real hardware use. The leading newline
-# absorbs the one byte the UART drops if input arrives before serial_init.
-test: iso
-	printf '\nabout\nbalance\nearn\nspend\nspend\nbalance\nhalt\n' | \
-	  timeout 25 $(QEMU) -cdrom larzos.iso -display none -serial stdio \
-	    -monitor none -no-reboot \
-	    -device isa-debug-exit,iobase=0xf4,iosize=0x04 ; \
-	  echo "(qemu exited $$? - isa-debug-exit reports 1 on clean halt)"
-
-# A bootable ISO (GRUB) for VirtualBox / a USB stick / real hardware.
 iso: $(KERNEL)
 	mkdir -p iso/boot/grub
 	cp $(KERNEL) iso/boot/larzkernel.elf
 	printf 'set timeout=0\nset default=0\nmenuentry "LarzOS" {\n  multiboot /boot/larzkernel.elf\n  boot\n}\n' > iso/boot/grub/grub.cfg
-	grub-mkrescue -o larzos.iso iso
-	@echo "built larzos.iso (boot in VirtualBox or: qemu-system-x86_64 -cdrom larzos.iso)"
+	grub-mkrescue -o larzos.iso iso 2>/dev/null
+	@echo "built larzos.iso"
+
+# Boot the ISO headlessly and drive the Larzscript REPL over serial from
+# demo.lzin. Input is throttled (a boot delay + a pause per line) because the
+# kernel uses polled serial with no flow control, so a burst would overflow the
+# 16-byte UART FIFO. A human typing never hits this.
+test: iso
+	( sleep 4; while IFS= read -r l; do printf '%s\n' "$$l"; sleep 0.5; done < demo.lzin ) | \
+	  timeout 90 $(QEMU) -m 128 -cdrom larzos.iso -display none -serial stdio \
+	    -monitor none -no-reboot \
+	    -device isa-debug-exit,iobase=0xf4,iosize=0x04 ; \
+	  echo "(qemu exited $$?)"
+
+run: iso
+	$(QEMU) -m 128 -cdrom larzos.iso -display none -serial stdio -monitor none -no-reboot \
+	        -device isa-debug-exit,iobase=0xf4,iosize=0x04
 
 clean:
 	rm -f $(OBJS) $(KERNEL) larzos.iso
 	rm -rf iso
 
-.PHONY: all run test iso clean
+.PHONY: all iso test run clean
