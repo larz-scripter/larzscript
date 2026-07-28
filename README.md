@@ -48,9 +48,21 @@ let repo = json.parse(http.get("https://api.github.com/repos/larz-scripter/larzs
 print(repo["full_name"])                       # larz-scripter/larzscript
 ```
 
-Available: **json** (parse/stringify), **http** (a curl-based client), **mathx**,
-**greet**. Add yours by PR-ing a line to
-[`packages/registry.txt`](packages/registry.txt).
+Available packages:
+
+| Package | What it does |
+|---|---|
+| **json** | parse & stringify JSON (pure Larzscript) |
+| **http** | HTTP client (get/post/status/download, via curl) |
+| **csv** | parse & write CSV, handles quoted fields |
+| **args** | command-line argument parsing |
+| **color** | ANSI terminal colors |
+| **test** | a tiny test framework (assert/report) |
+| **mathx** | small math helpers (mean, fib, primes) |
+| **greet** | a tiny example package |
+
+They compose — e.g. `json.parse(http.get(url))`, or CSV → list-of-dicts → JSON.
+Add yours by PR-ing a line to [`packages/registry.txt`](packages/registry.txt).
 
 ## A taste — general-purpose *and* money-native
 
