@@ -1,0 +1,9 @@
+# A coffee shop: money and wallets are first-class.
+wallet customer = $10.00
+wallet shop
+price coffee = $3.50
+
+pay coffee from customer to shop
+
+print("customer:", customer.balance)     # $6.50
+print("shop:", shop.balance)             # $3.50

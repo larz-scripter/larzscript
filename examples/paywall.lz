@@ -1,0 +1,16 @@
+# A paywall as a require-guard, and a revenue split - in the language.
+wallet customer = $20.00
+wallet platform
+wallet creator
+price premium = $9.00
+
+fn buy_premium(buyer) {
+    require buyer.balance >= premium, "not enough funds for premium"
+    pay premium from buyer to platform
+    # 80% to the creator, kept in the language, not app code
+    pay premium * 0.8 from platform to creator
+}
+
+buy_premium(customer)
+print("creator earned:", creator.balance)   # $7.20
+print("platform kept:",  platform.balance)  # $1.80

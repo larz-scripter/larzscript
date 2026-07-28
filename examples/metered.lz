@@ -1,0 +1,14 @@
+# Gas-metered execution: each call to analyze() costs 500 gas.
+# Run with a budget: larzscript.run(src, gas=1200) allows 2 calls, not 3.
+wallet user = $5.00
+wallet api
+price per_scan = $0.02
+
+fn analyze(image) gas 500 {
+    pay per_scan from user to api
+    return "objects detected in " + image
+}
+
+print(analyze("cat.jpg"))
+print(analyze("dog.jpg"))
+print("api revenue:", api.balance)
