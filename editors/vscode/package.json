@@ -1,0 +1,28 @@
+{
+  "name": "larzscript",
+  "displayName": "Larzscript",
+  "description": "Syntax highlighting for Larzscript — the money-native, general-purpose language (.lz).",
+  "version": "1.0.0",
+  "publisher": "larz-scripter",
+  "license": "MIT",
+  "engines": { "vscode": "^1.60.0" },
+  "categories": ["Programming Languages"],
+  "repository": { "type": "git", "url": "https://github.com/larz-scripter/larzscript" },
+  "contributes": {
+    "languages": [
+      {
+        "id": "larzscript",
+        "aliases": ["Larzscript", "larzscript"],
+        "extensions": [".lz"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "larzscript",
+        "scopeName": "source.larzscript",
+        "path": "./syntaxes/larzscript.tmLanguage.json"
+      }
+    ]
+  }
+}

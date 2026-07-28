@@ -1,0 +1,86 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Larzscript",
+  "scopeName": "source.larzscript",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#fstrings" },
+    { "include": "#strings" },
+    { "include": "#money" },
+    { "include": "#numbers" },
+    { "include": "#constants" },
+    { "include": "#function-def" },
+    { "include": "#keywords" },
+    { "include": "#money-keywords" },
+    { "include": "#builtins" },
+    { "include": "#operators" },
+    { "include": "#function-call" }
+  ],
+  "repository": {
+    "comments": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.larzscript"
+    },
+    "fstrings": {
+      "name": "string.quoted.double.f.larzscript",
+      "begin": "f\"",
+      "end": "\"",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.larzscript" },
+        {
+          "name": "meta.interpolation.larzscript",
+          "begin": "\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.definition.interpolation.begin.larzscript" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.interpolation.end.larzscript" } },
+          "patterns": [ { "include": "$self" } ]
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.larzscript",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [ { "match": "\\\\.", "name": "constant.character.escape.larzscript" } ]
+    },
+    "money": {
+      "match": "\\$[0-9]+(\\.[0-9]+)?",
+      "name": "constant.numeric.money.larzscript"
+    },
+    "numbers": {
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b",
+      "name": "constant.numeric.larzscript"
+    },
+    "constants": {
+      "match": "\\b(true|false|nil)\\b",
+      "name": "constant.language.larzscript"
+    },
+    "function-def": {
+      "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.other.larzscript" },
+        "2": { "name": "entity.name.function.larzscript" }
+      }
+    },
+    "keywords": {
+      "match": "\\b(let|fn|return|if|else|while|for|in|break|continue|try|catch|throw|import|as|and|or|not)\\b",
+      "name": "keyword.control.larzscript"
+    },
+    "money-keywords": {
+      "match": "\\b(price|wallet|pay|from|to|require|gas|paywall|subscribe|has)\\b",
+      "name": "keyword.other.money.larzscript"
+    },
+    "builtins": {
+      "match": "\\b(print|len|range|str|int|float|bool|type|abs|min|max|sum|sorted|reversed|floor|ceil|round|sqrt|pow|chr|ord|assert|input|keys|values|push|money|map|filter|reduce|join|enumerate|zip|read_file|write_file|append_file|file_exists|exit|args)\\b",
+      "name": "support.function.builtin.larzscript"
+    },
+    "operators": {
+      "match": "(\\*\\*|//|\\+=|-=|\\*=|/=|%=|==|!=|<=|>=|[-+*/%<>=?:])",
+      "name": "keyword.operator.larzscript"
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "name": "entity.name.function.call.larzscript"
+    }
+  }
+}

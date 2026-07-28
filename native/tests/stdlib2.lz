@@ -1,0 +1,9 @@
+print("=" * 10)
+print("ab" * 3)
+print([1] * 4)
+print(zip(["a", "b"], [1, 2]))
+print(3 in [1, 2, 3], "x" in ["x"])
+let d = {}
+for pair in zip(["a", "b", "c"], [10, 20, 30]) { d[pair[0]] = pair[1] }
+print(d)
+print(sum(map(fn(x){ return x * x }, range(1, 5))))

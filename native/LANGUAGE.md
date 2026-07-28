@@ -160,9 +160,22 @@ and `wallet.debit(m)` adjust it. Run with `--ledger` to print the money ledger.
 
 `print len range str int float bool type abs min max sum sorted reversed
 floor ceil round sqrt pow chr ord assert input keys values push money
-map filter reduce join enumerate`
+map filter reduce join enumerate zip exit`
 
 `range(n)`, `range(start, stop)`, `range(start, stop, step)`.
+
+`"ab" * 3` and `[0] * 5` repeat strings and lists.
+
+### Files, args, exit
+
+```
+write_file("out.txt", "hello")        # write (overwrite)
+append_file("out.txt", " more")       # append
+read_file("out.txt")                  # -> string
+file_exists("out.txt")                # -> bool
+args                                   # command-line args after the script (a list)
+exit(0)                               # exit with a status code
+```
 
 ---
 

@@ -26,7 +26,9 @@
  *             split/replace/contains/starts_with/ends_with/find)
  *   stdlib:   print money len range str int float bool type abs min max sum
  *             sorted reversed floor ceil round sqrt pow chr ord assert input
- *             keys values push map filter reduce join enumerate
+ *             keys values push map filter reduce join enumerate zip exit
+ *             read_file write_file append_file file_exists; `args` = argv list
+ *   strings/lists also support repetition: "ab"*3, [0]*5
  *   money:    $ = integer cents; price; pay .. from .. to ..; require;
  *             paywall / subscribe / has (money-native primitives)
  *   errors:   reported with line numbers; catchable with try/catch.
@@ -714,6 +716,11 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
     if(a.t==V_MONEY && is_num(b)) return V_money(money_round((double)a.cents*b.num));
     if(is_num(a) && b.t==V_MONEY) return V_money(money_round((double)b.cents*a.num));
     if(bn) return V_number(a.num*b.num);
+    /* string/list repetition: "ab" * 3, [0] * 4 (either order) */
+    { Value s=a, k=b; if(is_num(a)&&(b.t==V_STR||b.t==V_LIST)){ s=b; k=a; }
+      if(s.t==V_STR && is_num(k)){ long long m=(long long)k.num; if(m<0) m=0; size_t la=strlen(s.str); char *out=xmalloc(la*m+1); for(long long i=0;i<m;i++) memcpy(out+i*la, s.str, la); out[la*m]=0; return V_string(out); }
+      if(s.t==V_LIST && is_num(k)){ long long m=(long long)k.num; if(m<0) m=0; List *r=list_new(); for(long long i=0;i<m;i++) for(int j=0;j<s.list->n;j++) list_push(r,s.list->items[j]); return V_list(r); }
+    }
     runtime_error(ip,"LarzTypeError","cannot multiply those values");
   }
   if(strcmp(op,"/")==0){
@@ -1196,6 +1203,12 @@ static Value bi_filter(Interp *ip, Value *a, int n){ if(n!=2||a[1].t!=V_LIST) ru
 static Value bi_reduce(Interp *ip, Value *a, int n){ if(n<2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","reduce() expects a function, a list and an optional initial value"); List *l=a[1].list; int i=0; Value acc; if(n>=3) acc=a[2]; else { if(l->n==0) runtime_error(ip,"LarzValueError","reduce() of empty list with no initial value"); acc=l->items[0]; i=1; } for(; i<l->n; i++){ Value args[2]; args[0]=acc; args[1]=l->items[i]; acc=call_value(ip,a[0],args,2); } return acc; }
 static Value bi_join(Interp *ip, Value *a, int n){ if(n<1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","join() expects a list and an optional separator"); const char *sep=(n>=2&&a[1].t==V_STR)?a[1].str:""; SB b; b.s=NULL;b.n=0;b.cap=0; for(int i=0;i<a[0].list->n;i++){ if(i) sb_puts(&b,sep); char *s=str_of(a[0].list->items[i]); sb_puts(&b,s); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
 static Value bi_enumerate(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","enumerate() expects a list"); List *r=list_new(); for(int i=0;i<a[0].list->n;i++){ List *pair=list_new(); list_push(pair,V_number(i)); list_push(pair,a[0].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
+static Value bi_zip(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_LIST||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","zip() expects two lists"); int m=a[0].list->n<a[1].list->n?a[0].list->n:a[1].list->n; List *r=list_new(); for(int i=0;i<m;i++){ List *pair=list_new(); list_push(pair,a[0].list->items[i]); list_push(pair,a[1].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
+static Value bi_read_file(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","read_file() expects a path string"); FILE *f=fopen(a[0].str,"rb"); if(!f) runtime_error(ip,"IOError","cannot read file '%s'", a[0].str); size_t cap=1<<16,len=0; char *b=xmalloc(cap); size_t r; while((r=fread(b+len,1,cap-len,f))>0){ len+=r; if(len==cap){ cap*=2; b=realloc(b,cap); } } b[len]=0; fclose(f); return V_string(b); }
+static Value bi_write_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","write_file() expects a path and content"); FILE *f=fopen(a[0].str,"wb"); if(!f) runtime_error(ip,"IOError","cannot write file '%s'", a[0].str); char *s=str_of(a[1]); fputs(s,f); fclose(f); return V_nil(); }
+static Value bi_append_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","append_file() expects a path and content"); FILE *f=fopen(a[0].str,"ab"); if(!f) runtime_error(ip,"IOError","cannot append to file '%s'", a[0].str); char *s=str_of(a[1]); fputs(s,f); fclose(f); return V_nil(); }
+static Value bi_file_exists(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","file_exists() expects a path string"); FILE *f=fopen(a[0].str,"rb"); if(f){ fclose(f); return V_bool(1);} return V_bool(0); }
+static Value bi_exit(Interp *ip, Value *a, int n){ (void)ip; int code = (n>=1&&is_num(a[0]))?(int)a[0].num:0; exit(code); }
 
 static Builtin B_print = {"print", bi_print};
 static Builtin B_money = {"money", bi_money};
@@ -1209,11 +1222,12 @@ static Builtin B_floor={"floor",bi_floor}, B_ceil={"ceil",bi_ceil}, B_round={"ro
 static Builtin B_chr={"chr",bi_chr}, B_ord={"ord",bi_ord}, B_assert={"assert",bi_assert}, B_input={"input",bi_input};
 static Builtin B_keys={"keys",bi_keys}, B_values={"values",bi_values};
 static Builtin B_map={"map",bi_map}, B_filter={"filter",bi_filter}, B_reduce={"reduce",bi_reduce}, B_join={"join",bi_join}, B_enumerate={"enumerate",bi_enumerate};
+static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_write_file={"write_file",bi_write_file}, B_append_file={"append_file",bi_append_file}, B_file_exists={"file_exists",bi_file_exists}, B_exit={"exit",bi_exit};
 
 /* ===================== REPL ===================== */
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v1.2.0) - type statements; Ctrl-D to exit.\n");
+  printf("Larzscript native REPL (v1.3.0) - type statements; Ctrl-D to exit.\n");
   for(;;){
     printf("larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
@@ -1280,6 +1294,12 @@ static void define_builtins(Env *g){
   env_define(g, "reduce", V_builtin(&B_reduce));
   env_define(g, "join",   V_builtin(&B_join));
   env_define(g, "enumerate", V_builtin(&B_enumerate));
+  env_define(g, "zip",    V_builtin(&B_zip));
+  env_define(g, "read_file",   V_builtin(&B_read_file));
+  env_define(g, "write_file",  V_builtin(&B_write_file));
+  env_define(g, "append_file", V_builtin(&B_append_file));
+  env_define(g, "file_exists", V_builtin(&B_file_exists));
+  env_define(g, "exit",   V_builtin(&B_exit));
 }
 
 static void install_builtins(Interp *ip){
@@ -1300,18 +1320,24 @@ static const char *USAGE =
 
 int main(int argc, char **argv){
   const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0;
-  for(int i=1;i<argc;i++){
-    if(strcmp(argv[i],"--version")==0 || strcmp(argv[i],"-v")==0){ printf("larzscript (native) 1.2.0\n"); return 0; }
-    if(strcmp(argv[i],"--help")==0 || strcmp(argv[i],"-h")==0){ printf("%s", USAGE); return 0; }
-    if(strcmp(argv[i],"--ledger")==0){ show_ledger=1; continue; }
-    if(strcmp(argv[i],"-e")==0 || strcmp(argv[i],"--eval")==0){ if(i+1>=argc){ fprintf(stderr,"larzscript: -e needs code\n"); return 1; } eval_code=argv[++i]; continue; }
-    if(strcmp(argv[i],"repl")==0){ want_repl=1; continue; }
-    path=argv[i];
+  int i=1;
+  for(; i<argc; i++){
+    const char *a=argv[i];
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.3.0\n"); return 0; }
+    if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
+    if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
+    if(strcmp(a,"-e")==0 || strcmp(a,"--eval")==0){ if(i+1>=argc){ fprintf(stderr,"larzscript: -e needs code\n"); return 1; } eval_code=argv[++i]; i++; break; }
+    if(strcmp(a,"repl")==0){ want_repl=1; i++; break; }
+    path=a; i++; break;                 /* the source file; the rest are program args */
   }
+  /* remaining argv[i..] are the program's own arguments */
+  List *prog_args=list_new();
+  for(; i<argc; i++) list_push(prog_args, V_string(xstrdup(argv[i])));
 
   if(want_repl){
     Interp ip; memset(&ip,0,sizeof(ip));
     install_builtins(&ip); ip.basedir=xstrdup(".");
+    env_define(ip.globals, "args", V_list(prog_args));
     repl(&ip);
     return 0;
   }
@@ -1330,6 +1356,7 @@ int main(int argc, char **argv){
 
   Interp ip; memset(&ip,0,sizeof(ip));
   install_builtins(&ip); ip.basedir=basedir;
+  env_define(ip.globals, "args", V_list(prog_args));
 
   if(setjmp(ip.jb)){ fprintf(stderr,"%s: %s\n", ip.errname, ip.errmsg); return 1; }
   for(int i=0;i<prog->nkids;i++){ exec(&ip, prog->kids[i], ip.globals); if(ip.returning) break; }
