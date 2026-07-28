@@ -1,11 +1,15 @@
 # Larzscript package registry - `name  git-url` per line.
 # Install with:  larzscript tools/larzpkg.lz install <name>
 # Add your package by opening a PR that appends a line here.
-mathx  https://github.com/larz-scripter/lz-mathx
-greet  https://github.com/larz-scripter/lz-greet
-json   https://github.com/larz-scripter/lz-json
-http   https://github.com/larz-scripter/lz-http
-test   https://github.com/larz-scripter/lz-test
-color  https://github.com/larz-scripter/lz-color
-csv    https://github.com/larz-scripter/lz-csv
-args   https://github.com/larz-scripter/lz-args
+mathx   https://github.com/larz-scripter/lz-mathx
+greet   https://github.com/larz-scripter/lz-greet
+json    https://github.com/larz-scripter/lz-json
+http    https://github.com/larz-scripter/lz-http
+test    https://github.com/larz-scripter/lz-test
+color   https://github.com/larz-scripter/lz-color
+csv     https://github.com/larz-scripter/lz-csv
+args    https://github.com/larz-scripter/lz-args
+time    https://github.com/larz-scripter/lz-time
+string  https://github.com/larz-scripter/lz-string
+random  https://github.com/larz-scripter/lz-random
+fs      https://github.com/larz-scripter/lz-fs
