@@ -1502,7 +1502,7 @@ static int bracket_depth(const char *s){
 static void repl(Interp *ip){
   char line[8192];
   static char buf[1<<16]; buf[0]=0;
-  printf("Larzscript native REPL (v1.10.0) - type statements; Ctrl-D to exit.\n"
+  printf("Larzscript native REPL (v1.11.0) - type statements; Ctrl-D to exit.\n"
          "Definitions can span multiple lines; the '..... ' prompt means more is expected.\n");
   for(;;){
     printf(buf[0] ? "..... " : "larz> "); fflush(stdout);
@@ -1724,19 +1724,21 @@ static const char *USAGE =
   "  larzscript -e \"<code>\"          run a snippet of code\n"
   "  larzscript repl                start the interactive REPL\n"
   "  larzscript fmt <file.lz>       print the file, canonically formatted\n"
+  "  larzscript --check <file.lz>   syntax-check a file (for editors / CI)\n"
   "  larzscript [--ledger] <file>   also print the money ledger afterwards\n"
   "  larzscript --version | --help\n";
 
 int main(int argc, char **argv){
   if(getenv("LZ_GC_STRESS")) g_gc_threshold=0;   /* collect on every statement (test mode) */
-  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0;
+  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0;
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.10.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.11.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
+    if(strcmp(a,"--check")==0 || strcmp(a,"check")==0){ want_check=1; continue; }
     if(strcmp(a,"-e")==0 || strcmp(a,"--eval")==0){ if(i+1>=argc){ fprintf(stderr,"larzscript: -e needs code\n"); return 1; } eval_code=argv[++i]; i++; break; }
     if(strcmp(a,"repl")==0){ want_repl=1; i++; break; }
     path=a; i++; break;                 /* the source file; the rest are program args */
@@ -1750,6 +1752,15 @@ int main(int argc, char **argv){
     char *src=read_all(path);
     if(setjmp(g_err)){ fprintf(stderr,"SyntaxError: %s\n", g_errmsg); return 1; }
     format_program(parse_program(lex(src)));
+    return 0;
+  }
+
+  if(want_check){                        /* parse-check only: report syntax errors, don't run */
+    if(!path){ fprintf(stderr,"larzscript --check: needs a file\n"); return 1; }
+    char *src=read_all(path);
+    if(setjmp(g_err)){ fprintf(stderr,"%s: SyntaxError: %s\n", path, g_errmsg); return 1; }
+    parse_program(lex(src));
+    printf("%s: ok\n", path);
     return 0;
   }
 
