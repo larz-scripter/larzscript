@@ -11,7 +11,8 @@ from larzscript.errors import (LarzNameError, LarzTypeError, LarzRuntimeError,
                                MoneyError)
 
 __all__ = ["Money", "Wallet", "Transaction", "Paywall", "Builtin", "Environment",
-           "is_num", "truthy", "stringify", "binop", "unary"]
+           "is_num", "truthy", "stringify", "binop", "unary", "index",
+           "make_builtins"]
 
 
 # --------------------------------------------------------------------------- #
@@ -161,7 +162,7 @@ def truthy(v):
         return v.cents != 0
     if is_num(v):
         return v != 0
-    if isinstance(v, str):
+    if isinstance(v, (str, list)):
         return len(v) != 0
     return True
 
@@ -177,7 +178,21 @@ def stringify(v):
         return "<wallet %s: %s>" % (v.name, v.balance)
     if isinstance(v, Paywall):
         return "<paywall %s: %s/%s>" % (v.name, v.price, v.period)
+    if isinstance(v, list):
+        return "[" + ", ".join(stringify(e) for e in v) + "]"
     return str(v)
+
+
+def index(obj, idx):
+    """Index into a list or string (0-based, bounds-checked)."""
+    if isinstance(obj, (list, str)):
+        if not is_num(idx) or int(idx) != idx:
+            raise LarzTypeError("index must be a whole number")
+        idx = int(idx)
+        if idx < 0 or idx >= len(obj):
+            raise LarzRuntimeError("index %d out of range (length %d)" % (idx, len(obj)))
+        return obj[idx]
+    raise LarzTypeError("cannot index %s" % stringify(obj))
 
 
 def unary(op, value):
@@ -258,3 +273,39 @@ def _order_key(v):
     if isinstance(v, str):
         return ("str", v)
     return None
+
+
+# --------------------------------------------------------------------------- #
+#  Built-in functions (shared by both backends; print writes to engine._out)
+# --------------------------------------------------------------------------- #
+
+def make_builtins(engine):
+    """Return the {name: callable} builtins bound to an engine's output buffer."""
+
+    def _print(*args):
+        engine._out.append(" ".join(stringify(a) for a in args))
+        return None
+
+    def _money(dollars):
+        if not is_num(dollars):
+            raise LarzTypeError("money() expects a number of dollars")
+        return Money(dollars * 100)
+
+    def _len(value):
+        if isinstance(value, (str, list)):
+            return len(value)
+        raise LarzTypeError("len() expects a string or list")
+
+    def _push(lst, item):
+        if not isinstance(lst, list):
+            raise LarzTypeError("push() expects a list")
+        lst.append(item)
+        return None
+
+    def _range(n):
+        if not is_num(n):
+            raise LarzTypeError("range() expects a number")
+        return list(range(int(n)))
+
+    return {"print": _print, "money": _money, "len": _len,
+            "push": _push, "range": _range}

@@ -198,3 +198,57 @@ class TestBuiltins(unittest.TestCase):
 
     def test_money_builtin(self):
         self.assertEqual(run('print(money(3.5))').output, "$3.50")
+
+
+class TestListsAndLoops(unittest.TestCase):
+    def test_list_literal_and_index(self):
+        self.assertEqual(run('let xs = [10, 20, 30]\nprint(xs[1])').output, "20")
+        self.assertEqual(run('print([1, 2, 3])').output, "[1, 2, 3]")
+
+    def test_len_on_list(self):
+        self.assertEqual(run('print(len([1, 2, 3, 4]))').output, "4")
+
+    def test_for_loop_sum(self):
+        src = 'let s = 0\nfor n in [1, 2, 3, 4] { s = s + n }\nprint(s)'
+        self.assertEqual(run(src).output, "10")
+
+    def test_for_over_range(self):
+        src = 'let s = 0\nfor i in range(5) { s = s + i }\nprint(s)'
+        self.assertEqual(run(src).output, "10")   # 0+1+2+3+4
+
+    def test_push(self):
+        src = 'let xs = [1]\npush(xs, 2)\npush(xs, 3)\nprint(xs)\nprint(len(xs))'
+        self.assertEqual(run(src).output, "[1, 2, 3]\n3")
+
+    def test_index_out_of_range(self):
+        from larzscript import LarzRuntimeError
+        self.assertRaises(LarzRuntimeError, run, 'let xs = [1]\nprint(xs[5])')
+
+    def test_for_loop_over_prices_pays(self):
+        # money + lists: charge for a basket of items
+        src = ('wallet customer = $20.00\nwallet shop\n'
+               'let basket = [$3.50, $2.00, $4.25]\n'
+               'for item in basket { pay item from customer to shop }\n'
+               'print(shop.balance)')
+        r = run(src)
+        self.assertEqual(r.get("shop").balance, Money(975))   # $9.75
+        self.assertEqual(len(r.ledger), 3)
+
+
+class TestListsParity(unittest.TestCase):
+    def test_list_programs_agree_across_backends(self):
+        programs = [
+            'let s = 0\nfor n in [1, 2, 3, 4, 5] { s = s + n }\nprint(s)',
+            'let s = 0\nfor i in range(6) { s = s + i * i }\nprint(s)',
+            'let xs = [1]\npush(xs, 2)\npush(xs, 3)\nprint(xs, len(xs))',
+            'let xs = ["a", "b", "c"]\nprint(xs[0] + xs[2])',
+            ('wallet c = $20.00\nwallet shop\nlet basket = [$3.50, $2.00, $4.25]\n'
+             'for item in basket { pay item from c to shop }\nprint(shop.balance)'),
+        ]
+        for src in programs:
+            tree = run(src, backend="tree")
+            vm = run(src, backend="vm")
+            self.assertEqual(tree.output, vm.output, "output differs:\n%s" % src)
+            tl = [(t.src, t.dst, t.amount.cents) for t in tree.ledger]
+            vl = [(t.src, t.dst, t.amount.cents) for t in vm.ledger]
+            self.assertEqual(tl, vl, "ledger differs:\n%s" % src)

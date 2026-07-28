@@ -75,6 +75,18 @@ larzscript repl           # interactive REPL (state persists across lines)
 python -m larzscript program.lz
 ```
 
+## Lists & loops (new in 0.4)
+
+```
+let basket = [$3.50, $12.00, $4.25]     # lists (money too)
+for item in basket {                    # for-loops
+    pay item from customer to shop
+}
+print(len(basket), basket[0])           # 3  $3.50
+```
+
+Plus `range(n)` and `push(list, item)`.
+
 ## Two backends: interpret or compile (new in 0.3)
 
 The same program runs two ways, producing identical results:

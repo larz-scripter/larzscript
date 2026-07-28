@@ -9,7 +9,7 @@ program produces identical output, ledger and gas whichever backend runs it.
 from larzscript import compiler as C
 from larzscript.runtime import (Money, Wallet, Paywall, Transaction, Builtin,
                                 Environment, is_num, truthy, stringify,
-                                binop, unary)
+                                binop, unary, index, make_builtins)
 from larzscript.errors import LarzTypeError, RequireError, OutOfGasError
 
 __all__ = ["VM", "Closure"]
@@ -39,9 +39,8 @@ class VM(object):
         self.gas = gas
         self.gas_used = 0
         self._out = output if output is not None else []
-        self.globals.define("print", Builtin("print", self._print))
-        self.globals.define("money", Builtin("money", self._money))
-        self.globals.define("len", Builtin("len", self._len))
+        for name, fn in make_builtins(self).items():
+            self.globals.define(name, Builtin(name, fn))
 
     # -- public --
     def run(self, chunk):
@@ -54,21 +53,6 @@ class VM(object):
     @property
     def output(self):
         return "\n".join(self._out)
-
-    # -- builtins --
-    def _print(self, *args):
-        self._out.append(" ".join(stringify(a) for a in args))
-        return None
-
-    def _money(self, dollars):
-        if not is_num(dollars):
-            raise LarzTypeError("money() expects a number of dollars")
-        return Money(dollars * 100)
-
-    def _len(self, value):
-        if isinstance(value, str):
-            return len(value)
-        raise LarzTypeError("len() expects a string")
 
     def _charge_gas(self, cost, name):
         if not cost:
@@ -143,6 +127,14 @@ class VM(object):
                 args.reverse()
                 callee = pop()
                 push(self._call(callee, args))
+            elif op == C.BUILD_LIST:
+                items = [pop() for _ in range(arg)]
+                items.reverse()
+                push(items)
+            elif op == C.INDEX:
+                i = pop()
+                obj = pop()
+                push(index(obj, i))
             elif op == C.GET_PROP:
                 obj = pop()
                 push(self._get_prop(obj, arg))

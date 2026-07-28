@@ -1,0 +1,14 @@
+# Lists and for-loops: charge a customer for a basket of items.
+wallet customer = $50.00
+wallet shop
+
+let basket = [$3.50, $12.00, $4.25, $9.99]
+
+let total = $0.00
+for item in basket {
+    pay item from customer to shop
+}
+
+print("items:", len(basket))
+print("shop took:", shop.balance)          # $29.74
+print("customer left:", customer.balance)  # $20.26

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+Lists, for-loops, and a few stdlib builtins.
+- List literals `[1, 2, 3]`, indexing `xs[i]` (bounds-checked), and `for x in xs { }`
+  loops (desugared to let/while/index, so both backends get them free).
+- Builtins: `range(n)`, `push(list, item)`; `len` now works on lists too.
+- Works on money too: `for item in basket { pay item from customer to shop }`.
+- Both backends verified in agreement over list/loop programs. 46 tests.
+
 ## 0.3.0
 A compiler backend - Larzscript now runs two ways.
 - New bytecode compiler (compiler.py) + stack VM (vm.py): `run(src, backend="vm")`

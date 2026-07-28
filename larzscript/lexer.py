@@ -14,12 +14,12 @@ KEYWORDS = {
     "let", "fn", "return", "if", "else", "while",
     "and", "or", "not", "true", "false", "nil",
     "price", "wallet", "pay", "from", "to", "require", "gas",
-    "paywall", "subscribe", "has",
+    "paywall", "subscribe", "has", "for", "in",
 }
 
 _TWO_CHAR_OPS = ("==", "!=", "<=", ">=")
 _ONE_CHAR_OPS = "+-*/%<>="
-_PUNCT = "(){},."
+_PUNCT = "(){},.[]"
 
 
 class Token(object):

@@ -52,6 +52,8 @@ Unary = _node("Unary", "op", "operand")
 Call = _node("Call", "callee", "args")
 Get = _node("Get", "obj", "name")
 MethodCall = _node("MethodCall", "obj", "name", "args")
+Array = _node("Array", "elements")
+Index = _node("Index", "obj", "index")
 
 _EXPR_STARTERS = ("NUMBER", "MONEY", "STRING", "IDENT", "true", "false", "nil", "(")
 
@@ -60,6 +62,7 @@ class Parser(object):
     def __init__(self, tokens):
         self.t = tokens
         self.i = 0
+        self._loopn = 0
 
     # -- token helpers --
     def peek(self, k=0):
@@ -127,6 +130,8 @@ class Parser(object):
             return self._if()
         if t == "while":
             return self._while()
+        if t == "for":
+            return self._for()
         if t == "{":
             return self.block()
         # assignment: IDENT '=' ...
@@ -231,6 +236,27 @@ class Parser(object):
         cond = self.expression()
         return While(cond, self.block())
 
+    def _for(self):
+        # for VAR in EXPR { body }  ->  desugared into let/while/index (so both
+        # backends run it with no new opcodes)
+        self.advance()
+        var = self.expect("IDENT", "a loop variable after 'for'").value
+        self.expect("in", "'in' in a for loop")
+        iterable = self.expression()
+        body = self.block()
+        self._loopn += 1
+        xs = "__for%d_xs" % self._loopn
+        idx = "__for%d_i" % self._loopn
+        inner = ([Let(var, Index(Name(xs), Name(idx)))]
+                 + list(body.body)
+                 + [Assign(idx, Binary("+", Name(idx), Num(1)))])
+        cond = Binary("<", Name(idx), Call(Name("len"), [Name(xs)]))
+        return Block([
+            Let(xs, iterable),
+            Let(idx, Num(0)),
+            While(cond, Block(inner)),
+        ])
+
     def block(self):
         self.expect("{", "'{'")
         body = []
@@ -314,6 +340,11 @@ class Parser(object):
                     node = Get(node, name)
             elif self.check("("):
                 node = Call(node, self._args())
+            elif self.check("["):
+                self.advance()
+                idx = self.expression()
+                self.expect("]", "']' after an index")
+                node = Index(node, idx)
             else:
                 break
         return node
@@ -356,6 +387,17 @@ class Parser(object):
             node = self.expression()
             self.expect(")", "')'")
             return node
+        if p.type == "[":
+            self.advance()
+            elements = []
+            if not self.check("]"):
+                elements.append(self.expression())
+                while self.match(","):
+                    if self.check("]"):        # allow a trailing comma
+                        break
+                    elements.append(self.expression())
+            self.expect("]", "']' to close a list")
+            return Array(elements)
         raise LarzSyntaxError("unexpected %r on line %d" % (p.value, p.line))
 
 

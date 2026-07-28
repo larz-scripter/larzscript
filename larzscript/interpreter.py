@@ -8,7 +8,7 @@ gas metering are handled here as node rules.
 
 from larzscript.runtime import (Money, Wallet, Paywall, Transaction, Builtin,
                                 Environment, is_num, truthy, stringify,
-                                binop, unary)
+                                binop, unary, index, make_builtins)
 from larzscript.errors import (LarzTypeError, RequireError, OutOfGasError)
 
 __all__ = ["Interpreter", "Money", "Wallet", "Transaction", "Paywall"]
@@ -41,9 +41,8 @@ class Interpreter(object):
         self.gas = gas
         self.gas_used = 0
         self._out = output if output is not None else []
-        self.globals.define("print", Builtin("print", self._print))
-        self.globals.define("money", Builtin("money", self._money))
-        self.globals.define("len", Builtin("len", self._len))
+        for name, fn in make_builtins(self).items():
+            self.globals.define(name, Builtin(name, fn))
 
     # -- public --
     def run(self, program):
@@ -57,21 +56,6 @@ class Interpreter(object):
     @property
     def output(self):
         return "\n".join(self._out)
-
-    # -- builtins --
-    def _print(self, *args):
-        self._out.append(" ".join(stringify(a) for a in args))
-        return None
-
-    def _money(self, dollars):
-        if not is_num(dollars):
-            raise LarzTypeError("money() expects a number of dollars")
-        return Money(dollars * 100)
-
-    def _len(self, value):
-        if isinstance(value, str):
-            return len(value)
-        raise LarzTypeError("len() expects a string")
 
     # -- dispatch --
     def execute(self, node, env):
@@ -178,6 +162,12 @@ class Interpreter(object):
 
     def eval_Name(self, node, env):
         return env.get(node.id)
+
+    def eval_Array(self, node, env):
+        return [self.evaluate(e, env) for e in node.elements]
+
+    def eval_Index(self, node, env):
+        return index(self.evaluate(node.obj, env), self.evaluate(node.index, env))
 
     def eval_Binary(self, node, env):
         if node.op == "and":

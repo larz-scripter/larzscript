@@ -33,6 +33,8 @@ RETURN = "RETURN"
 MAKE_FN = "MAKE_FN"         # arg = Chunk  -> closure over current env
 GET_PROP = "GET_PROP"       # arg = name
 CALL_METHOD = "CALL_METHOD"  # arg = (name, argc)
+BUILD_LIST = "BUILD_LIST"   # arg = count
+INDEX = "INDEX"
 ENTER_SCOPE = "ENTER_SCOPE"
 EXIT_SCOPE = "EXIT_SCOPE"
 # money-native statements
@@ -222,6 +224,16 @@ class _Compiler(object):
         for arg in node.args:
             self.expr(arg)
         self.chunk.emit(CALL_METHOD, (node.name, len(node.args)))
+
+    def e_Array(self, node):
+        for element in node.elements:
+            self.expr(element)
+        self.chunk.emit(BUILD_LIST, len(node.elements))
+
+    def e_Index(self, node):
+        self.expr(node.obj)
+        self.expr(node.index)
+        self.chunk.emit(INDEX)
 
 
 def compile_program(program):
