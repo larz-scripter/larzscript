@@ -76,6 +76,20 @@ Available packages:
 They compose — e.g. `json.parse(http.get(url))`, or CSV → list-of-dicts → JSON.
 Add yours by PR-ing a line to [`packages/registry.txt`](packages/registry.txt).
 
+## LarzOS — an OS written in Larzscript
+
+There's an operating system taking shape in [`os/`](os/): its init, shell
+(`larzsh`) and utilities are written **entirely in Larzscript**, and it's
+money-native at the core — compute is metered in a built-in wallet that fails
+closed. Boot the Stage 0 userland (on Linux) today:
+
+```bash
+larzscript os/init.lz     # provisions the system and drops you into larzsh
+```
+
+The [roadmap](os/ROADMAP.md) lifts the same Larzscript userland onto a
+freestanding kernel and, ultimately, real laptops and servers.
+
 ## A taste — general-purpose *and* money-native
 
 ```

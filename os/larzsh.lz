@@ -1,0 +1,232 @@
+# larzsh - the LarzOS shell, written entirely in Larzscript.
+#
+# An interactive command shell: it reads a line, parses it into a command and
+# arguments, and runs it - either a shell builtin (cd/ls/cat/...) or an external
+# program. LarzOS is money-native at its core, so the shell carries a built-in
+# compute wallet: work is metered and a command that would overspend fails
+# closed, exactly like `require` in the language.
+#
+#   larzscript os/larzsh.lz            # start an interactive session
+#   echo "pwd\nls\nexit" | larzscript os/larzsh.lz   # scripted
+
+let VERSION = "0.1"
+let LARZHOME = env("HOME") + "/.larzos"
+let WALLET_FILE = LARZHOME + "/wallet.cents"
+let HISTORY = []
+
+# ---- money: the OS meters compute in a built-in wallet (integer cents) ----
+
+fn wallet_load() {
+  if not file_exists(WALLET_FILE) { return 10000 }        # new users start with $100.00 of compute credit
+  let raw = read_file(WALLET_FILE).strip()
+  if raw == "" { return 10000 }
+  return int(raw)
+}
+fn wallet_save(cents) {
+  mkdir(LARZHOME)
+  write_file(WALLET_FILE, str(cents))
+}
+fn fmt_money(cents) {
+  let sign = ""
+  if cents < 0 { sign = "-"; cents = 0 - cents }
+  let d = cents // 100
+  let c = cents - d * 100
+  let cc = str(c)
+  if len(cc) < 2 { cc = "0" + cc }
+  return sign + "$" + str(d) + "." + cc
+}
+
+# ---- helpers ----
+
+fn short_cwd() {
+  let c = cwd()
+  let home = env("HOME")
+  if home != nil and home != "" and c.starts_with(home) {
+    let tail = c[len(home):]
+    if tail == "" { return "~" }
+    return "~" + tail
+  }
+  return c
+}
+
+# Split a command line into tokens, honoring "double quotes".
+fn tokenize(line) {
+  let toks = []
+  let cur = ""
+  let inq = false
+  let have = false
+  for ch in line {
+    if ch == "\"" { inq = not inq; have = true }
+    else if ch == " " and not inq {
+      if have { toks.push(cur); cur = ""; have = false }
+    } else { cur = cur + ch; have = true }
+  }
+  if have { toks.push(cur) }
+  return toks
+}
+
+# ---- builtins ----
+
+fn cmd_help() {
+  print("LarzOS shell (larzsh) " + VERSION + " - builtins:")
+  print("  cd [dir]        change directory (cd with no arg -> home)")
+  print("  pwd             print the working directory")
+  print("  ls [dir]        list a directory")
+  print("  cat FILE...     print file contents")
+  print("  echo TEXT...    print text")
+  print("  mkdir DIR...    create directories")
+  print("  rm PATH...      remove files")
+  print("  touch FILE...   create empty files")
+  print("  write FILE TXT  write text to a file")
+  print("  env [NAME]      show environment (or one variable)")
+  print("  whoami          print the current user")
+  print("  clear           clear the screen")
+  print("  balance         show your compute wallet balance")
+  print("  earn N          credit N cents of compute (demo)")
+  print("  pkg ARGS...     run the Larzscript package manager (larzpkg)")
+  print("  history         show command history")
+  print("  about           about LarzOS")
+  print("  help            this help")
+  print("  exit            leave LarzOS")
+  print("anything else is run as an external program.")
+  return 0
+}
+
+fn cmd_about() {
+  print("")
+  print("  LarzOS " + VERSION + "  -  the money-native operating system")
+  print("  Its shell, init and utilities are written in Larzscript.")
+  print("  https://github.com/larz-scripter/larzscript")
+  print("")
+  return 0
+}
+
+fn cmd_cd(rest) {
+  let dir = env("HOME")
+  if len(rest) > 0 { dir = rest[0] }
+  if not chdir(dir) { print("cd: no such directory: " + dir); return 1 }
+  return 0
+}
+
+fn cmd_ls(rest) {
+  let dir = "."
+  if len(rest) > 0 { dir = rest[0] }
+  let names = listdir(dir)
+  if len(names) == 0 { return 0 }
+  for name in sorted(names) { print(name) }
+  return 0
+}
+
+fn cmd_cat(rest) {
+  let rc = 0
+  for path in rest {
+    if not file_exists(path) { print("cat: no such file: " + path); rc = 1 }
+    else { print(read_file(path)) }
+  }
+  return rc
+}
+
+fn cmd_env(rest) {
+  if len(rest) > 0 { print(env(rest[0])); return 0 }
+  for k in ["HOME", "USER", "SHELL", "PATH", "PWD"] {
+    let v = env(k)
+    if v != nil and v != "" { print(k + "=" + v) }
+  }
+  return 0
+}
+
+# ---- the dispatcher ----
+
+fn run_command(argv, state) {
+  if len(argv) == 0 { return state }
+  let cmd = argv[0]
+  let rest = argv[1:]
+
+  if cmd == "exit" or cmd == "quit" or cmd == "logout" {
+    print("goodbye.")
+    wallet_save(state["cents"])
+    exit(0)
+  }
+  if cmd == "help" { cmd_help(); return state }
+  if cmd == "about" or cmd == "ver" or cmd == "version" { cmd_about(); return state }
+  if cmd == "cd" { cmd_cd(rest); return state }
+  if cmd == "pwd" { print(cwd()); return state }
+  if cmd == "ls" or cmd == "dir" { cmd_ls(rest); return state }
+  if cmd == "echo" { print(join(rest, " ")); return state }
+  if cmd == "cat" { cmd_cat(rest); return state }
+  if cmd == "env" { cmd_env(rest); return state }
+  if cmd == "whoami" { print(env("USER")); return state }
+  if cmd == "clear" or cmd == "cls" { print(chr(27) + "[2J" + chr(27) + "[H"); return state }
+  if cmd == "history" {
+    let i = 1
+    for h in HISTORY { print(str(i) + "  " + h); i = i + 1 }
+    return state
+  }
+  if cmd == "mkdir" { for p in rest { mkdir(p) } return state }
+  if cmd == "rm" or cmd == "del" { for p in rest { remove(p) } return state }
+  if cmd == "touch" { for p in rest { write_file(p, "") } return state }
+  if cmd == "write" {
+    if len(rest) >= 2 { write_file(rest[0], join(rest[1:], " ")) }
+    else { print("usage: write FILE TEXT") }
+    return state
+  }
+  if cmd == "balance" or cmd == "wallet" {
+    print("compute wallet: " + fmt_money(state["cents"]))
+    return state
+  }
+  if cmd == "earn" or cmd == "credit" {
+    let add = 100
+    if len(rest) > 0 { add = int(rest[0]) }
+    state["cents"] = state["cents"] + add
+    wallet_save(state["cents"])
+    print("credited " + fmt_money(add) + "; balance " + fmt_money(state["cents"]))
+    return state
+  }
+  if cmd == "pkg" or cmd == "larzpkg" {
+    let pm = env("HOME") + "/.larzscript/larzpkg.lz"
+    if not file_exists(pm) { print("larzsh: package manager not installed (see install.sh)"); return state }
+    run("larzscript " + pm + " " + join(rest, " "))
+    return state
+  }
+
+  # external program: metered - each launch costs 1 cent of compute, fails closed
+  if state["cents"] < 1 {
+    print("larzsh: out of compute credit - run 'earn 100' to top up")
+    return state
+  }
+  # LarzOS utilities are themselves Larzscript programs in the bin directory:
+  # if bin/<cmd>.lz exists, run it with the interpreter. (bin is an absolute
+  # path resolved at startup, so it survives `cd`.)
+  let prog = state["bin"] + "/" + cmd + ".lz"
+  let rc = 0
+  if file_exists(prog) { rc = run("larzscript " + prog + " " + join(rest, " ")) }
+  else { rc = run(join(argv, " ")) }
+  state["cents"] = state["cents"] - 1
+  if rc != 0 { print("larzsh: '" + cmd + "' exited with code " + str(rc)) }
+  return state
+}
+
+# ---- the read-eval loop ----
+
+fn resolve_bin() {
+  let bin = env("LARZOS_BIN")
+  if bin == nil or bin == "" { bin = "os/bin" }
+  if not bin.starts_with("/") { bin = cwd() + "/" + bin }   # make absolute so `cd` can't break it
+  return bin
+}
+
+fn main() {
+  let state = {"cents": wallet_load(), "bin": resolve_bin()}
+  while true {
+    let line = input("larzos:" + short_cwd() + " " + fmt_money(state["cents"]) + " $ ")
+    if line == nil { print(""); break }          # EOF (Ctrl-D or end of piped input)
+    let trimmed = line.strip()
+    if trimmed == "" { continue }
+    if not trimmed.starts_with("#") { HISTORY.push(trimmed) }
+    let argv = tokenize(trimmed)
+    state = run_command(argv, state)
+  }
+  wallet_save(state["cents"])
+}
+
+main()

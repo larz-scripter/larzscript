@@ -1,0 +1,25 @@
+# sysinfo - a LarzOS system-information utility, written in Larzscript.
+# Reports host details by asking the underlying system and the language runtime.
+
+fn line(k, v) { print(k.ljust(14) + v) }
+
+print("LarzOS system information")
+print("-------------------------")
+line("kernel", capture("uname -s").strip() + " " + capture("uname -r").strip())
+line("machine", capture("uname -m").strip())
+line("hostname", capture("hostname").strip())
+line("user", env("USER"))
+line("home", env("HOME"))
+line("cwd", cwd())
+line("larzscript", capture("larzscript --version").strip())
+line("uptime", capture("uptime -p").strip())
+
+let w = env("HOME") + "/.larzos/wallet.cents"
+if file_exists(w) {
+  let cents = int(read_file(w).strip())
+  let d = cents // 100
+  let c = cents - d * 100
+  let cc = str(c)
+  if len(cc) < 2 { cc = "0" + cc }
+  line("wallet", "$" + str(d) + "." + cc + " compute credit")
+}

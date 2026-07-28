@@ -1,0 +1,41 @@
+# init - the first LarzOS process, written in Larzscript.
+#
+# In a real operating system, init (PID 1) is the first program the kernel
+# starts; it brings the system up and launches the login shell. Here init runs
+# on top of Linux (LarzOS "Stage 0"): it prepares the LarzOS home, prints the
+# boot banner, and hands control to larzsh. On our own kernel (Stage 1) the same
+# init runs with no Linux underneath.
+#
+#   larzscript os/init.lz              # "boot" LarzOS
+
+let VERSION = "0.1"
+let LARZHOME = env("HOME") + "/.larzos"
+
+fn step(msg) { print("  [ " + msg + " ]") }
+
+fn boot() {
+  print("")
+  print("  LarzOS " + VERSION + "  -  the money-native operating system")
+  print("  booting ...")
+  print("")
+  step("mounting larzos home  -> " + LARZHOME)
+  mkdir(LARZHOME)
+  step("checking compute wallet")
+  if not file_exists(LARZHOME + "/wallet.cents") {
+    write_file(LARZHOME + "/wallet.cents", "10000")
+    step("provisioning $100.00 of compute credit")
+  }
+  step("starting shell (larzsh)")
+  print("")
+
+  # Locate the OS files. LARZOS_BASE overrides; otherwise assume we were
+  # launched from the repo root, where the OS lives in ./os.
+  let base = env("LARZOS_BASE")
+  if base == nil or base == "" { base = "os" }
+  run("LARZOS_BIN=" + base + "/bin larzscript " + base + "/larzsh.lz")
+
+  print("")
+  print("  LarzOS halted.")
+}
+
+boot()
