@@ -199,8 +199,11 @@ floor ceil round sqrt pow chr ord assert input keys values push money
 map filter reduce join enumerate zip exit all any count unique hex bin oct
 gcd factorial sign clamp list dict`
 
-`range(n)`, `range(start, stop)`, `range(start, stop, step)`.
-`list(x)` builds a list from a string/dict/list; `dict(pairs)` from `[[k, v], ...]`.
+`range(n)`, `range(start, stop)`, `range(start, stop, step)`. A range is a **lazy
+sequence** — `for i in range(100000000)` iterates in O(1) space (no list is built),
+and `range` supports `len`, indexing, `in`, and slicing. Use `list(range(...))`
+to materialize one.
+`list(x)` builds a list from a string/dict/list/range; `dict(pairs)` from `[[k, v], ...]`.
 
 `"ab" * 3` and `[0] * 5` repeat strings and lists.
 
