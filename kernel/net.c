@@ -191,6 +191,97 @@ int net_ping(const unsigned char ip[4], int *rtt_ms){
     return 0;
 }
 
+/* ---- minimal single-connection TCP server (HTTP on port 80) ---- */
+static void put32(u8 *p, u32 v){ p[0]=(u8)(v>>24); p[1]=(u8)(v>>16); p[2]=(u8)(v>>8); p[3]=(u8)v; }
+static u32  get32(const u8 *p){ return ((u32)p[0]<<24)|((u32)p[1]<<16)|((u32)p[2]<<8)|p[3]; }
+static u16  tcp_cksum(const u8 *src, const u8 *dst, const u8 *tcp, int len){
+    u32 sum=0;
+    sum += (src[0]<<8)|src[1]; sum += (src[2]<<8)|src[3];
+    sum += (dst[0]<<8)|dst[1]; sum += (dst[2]<<8)|dst[3];
+    sum += 6; sum += (u16)len;
+    for(int i=0;i+1<len;i+=2) sum += (tcp[i]<<8)|tcp[i+1];
+    if(len&1) sum += tcp[len-1]<<8;
+    while(sum>>16) sum=(sum&0xFFFF)+(sum>>16);
+    return (u16)~sum;
+}
+static struct { int active; u8 mac[6], ip[4]; u16 port; u32 our_seq, their_seq; } conn;
+
+static void tcp_send(u8 flags, const u8 *data, int dlen){
+    static u8 pkt[20+20+1460];
+    u8 *ip=pkt, *tcp=pkt+20;
+    tcp[0]=0;tcp[1]=80;                                   /* src port 80 */
+    tcp[2]=(u8)(conn.port>>8); tcp[3]=(u8)conn.port;
+    put32(tcp+4, conn.our_seq); put32(tcp+8, conn.their_seq);
+    tcp[12]=0x50; tcp[13]=flags; tcp[14]=0x20; tcp[15]=0x00;  /* offset 5, window 8192 */
+    tcp[16]=0;tcp[17]=0; tcp[18]=0;tcp[19]=0;
+    if(dlen>1460) dlen=1460;
+    if(dlen) memcpy(tcp+20, data, (size_t)dlen);
+    int tcplen=20+dlen;
+    u16 ck=tcp_cksum(g_ip, conn.ip, tcp, tcplen); tcp[16]=(u8)(ck>>8); tcp[17]=(u8)ck;
+    u16 total=(u16)(20+tcplen);
+    ip[0]=0x45;ip[1]=0; ip[2]=(u8)(total>>8);ip[3]=(u8)total;
+    ip[4]=0;ip[5]=0; ip[6]=0x40;ip[7]=0; ip[8]=64; ip[9]=6; ip[10]=0;ip[11]=0;
+    memcpy(ip+12,g_ip,4); memcpy(ip+16,conn.ip,4);
+    u16 ic=checksum(ip,20); ip[10]=(u8)(ic>>8); ip[11]=(u8)ic;
+    eth_send(conn.mac, 0x0800, pkt, total);
+}
+
+char *net_http_accept(void){                 /* blocks; returns malloc'd request */
+    if(!g_net_up) return 0;
+    for(long tries=0; tries<4000000000L; tries++){
+        unsigned char *fr; int n=nic_rx(&fr);
+        if(n<=0) continue;
+        u16 et=(u16)(fr[12]<<8|fr[13]);
+        if(et==0x0806){                      /* ARP: reply to who-has-our-IP */
+            u8 *a=fr+14;
+            if(a[6]==0 && a[7]==1 && memcmp(a+24,g_ip,4)==0){
+                u8 rep[28]; memcpy(rep,a,28); rep[7]=2;
+                memcpy(rep+8,g_mac,6); memcpy(rep+14,g_ip,4);
+                memcpy(rep+18,a+8,6); memcpy(rep+24,a+14,4);
+                eth_send(a+8, 0x0806, rep, 28);
+            }
+            continue;
+        }
+        if(et!=0x0800) continue;
+        u8 *ip=fr+14; if(ip[9]!=6) continue;
+        int ihl=(ip[0]&0x0F)*4; u8 *tcp=ip+ihl;
+        if(((tcp[2]<<8)|tcp[3])!=80) continue;
+        u16 sport=(u16)(tcp[0]<<8|tcp[1]);
+        u32 seq=get32(tcp+4); u8 flags=tcp[13];
+        int tcphl=(tcp[12]>>4)*4;
+        int plen=((ip[2]<<8)|ip[3]) - ihl - tcphl;
+        if(flags & 0x02){                    /* SYN -> SYN,ACK */
+            memcpy(conn.mac, fr+6, 6); memcpy(conn.ip, ip+12, 4);
+            conn.port=sport; conn.their_seq=seq+1; conn.our_seq=12345; conn.active=1;
+            tcp_send(0x12, 0, 0); conn.our_seq++;
+            continue;
+        }
+        if(conn.active && plen>0){           /* data: the HTTP request */
+            conn.their_seq = seq + plen;
+            tcp_send(0x10, 0, 0);            /* ACK the request */
+            char *req=malloc((size_t)plen+1); if(!req) return 0;
+            memcpy(req, tcp+tcphl, (size_t)plen); req[plen]=0;
+            return req;
+        }
+    }
+    return 0;
+}
+void net_http_reply(const char *data, int len){
+    if(!conn.active) return;
+    tcp_send(0x18|0x01, (const u8*)data, len);       /* PSH|ACK|FIN */
+    conn.our_seq += (u32)len + 1;
+    for(int i=0;i<800000;i++){                        /* ACK the client's FIN */
+        unsigned char *fr; int n=nic_rx(&fr);
+        if(n<=0) continue;
+        u16 et=(u16)(fr[12]<<8|fr[13]); if(et!=0x0800) continue;
+        u8 *ip=fr+14; if(ip[9]!=6) continue;
+        int ihl=(ip[0]&0x0F)*4; u8 *tcp=ip+ihl;
+        if(((tcp[2]<<8)|tcp[3])!=80) continue;
+        if(tcp[13]&0x01){ conn.their_seq=get32(tcp+4)+1; tcp_send(0x10,0,0); break; }
+    }
+    conn.active=0;
+}
+
 void net_selftest(void){
     if(!net_init()){ printf("  net: no NIC found (add -device rtl8139)\n"); return; }
     printf("  net: RTL8139 up  MAC %02x:%02x:%02x:%02x:%02x:%02x  IP %d.%d.%d.%d  GW %d.%d.%d.%d\n",
@@ -212,6 +303,7 @@ static int parse_ip(const char *s, unsigned char ip[4]){
     return o==4;
 }
 char *net_vfile(const char *path){          /* returns malloc'd content, or 0 */
+    if(strcmp(path,"/net/http/accept")==0) return g_net_up ? net_http_accept() : 0;
     char *b=malloc(256); if(!b) return 0;
     if(strcmp(path,"/net/status")==0){
         if(!g_net_up){ snprintf(b,256,"link: down (no NIC)\n"); return b; }
@@ -228,4 +320,7 @@ char *net_vfile(const char *path){          /* returns malloc'd content, or 0 */
         return b;
     }
     snprintf(b,256,"unknown /net file\n"); return b;
+}
+void net_vfile_write(const char *path, const char *data, int len){
+    if(strcmp(path,"/net/http/reply")==0) net_http_reply(data, len);
 }

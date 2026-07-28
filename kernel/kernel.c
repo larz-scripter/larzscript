@@ -35,6 +35,11 @@ void kernel_main(void){
     printf("\n  [ demo complete - interactive Larzscript prompt; exit(0) to halt ]\n\n");
     char *repl2_argv[] = { "larzscript", "repl", 0 };
     larz_main(2, repl2_argv);
+#elif defined(LARZ_SERVER)
+    /* boot straight into the Larzscript web server */
+    printf("  starting the LarzOS web server (/webserver.lz) ...\n\n");
+    char *srv_argv[] = { "larzscript", "/webserver.lz", 0 };
+    larz_main(2, srv_argv);
 #elif defined(LARZ_SHELL)
     /* run the boot demo, then launch the LarzOS shell (larzsh) - self-hosting */
     printf("  Loading /boot.lz from the RAM filesystem...\n");

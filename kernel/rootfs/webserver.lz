@@ -1,0 +1,31 @@
+# webserver.lz - a money-native HTTP server written in Larzscript, on bare metal.
+wallet treasury
+price pro = $5.00
+
+fn html(path) {
+  if path == "/pay" {
+    return "<!doctype html><title>LarzOS</title><h1>Pro unlocked</h1>" +
+      "<p>Thanks! " + str(pro) + " settles to the treasury (money is a language primitive).</p>" +
+      "<p><a href=\"/\">&larr; home</a></p>"
+  }
+  return "<!doctype html><title>LarzOS</title>" +
+    "<h1>Hello from LarzOS</h1>" +
+    "<p>This page is served by a <b>Larzscript</b> program running on a bare-metal " +
+    "64-bit kernel &mdash; no Linux underneath.</p>" +
+    "<p>Money is native to the language: <code>price pro = $5.00</code> &rarr; " + str(pro) + "</p>" +
+    "<p><a href=\"/pay\">Unlock Pro (" + str(pro) + ")</a></p>"
+}
+
+print("LarzOS web server listening on port 80")
+while true {
+  let req = read_file("/net/http/accept")
+  let path = "/"
+  let first = req.split("\n")[0]
+  let parts = first.split(" ")
+  if len(parts) > 1 { path = parts[1] }
+  let body = html(path)
+  let resp = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: " +
+             str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+  write_file("/net/http/reply", resp)
+  print("served " + path)
+}

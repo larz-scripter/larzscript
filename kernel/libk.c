@@ -601,8 +601,9 @@ static void fs_load(void){
     free(blob);
 }
 
-char *net_vfile(const char *path);   /* from net.c: virtual /net/ file content */
-struct _LZ_FILE { int kind; VNode *vn; unsigned pos; int writing, ephemeral; };  /* 0..2=std, 3=vfs file */
+char *net_vfile(const char *path);                              /* from net.c */
+void  net_vfile_write(const char *path, const char *data, int len);
+struct _LZ_FILE { int kind; VNode *vn; unsigned pos; int writing, ephemeral; char netpath[48]; };  /* 0..2=std, 3=vfs */
 static FILE _stdin={0,0,0,0}, _stdout={1,0,0,0}, _stderr={2,0,0,0};
 FILE *stdin=&_stdin, *stdout=&_stdout, *stderr=&_stderr;
 static int is_std(FILE *f){ return f==&_stdin||f==&_stdout||f==&_stderr; }
@@ -655,12 +656,19 @@ char *fgets(char *buf, int size, FILE *f){
 }
 FILE *fopen(const char *path, const char *mode){
     int reading = !mode || mode[0]=='r';
-    if(reading && strncmp(path,"/net/",5)==0){        /* virtual networking files */
-        char *c=net_vfile(path); if(!c) return 0;
-        VNode *e=vn_new("net",0); if(!e){ free(c); return 0; }
-        e->data=(unsigned char*)c; e->size=(unsigned)strlen(c); e->cap=e->size+1;
-        FILE *f=malloc(sizeof(FILE)); if(!f) return 0;
-        f->kind=3; f->vn=e; f->pos=0; f->writing=0; f->ephemeral=1; return f;
+    if(strncmp(path,"/net/",5)==0){                   /* virtual networking files */
+        VNode *e=vn_new("net",0); if(!e) return 0;
+        FILE *f=malloc(sizeof(FILE)); if(!f){ free(e); return 0; }
+        f->kind=3; f->vn=e; f->pos=0; f->ephemeral=1; f->netpath[0]=0;
+        if(reading){
+            char *c=net_vfile(path); if(!c){ free(e); free(f); return 0; }
+            e->data=(unsigned char*)c; e->size=(unsigned)strlen(c); e->cap=e->size+1;
+            f->writing=0;
+        } else {
+            f->writing=1;                             /* buffer, flush to net on close */
+            strncpy(f->netpath, path, sizeof(f->netpath)-1); f->netpath[sizeof(f->netpath)-1]=0;
+        }
+        return f;
     }
     VNode *vn; int writing=0; unsigned pos=0;
     if(mode && mode[0]=='w'){ vn=vn_open_write(path,1); writing=1; }
@@ -668,14 +676,15 @@ FILE *fopen(const char *path, const char *mode){
     else { vn=vn_resolve(path); if(vn && vn->is_dir) return 0; }
     if(!vn) return 0;
     FILE *f=malloc(sizeof(FILE)); if(!f) return 0;
-    f->kind=3; f->vn=vn; f->pos=pos; f->writing=writing; f->ephemeral=0; return f;
+    f->kind=3; f->vn=vn; f->pos=pos; f->writing=writing; f->ephemeral=0; f->netpath[0]=0; return f;
 }
 int fclose(FILE *f){
     if(!f || is_std(f)) return 0;
-    int w=f->writing;
-    if(f->ephemeral){ if(f->vn){ if(f->vn->data) free(f->vn->data); free(f->vn); } }
+    int w=f->writing, net=f->netpath[0]!=0, eph=f->ephemeral;
+    if(net) net_vfile_write(f->netpath, (char*)(f->vn->data?f->vn->data:(unsigned char*)""), (int)f->vn->size);
+    if(eph){ if(f->vn){ if(f->vn->data) free(f->vn->data); free(f->vn); } }
     free(f);
-    if(w) fs_sync();
+    if(w && !net && !eph) fs_sync();      /* persist only real /home writes */
     return 0;
 }
 FILE *popen(const char *c, const char *m){ (void)c;(void)m; return 0; }
