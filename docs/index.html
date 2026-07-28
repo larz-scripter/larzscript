@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Larzscript — a money-native, general-purpose language</title>
+<meta name="description" content="Larzscript is a small, fast, memory-safe programming language with money as a first-class citizen — a single static binary with zero dependencies, a garbage collector, a formatter, and a package manager.">
+<style>
+  :root{
+    --bg:#0b0f17;--panel:#111826;--panel2:#0d1420;--border:#20293a;--text:#e6edf6;
+    --muted:#9aa7ba;--accent:#4ade80;--accent2:#38bdf8;--money:#facc15;--code:#0a0e16;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  a{color:var(--accent2);text-decoration:none}a:hover{text-decoration:underline}
+  .wrap{max-width:900px;margin:0 auto;padding:0 20px}
+  header{padding:64px 0 40px;text-align:center;border-bottom:1px solid var(--border);
+    background:radial-gradient(1200px 400px at 50% -10%, rgba(74,222,128,.10), transparent 70%)}
+  .logo{font-size:15px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:clamp(34px,7vw,60px);margin:.35em 0 .2em;letter-spacing:-.02em;line-height:1.05}
+  h1 .m{color:var(--money)}
+  .tag{color:var(--muted);font-size:clamp(16px,2.4vw,21px);max-width:640px;margin:0 auto}
+  .cta{margin-top:26px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{display:inline-block;padding:11px 20px;border-radius:10px;font-weight:700;font-size:15px}
+  .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#04121a}
+  .btn.ghost{border:1px solid var(--border);color:var(--text)}
+  .chips{margin-top:22px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;color:var(--muted);font-size:13px}
+  .chip{background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:5px 12px}
+  section{padding:44px 0;border-bottom:1px solid var(--border)}
+  h2{font-size:26px;margin:0 0 6px;letter-spacing:-.01em}
+  h2 .n{color:var(--muted);font-weight:600;font-size:15px}
+  .lead{color:var(--muted);margin:0 0 20px}
+  pre{background:var(--code);border:1px solid var(--border);border-radius:12px;padding:16px 18px;overflow-x:auto;
+    font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#d4e2f2}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#151d2b;border:1px solid var(--border);
+    border-radius:6px;padding:1px 6px;font-size:.9em}
+  pre code{background:none;border:0;padding:0}
+  .cm{color:#6b7a90}.kw{color:#c792ea}.mo{color:var(--money)}.st{color:#a5d6a2}.fn{color:#82aaff}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel2);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .card h3{margin:0 0 4px;font-size:16px}
+  .card p{margin:0;color:var(--muted);font-size:14px}
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  td,th{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+  th{color:var(--muted);font-weight:600}
+  td code{white-space:nowrap}
+  footer{padding:34px 0 60px;text-align:center;color:var(--muted);font-size:14px}
+  .kbd{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="logo">Larzscript</div>
+    <h1>The <span class="m">money-native</span><br>programming language.</h1>
+    <p class="tag">A small, fast, memory-safe general-purpose language where wallets, payments and metering are keywords — shipped as a single static binary with <b>zero dependencies</b>.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install</a>
+      <a class="btn ghost" href="https://github.com/larz-scripter/larzscript">GitHub</a>
+      <a class="btn ghost" href="https://larzos.com/larzscript/">Try it in the browser</a>
+    </div>
+    <div class="chips">
+      <span class="chip">garbage collected</span>
+      <span class="chip">comprehensions</span>
+      <span class="chip">modules &amp; packages</span>
+      <span class="chip">formatter</span>
+      <span class="chip">f-strings</span>
+      <span class="chip">lazy ranges</span>
+      <span class="chip">try / catch</span>
+      <span class="chip">one C file</span>
+    </div>
+  </div>
+</header>
+
+<section id="install"><div class="wrap">
+  <h2>Install <span class="n">— one line</span></h2>
+  <p class="lead">Linux x86_64 / ARM64. Downloads the binary and the package manager.</p>
+  <pre><code>curl -fsSL https://raw.githubusercontent.com/larz-scripter/larzscript/main/install.sh | sh</code></pre>
+  <p class="lead">Or build it — one C file, no dependencies:</p>
+  <pre><code>cc -O2 -o larzscript native/larzscript.c
+./larzscript program.lz</code></pre>
+</div></section>
+
+<section><div class="wrap">
+  <h2>A taste</h2>
+  <p class="lead">A real general-purpose language — and money is part of the grammar.</p>
+<pre><code><span class="cm"># general-purpose: functions, dicts, comprehensions, f-strings</span>
+<span class="kw">fn</span> <span class="fn">wordcount</span>(text) {
+    <span class="kw">let</span> counts = {}
+    <span class="kw">for</span> w <span class="kw">in</span> text.split(<span class="st">" "</span>) { counts[w] = counts.get(w, 0) + 1 }
+    <span class="kw">return</span> counts
+}
+print(f<span class="st">"squares: {[x * x for x in range(6)]}"</span>)
+
+<span class="cm"># money-native: wallets, pay, require, gas-metering</span>
+<span class="kw">wallet</span> customer = <span class="mo">$20.00</span>
+<span class="kw">wallet</span> platform, creator
+<span class="kw">price</span> premium = <span class="mo">$9.00</span>
+
+<span class="kw">fn</span> <span class="fn">buy</span>(buyer) {
+    <span class="kw">require</span> buyer.balance &gt;= premium, <span class="st">"not enough funds"</span>
+    <span class="kw">pay</span> premium <span class="kw">from</span> buyer <span class="kw">to</span> platform
+    <span class="kw">pay</span> premium * <span class="mo">0.8</span> <span class="kw">from</span> platform <span class="kw">to</span> creator   <span class="cm"># a revenue split</span>
+}
+buy(customer)
+print(f<span class="st">"creator earned {creator.balance}"</span>)   <span class="cm"># creator earned $7.20</span></code></pre>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Batteries included</h2>
+  <div class="grid">
+    <div class="card"><h3>Language</h3><p>numbers, strings, lists, dicts, functions &amp; lambdas, modules, comprehensions, try/catch/throw, f-strings, slicing, default params, lazy ranges.</p></div>
+    <div class="card"><h3>Money-native</h3><p><code>$3.50</code> is exact cents; <code>pay … from … to …</code>, <code>require</code>, <code>paywall</code>/<code>subscribe</code>, and gas-metered functions are built in.</p></div>
+    <div class="card"><h3>Memory-safe</h3><p>A precise mark-sweep garbage collector reclaims everything — verified under AddressSanitizer. Long-running programs stay bounded.</p></div>
+    <div class="card"><h3>Toolchain</h3><p>a multi-line REPL, a canonical formatter (<code>fmt</code>), a syntax checker (<code>--check</code>), a doc generator (<code>larzdoc</code>), and a package manager (<code>larzpkg</code>).</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Packages <span class="n">— <code>larzpkg install &lt;name&gt;</code></span></h2>
+  <p class="lead">A registry of installable libraries; they compose, e.g. <code>json.parse(http.get(url))</code>.</p>
+  <table>
+    <tr><th>Package</th><th>What it does</th></tr>
+    <tr><td><code>json</code></td><td>parse &amp; stringify JSON</td></tr>
+    <tr><td><code>http</code></td><td>HTTP client (get/post/status/download)</td></tr>
+    <tr><td><code>csv</code></td><td>parse &amp; write CSV</td></tr>
+    <tr><td><code>base64</code></td><td>encode/decode base64</td></tr>
+    <tr><td><code>table</code></td><td>aligned ASCII tables</td></tr>
+    <tr><td><code>color</code></td><td>ANSI terminal colors</td></tr>
+    <tr><td><code>args</code></td><td>command-line argument parsing</td></tr>
+    <tr><td><code>log</code></td><td>leveled logging</td></tr>
+    <tr><td><code>test</code></td><td>a tiny test framework</td></tr>
+    <tr><td><code>time</code> · <code>string</code> · <code>random</code> · <code>fs</code> · <code>mathx</code></td><td>time/duration · string utils · seeded PRNG · filesystem · math</td></tr>
+  </table>
+  <p class="lead" style="margin-top:16px">Add yours by opening a PR against <a href="https://github.com/larz-scripter/larzscript/blob/main/packages/registry.txt">packages/registry.txt</a>.</p>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Learn more</h2>
+  <div class="grid">
+    <div class="card"><h3><a href="https://github.com/larz-scripter/larzscript/blob/main/native/LANGUAGE.md">Language reference →</a></h3><p>The complete spec: values, operators, control flow, money, the standard library.</p></div>
+    <div class="card"><h3><a href="https://larzos.com/larzscript/">Browser playground →</a></h3><p>Run Larzscript live, no install.</p></div>
+    <div class="card"><h3><a href="https://github.com/larz-scripter/larzscript/releases">Releases →</a></h3><p>Prebuilt static binaries for Linux x86_64 / ARM64.</p></div>
+    <div class="card"><h3><a href="https://github.com/larz-scripter/larzscript/tree/main/editors">Editor support →</a></h3><p>Syntax highlighting for VS Code and Vim.</p></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  Larzscript — one C file, zero dependencies, MIT licensed ·
+  <a href="https://github.com/larz-scripter/larzscript">github.com/larz-scripter/larzscript</a>
+</div></footer>
+</body>
+</html>
