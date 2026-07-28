@@ -27,10 +27,16 @@ It has zero dependencies — copy it anywhere and run it.
 ```bash
 cc -O2 -o larzscript native/larzscript.c        # or: make -C native
 ./larzscript program.lz
+./larzscript -e "print(1 + 2)"                  # run a snippet
 ./larzscript --ledger program.lz                # also print the ledger + gas
 ./larzscript repl                               # interactive REPL
+./larzscript fmt program.lz                     # canonical auto-formatter (idempotent)
 sudo make -C native install                     # -> /usr/local/bin/larzscript
 ```
+
+The **formatter** (`larzscript fmt`) reprints a program in canonical style
+(consistent indentation and spacing). It's idempotent like `gofmt` — running it
+twice changes nothing, and formatted code behaves identically.
 
 One source file, ~850 lines, libc only. Runs on aarch64 and x86_64.
 

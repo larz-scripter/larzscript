@@ -20,7 +20,8 @@
  *             gas-metered functions
  *   data:     list & dict literals, indexing, slicing a[i:j], element assign a[i]=x
  *   strings:  f-strings  f"hi {name}, {1+2}"
- *   cli:      larzscript file.lz | -e "code" | repl ; ';' separates statements
+ *   cli:      larzscript file.lz | -e "code" | repl | fmt file.lz
+ *             ';' separates statements; `fmt` canonically formats a file
  *   methods:  list (push/pop/insert/sort/reverse/contains/index),
  *             dict (keys/values/has/get/remove), string (upper/lower/strip/
  *             split/replace/contains/starts_with/ends_with/find)
@@ -241,6 +242,7 @@ typedef struct Node {
   struct Node **kids; int nkids;
   char **params; int nparams;
   struct Node **pdefs;        /* per-param default value expressions (or NULL) */
+  char *cop;                  /* compound-assign op ("+", ...) for the formatter, or NULL */
   long long gas; int has_gas;
   char *src, *dst;            /* pay / subscribe */
   char *period;               /* paywall */
@@ -566,7 +568,8 @@ static Node *fstring_node(const char *raw){
   }
   sb_putc(&lit,0);
   if(lit.n>1 || result==NULL) result=mkadd(result, mkstr_node(lit.s?lit.s:""));
-  return result;
+  Node *fs=node(N_FSTR); fs->str=(char*)raw; fs->a=result;   /* str=raw for the formatter, a=concat for eval */
+  return fs;
 }
 
 static int starts_expr(Token *t){
@@ -623,9 +626,12 @@ static Node *statement(Parser *p){
       padv(p);
       Node *rhs = expression(p);
       if(iscmp){ Node *bin=node(N_BIN); bin->op=xstrdup(baseop); bin->a=lhs; bin->b=rhs; rhs=bin; }
-      if(lhs->kind==N_NAME){ Node *n=node(N_ASSIGN); n->name=lhs->name; n->a=rhs; return n; }
-      if(lhs->kind==N_INDEX){ Node *n=node(N_SETINDEX); n->a=lhs->a; n->b=lhs->b; n->c=rhs; return n; }
-      fail("invalid assignment target on line %d", o->line);
+      Node *asg=NULL;
+      if(lhs->kind==N_NAME){ asg=node(N_ASSIGN); asg->name=lhs->name; asg->a=rhs; }
+      else if(lhs->kind==N_INDEX){ asg=node(N_SETINDEX); asg->a=lhs->a; asg->b=lhs->b; asg->c=rhs; }
+      else fail("invalid assignment target on line %d", o->line);
+      if(iscmp) asg->cop=xstrdup(baseop);
+      return asg;
     }
     Node *n=node(N_EXPR); n->a=lhs; return n;
   }
@@ -799,6 +805,7 @@ static Value eval(Interp *ip, Node *n, Env *env){
       return V_dict(d);
     }
     case N_FN: { Closure *c=xmalloc(sizeof(Closure)); c->decl=n; c->env=env; c->name=n->name; return V_func(c); }
+    case N_FSTR: return eval(ip, n->a, env);
     case N_TERNARY: return truthy(eval(ip,n->a,env)) ? eval(ip,n->b,env) : eval(ip,n->c,env);
     case N_SLICE: {
       Value obj=eval(ip,n->a,env);
@@ -1227,7 +1234,7 @@ static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_w
 /* ===================== REPL ===================== */
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v1.3.0) - type statements; Ctrl-D to exit.\n");
+  printf("Larzscript native REPL (v1.4.0) - type statements; Ctrl-D to exit.\n");
   for(;;){
     printf("larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
@@ -1308,6 +1315,106 @@ static void install_builtins(Interp *ip){
   define_builtins(ip->globals);
 }
 
+/* ===================== formatter (larzscript fmt) ===================== */
+static void fmt_expr(Node *n, int minprec);
+static void fmt_stmt(Node *n, int indent);
+static void fmt_oneliner(Node *n);
+
+static void fmt_indent(int k){ for(int i=0;i<k;i++) printf("  "); }
+static void fmt_money_lit(long long c){ long long a=c<0?-c:c; printf("%s$%lld.%02lld", c<0?"-":"", a/100, a%100); }
+static void fmt_str_lit(const char *s){
+  putchar('"');
+  for(const char *p=s;*p;p++){ char c=*p;
+    if(c=='"') printf("\\\""); else if(c=='\\') printf("\\\\");
+    else if(c=='\n') printf("\\n"); else if(c=='\t') printf("\\t"); else putchar(c); }
+  putchar('"');
+}
+static int expr_prec(Node *n){
+  if(n->kind==N_TERNARY) return 1;
+  if(n->kind==N_BIN){ const char *o=n->op;
+    if(!strcmp(o,"or")) return 2;
+    if(!strcmp(o,"and")) return 3;
+    if(!strcmp(o,"==")||!strcmp(o,"!=")) return 4;
+    if(!strcmp(o,"has")||!strcmp(o,"in")) return 5;
+    if(!strcmp(o,"<")||!strcmp(o,"<=")||!strcmp(o,">")||!strcmp(o,">=")) return 6;
+    if(!strcmp(o,"+")||!strcmp(o,"-")) return 7;
+    if(!strcmp(o,"**")) return 9;
+    return 8;
+  }
+  if(n->kind==N_UN) return 10;
+  return 11;
+}
+static void fmt_params(Node *n){
+  putchar('(');
+  for(int i=0;i<n->nparams;i++){ if(i) printf(", "); printf("%s", n->params[i]);
+    if(n->pdefs && n->pdefs[i]){ printf(" = "); fmt_expr(n->pdefs[i], 1); } }
+  putchar(')');
+}
+static void fmt_expr(Node *n, int minprec){
+  int p=expr_prec(n), paren=p<minprec;
+  if(paren) putchar('(');
+  switch(n->kind){
+    case N_NUM: print_number(n->num); break;
+    case N_MONEY: fmt_money_lit(n->cents); break;
+    case N_STR: fmt_str_lit(n->str); break;
+    case N_FSTR: putchar('f'); fmt_str_lit(n->str); break;
+    case N_BOOL: printf(n->boolean?"true":"false"); break;
+    case N_NIL: printf("nil"); break;
+    case N_NAME: printf("%s", n->name); break;
+    case N_UN: printf("%s", strcmp(n->op,"not")==0?"not ":"-"); fmt_expr(n->a, 10); break;
+    case N_BIN: fmt_expr(n->a, p); printf(" %s ", n->op); fmt_expr(n->b, p+1); break;
+    case N_TERNARY: fmt_expr(n->a, 2); printf(" ? "); fmt_expr(n->b, 1); printf(" : "); fmt_expr(n->c, 1); break;
+    case N_ARRAY: putchar('['); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i], 1); } putchar(']'); break;
+    case N_DICT: putchar('{'); for(int i=0;i+1<n->nkids;i+=2){ if(i) printf(", "); fmt_expr(n->kids[i],1); printf(": "); fmt_expr(n->kids[i+1],1); } putchar('}'); break;
+    case N_INDEX: fmt_expr(n->a,11); putchar('['); fmt_expr(n->b,1); putchar(']'); break;
+    case N_SLICE: fmt_expr(n->a,11); putchar('['); if(n->b) fmt_expr(n->b,1); putchar(':'); if(n->c) fmt_expr(n->c,1); putchar(']'); break;
+    case N_CALL: fmt_expr(n->a,11); putchar('('); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i],1); } putchar(')'); break;
+    case N_GET: fmt_expr(n->a,11); printf(".%s", n->name); break;
+    case N_METHOD: fmt_expr(n->a,11); printf(".%s(", n->name); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i],1); } putchar(')'); break;
+    case N_FN: printf("fn"); fmt_params(n); if(n->has_gas) printf(" gas %lld", n->gas);
+               printf(" { "); for(int i=0;i<n->b->nkids;i++){ if(i) printf("; "); fmt_oneliner(n->b->kids[i]); } printf(" }"); break;
+    default: printf("<expr>"); break;
+  }
+  if(paren) putchar(')');
+}
+/* the right-hand side of an assignment: shows compound ops (x += e) from cop */
+static void fmt_assign_rhs(Node *asg, Node *rhs){
+  if(asg->cop){ printf(" %s= ", asg->cop); fmt_expr(rhs->b, 1); }   /* rhs is (target cop e); print e */
+  else { printf(" = "); fmt_expr(rhs, 1); }
+}
+/* print a statement's core (no indent, no newline) */
+static void fmt_stmt_core(Node *n, int indent){
+  switch(n->kind){
+    case N_LET: printf("let %s = ", n->name); fmt_expr(n->a,1); break;
+    case N_ASSIGN: printf("%s", n->name); fmt_assign_rhs(n, n->a); break;
+    case N_SETINDEX: fmt_expr(n->a,11); putchar('['); fmt_expr(n->b,1); putchar(']'); fmt_assign_rhs(n, n->c); break;
+    case N_PRICE: printf("price %s = ", n->name); fmt_expr(n->a,1); break;
+    case N_WALLET: printf("wallet %s", n->name); if(n->a){ printf(" = "); fmt_expr(n->a,1); } break;
+    case N_PAY: printf("pay "); fmt_expr(n->a,1); printf(" from %s to %s", n->src, n->dst); break;
+    case N_PAYWALL: printf("paywall %s = ", n->name); fmt_expr(n->a,10); printf(" / %s to %s", n->period, n->dst); break;
+    case N_SUBSCRIBE: printf("subscribe %s to %s", n->src, n->dst); break;
+    case N_REQUIRE: printf("require "); fmt_expr(n->a,1); if(n->str){ printf(", "); fmt_str_lit(n->str); } break;
+    case N_RETURN: printf("return"); if(n->a){ putchar(' '); fmt_expr(n->a,1); } break;
+    case N_THROW: printf("throw "); fmt_expr(n->a,1); break;
+    case N_BREAK: printf("break"); break;
+    case N_CONTINUE: printf("continue"); break;
+    case N_IMPORT: printf("import "); fmt_str_lit(n->str); if(n->name) printf(" as %s", n->name); break;
+    case N_EXPR: fmt_expr(n->a,1); break;
+    case N_FN: printf("fn %s", n->name?n->name:""); fmt_params(n); if(n->has_gas) printf(" gas %lld", n->gas);
+               printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
+    case N_IF: printf("if "); fmt_expr(n->a,1); printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}');
+               if(n->c){ printf(" else "); if(n->c->kind==N_IF) fmt_stmt_core(n->c, indent); else { printf("{\n"); for(int i=0;i<n->c->nkids;i++) fmt_stmt(n->c->kids[i], indent+1); fmt_indent(indent); putchar('}'); } } break;
+    case N_WHILE: printf("while "); fmt_expr(n->a,1); printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
+    case N_FOR: printf("for %s in ", n->name); fmt_expr(n->a,1); printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
+    case N_TRY: printf("try {\n"); for(int i=0;i<n->a->nkids;i++) fmt_stmt(n->a->kids[i], indent+1); fmt_indent(indent); printf("} catch %s {\n", n->name); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
+    case N_BLOCK: printf("{\n"); for(int i=0;i<n->nkids;i++) fmt_stmt(n->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
+    default: fmt_expr(n, 1); break;
+  }
+}
+static void fmt_stmt(Node *n, int indent){ fmt_indent(indent); fmt_stmt_core(n, indent); putchar('\n'); }
+static void fmt_oneliner(Node *n){ fmt_stmt_core(n, 0); }   /* for lambda bodies */
+static void format_program(Node *prog){ for(int i=0;i<prog->nkids;i++) fmt_stmt(prog->kids[i], 0); }
+
 static const char *USAGE =
   "larzscript - the money-native, general-purpose language\n"
   "\n"
@@ -1315,17 +1422,19 @@ static const char *USAGE =
   "  larzscript <program.lz>        run a program file\n"
   "  larzscript -e \"<code>\"          run a snippet of code\n"
   "  larzscript repl                start the interactive REPL\n"
+  "  larzscript fmt <file.lz>       print the file, canonically formatted\n"
   "  larzscript [--ledger] <file>   also print the money ledger afterwards\n"
   "  larzscript --version | --help\n";
 
 int main(int argc, char **argv){
-  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0;
+  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0;
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.3.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.4.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
+    if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
     if(strcmp(a,"-e")==0 || strcmp(a,"--eval")==0){ if(i+1>=argc){ fprintf(stderr,"larzscript: -e needs code\n"); return 1; } eval_code=argv[++i]; i++; break; }
     if(strcmp(a,"repl")==0){ want_repl=1; i++; break; }
     path=a; i++; break;                 /* the source file; the rest are program args */
@@ -1333,6 +1442,14 @@ int main(int argc, char **argv){
   /* remaining argv[i..] are the program's own arguments */
   List *prog_args=list_new();
   for(; i<argc; i++) list_push(prog_args, V_string(xstrdup(argv[i])));
+
+  if(want_fmt){
+    if(!path){ fprintf(stderr,"larzscript fmt: needs a file\n"); return 1; }
+    char *src=read_all(path);
+    if(setjmp(g_err)){ fprintf(stderr,"SyntaxError: %s\n", g_errmsg); return 1; }
+    format_program(parse_program(lex(src)));
+    return 0;
+  }
 
   if(want_repl){
     Interp ip; memset(&ip,0,sizeof(ip));

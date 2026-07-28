@@ -16,3 +16,20 @@ for lz in tests/*.lz; do
 done
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
+
+# formatter invariants: fmt is idempotent, and formatted code runs identically
+echo "--- formatter checks ---"
+fpass=0; ffail=0
+for lz in tests/*.lz; do
+  dir=$(dirname "$lz"); tmp="$dir/.fmtcheck.lz"
+  /tmp/_larzscript_test fmt "$lz" > "$tmp" 2>/dev/null
+  f1="$(cat "$tmp")"
+  f2="$(/tmp/_larzscript_test fmt "$tmp" 2>/dev/null)"
+  orig="$(/tmp/_larzscript_test "$lz" 2>&1 || true)"
+  fout="$(/tmp/_larzscript_test "$tmp" 2>&1 || true)"
+  rm -f "$tmp"
+  if [ "$f1" = "$f2" ] && [ "$orig" = "$fout" ]; then fpass=$((fpass+1));
+  else ffail=$((ffail+1)); echo "FMT FAIL $lz"; fi
+done
+echo "formatter: $fpass ok, $ffail failed"
+[ "$ffail" = 0 ]
