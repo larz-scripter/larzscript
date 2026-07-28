@@ -98,8 +98,38 @@ run(program, backend="vm")      # compile to bytecode, run on a stack VM
 ```
 
 `larzscript --vm file.lz` runs the compiled path. Both share one runtime, so
-output, ledger, balances and gas are identical whichever you pick - the bytecode
-VM is the step toward v1.0 (a gas-metered VM and on-chain contracts).
+output, ledger, balances and gas are identical whichever you pick.
+
+## Pluggable settlement (new in 1.0)
+
+This is what makes Larzscript more than a toy. A program never moves money
+directly — `pay` and `subscribe` ask the program's **settlement backend** to do
+it. The default settles in memory (byte-identical to before), but you can plug
+in a real one and run the *same, unchanged program* against it:
+
+```python
+from larzscript import run, Settlement, CallbackSettlement, SettlementError
+
+# Quick: attach callbacks — no subclass.
+run(program, settlement=CallbackSettlement(
+    on_record=lambda txn, kind, memo: audit_log.append(txn)))
+
+# Real: authorize against external state, then broadcast what settles.
+class OnChainSettlement(Settlement):
+    def authorize(self, src, dst, amount, kind):
+        return chain.balance(src.name) >= amount.cents   # decline before money moves
+    def record(self, txn, kind, memo):
+        chain.submit(txn.src, txn.dst, txn.amount.cents)  # broadcast the settled tx
+
+run(program, settlement=OnChainSettlement())
+```
+
+- `authorize()` runs **before** any debit — a declined payment raises
+  `SettlementError` and **never partially settles**. This is where an on-chain
+  balance check, a fiat funds-hold, KYC, or fraud rules live.
+- `record()` runs **after** a successful move — persist or broadcast it to a real
+  ledger (a LarzChain transaction, a GemVault fiat charge, an audit log).
+- Works identically on both backends. See `examples/settlement_backend.py`.
 
 ## Why it exists — the selling point
 
@@ -111,10 +141,10 @@ first-class concern.**
   `fn ... gas N`. The runtime *guarantees* an endpoint can't run without payment,
   a function can't exceed its gas, and a split is enforced — because they're
   language semantics, not code you might forget.
-- **Pluggable settlement** — the in-memory ledger implements a
-  credit/debit/record interface. Swap in a real backend (a payments hub for
-  fiat/card, or a chain for on-chain settlement) and the same program settles for
-  real.
+- **Pluggable settlement** *(shipped in 1.0)* — `pay`/`subscribe` run through a
+  swappable `Settlement` backend that can authorize and record every movement.
+  Point it at a payments hub for fiat/card or a chain for on-chain settlement and
+  the same program settles for real — the program itself doesn't change.
 - **Gas-metering built in** — makes "pay-per-execution" and "run untrusted code
   safely" natural, and makes Larzscript a natural smart-contract language that
   *also* speaks fiat.
@@ -136,11 +166,16 @@ fn analyze(img) gas 500 { ... }   # metered: each call costs gas
 
 ## Roadmap
 
-- **v0.1 (this release)** — tree-walking interpreter, in-memory settlement.
-- **v0.2 (this release)** — subscriptions/paywalls, the `has` operator, and a CLI + REPL.
-- **v0.3 (this release)** — a bytecode compiler + stack VM (the compiled path).
-- **v1.0** — target the gas-metered `larzvm` and deploy `.lz` as on-chain contracts that also speak fiat.
-  as on-chain contracts.
+- **v0.1** — tree-walking interpreter, in-memory settlement.
+- **v0.2** — subscriptions/paywalls, the `has` operator, and a CLI + REPL.
+- **v0.3** — a bytecode compiler + stack VM (the compiled path).
+- **v0.4** — lists, for-loops, and stdlib builtins.
+- **v1.0 (this release)** — **pluggable settlement**: `pay`/`subscribe` settle
+  through a swappable backend that can authorize against, and record to, a real
+  ledger (fiat gateway / on-chain), with the program unchanged.
+- **Next** — a native standalone build already runs `.lz` with zero Python (see
+  `native/`); on-chain settlement adapters that deploy `.lz` as contracts which
+  also speak fiat are the ongoing direction.
 
 ## Learn to code with Larz
 
@@ -151,7 +186,7 @@ the stack's `larzcalc` (a tiny interpreter) and gas-metered VM.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v   # 25 tests
+python -m unittest discover -s tests -v   # 53 tests
 ```
 
 ## License

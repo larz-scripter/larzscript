@@ -7,8 +7,8 @@ gas metering are handled here as node rules.
 """
 
 from larzscript.runtime import (Money, Wallet, Paywall, Transaction, Builtin,
-                                Environment, is_num, truthy, stringify,
-                                binop, unary, index, make_builtins)
+                                Environment, Settlement, is_num, truthy,
+                                stringify, binop, unary, index, make_builtins)
 from larzscript.errors import (LarzTypeError, RequireError, OutOfGasError)
 
 __all__ = ["Interpreter", "Money", "Wallet", "Transaction", "Paywall"]
@@ -34,12 +34,13 @@ class Interpreter(object):
     """Runs a Larzscript program by walking the tree. After :meth:`run`, inspect
     ``ledger``, ``output``, ``gas_used`` and ``.get(name)``."""
 
-    def __init__(self, gas=None, output=None):
+    def __init__(self, gas=None, output=None, settlement=None):
         self.globals = Environment()
         self.ledger = []
         self.subscriptions = set()
         self.gas = gas
         self.gas_used = 0
+        self.settlement = settlement if settlement is not None else Settlement()
         self._out = output if output is not None else []
         for name, fn in make_builtins(self).items():
             self.globals.define(name, Builtin(name, fn))
@@ -91,9 +92,9 @@ class Interpreter(object):
         dst = env.get(node.dst)
         if not isinstance(src, Wallet) or not isinstance(dst, Wallet):
             raise LarzTypeError("pay requires two wallets")
-        src.debit(amount)
-        dst.credit(amount)
-        self.ledger.append(Transaction(node.src, node.dst, amount))
+        txn = self.settlement.transfer(src, dst, amount, node.src, node.dst,
+                                       kind="pay")
+        self.ledger.append(txn)
 
     def exec_Paywall(self, node, env):
         price = self.evaluate(node.amount, env)
@@ -111,9 +112,10 @@ class Interpreter(object):
         payee = env.get(plan.payee)
         if not isinstance(payee, Wallet):
             raise LarzTypeError("paywall payee '%s' is not a wallet" % plan.payee)
-        wallet.debit(plan.price)
-        payee.credit(plan.price)
-        self.ledger.append(Transaction(node.who, plan.payee, plan.price))
+        txn = self.settlement.transfer(wallet, payee, plan.price, node.who,
+                                       plan.payee, kind="subscribe",
+                                       memo=plan.name)
+        self.ledger.append(txn)
         self.subscriptions.add((wallet.name, plan.name))
 
     def exec_Require(self, node, env):

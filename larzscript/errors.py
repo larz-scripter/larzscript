@@ -32,3 +32,7 @@ class RequireError(LarzRuntimeError):
 
 class OutOfGasError(LarzRuntimeError):
     """A metered function exceeded the gas budget."""
+
+
+class SettlementError(LarzRuntimeError):
+    """A settlement backend declined or failed to settle a money movement."""

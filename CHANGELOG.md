@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.0
+Pluggable settlement - Larzscript can now settle against a real ledger.
+- Every `pay` and `subscribe` routes through a `Settlement` backend instead of
+  moving money directly. The default settles in memory (byte-identical to 0.4),
+  so all existing programs and tests are unchanged.
+- `run(src, settlement=...)` plugs in your own backend. Subclass `Settlement`
+  and override `authorize()` (decline a payment before any money moves - an
+  on-chain balance check, a fiat funds-hold, KYC, fraud rules) and `record()`
+  (persist/broadcast a settled movement). Or wire callbacks with
+  `CallbackSettlement(on_authorize=..., on_record=...)` - no subclass needed.
+- A declined payment raises `SettlementError` and never partially settles.
+- New public API: `Settlement`, `CallbackSettlement`, `SettlementError`.
+  Works identically on both backends. See `examples/settlement_backend.py`.
+  53 tests.
+
 ## 0.4.0
 Lists, for-loops, and a few stdlib builtins.
 - List literals `[1, 2, 3]`, indexing `xs[i]` (bounds-checked), and `for x in xs { }`

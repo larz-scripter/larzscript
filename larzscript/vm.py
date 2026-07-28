@@ -8,8 +8,8 @@ program produces identical output, ledger and gas whichever backend runs it.
 
 from larzscript import compiler as C
 from larzscript.runtime import (Money, Wallet, Paywall, Transaction, Builtin,
-                                Environment, is_num, truthy, stringify,
-                                binop, unary, index, make_builtins)
+                                Environment, Settlement, is_num, truthy,
+                                stringify, binop, unary, index, make_builtins)
 from larzscript.errors import LarzTypeError, RequireError, OutOfGasError
 
 __all__ = ["VM", "Closure"]
@@ -32,12 +32,13 @@ class VM(object):
     """Executes compiled Larzscript. After :meth:`run`, inspect ``ledger``,
     ``output``, ``gas_used`` and ``.get(name)``."""
 
-    def __init__(self, gas=None, output=None):
+    def __init__(self, gas=None, output=None, settlement=None):
         self.globals = Environment()
         self.ledger = []
         self.subscriptions = set()
         self.gas = gas
         self.gas_used = 0
+        self.settlement = settlement if settlement is not None else Settlement()
         self._out = output if output is not None else []
         for name, fn in make_builtins(self).items():
             self.globals.define(name, Builtin(name, fn))
@@ -214,9 +215,9 @@ class VM(object):
         dst = env.get(dst_name)
         if not isinstance(src, Wallet) or not isinstance(dst, Wallet):
             raise LarzTypeError("pay requires two wallets")
-        src.debit(amount)
-        dst.credit(amount)
-        self.ledger.append(Transaction(src_name, dst_name, amount))
+        txn = self.settlement.transfer(src, dst, amount, src_name, dst_name,
+                                       kind="pay")
+        self.ledger.append(txn)
 
     def _do_subscribe(self, who, plan_name, env):
         wallet = env.get(who)
@@ -228,7 +229,8 @@ class VM(object):
         payee = env.get(plan.payee)
         if not isinstance(payee, Wallet):
             raise LarzTypeError("paywall payee '%s' is not a wallet" % plan.payee)
-        wallet.debit(plan.price)
-        payee.credit(plan.price)
-        self.ledger.append(Transaction(who, plan.payee, plan.price))
+        txn = self.settlement.transfer(wallet, payee, plan.price, who,
+                                       plan.payee, kind="subscribe",
+                                       memo=plan.name)
+        self.ledger.append(txn)
         self.subscriptions.add((wallet.name, plan.name))

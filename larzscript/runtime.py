@@ -8,9 +8,10 @@ backends produce identical results.
 """
 
 from larzscript.errors import (LarzNameError, LarzTypeError, LarzRuntimeError,
-                               MoneyError)
+                               MoneyError, SettlementError)
 
 __all__ = ["Money", "Wallet", "Transaction", "Paywall", "Builtin", "Environment",
+           "Settlement", "CallbackSettlement",
            "is_num", "truthy", "stringify", "binop", "unary", "index",
            "make_builtins"]
 
@@ -113,6 +114,92 @@ class Builtin(object):
 
     def __repr__(self):
         return "<builtin %s>" % self.name
+
+
+# --------------------------------------------------------------------------- #
+#  Settlement backend (the pluggable seam under `pay` / `subscribe`)
+# --------------------------------------------------------------------------- #
+
+class Settlement(object):
+    """Mediates every money movement a program makes.
+
+    This is the seam that makes Larzscript more than a toy: ``pay`` and
+    ``subscribe`` don't move money directly, they ask the program's settlement
+    backend to do it. The default backend settles *in memory* - it debits the
+    source wallet, credits the destination, and returns a :class:`Transaction`
+    for the ledger - which is exactly the historical behaviour.
+
+    A real deployment plugs in its own backend by subclassing this (or using
+    :class:`CallbackSettlement`) and overriding two hooks:
+
+    * :meth:`authorize` - return ``False`` (or raise) to *decline* a payment
+      before any money moves. This is where an on-chain balance check, a fiat
+      gateway's funds hold, KYC, or fraud rules live.
+    * :meth:`record` - called *after* a successful in-memory move, to persist
+      or broadcast it to a real ledger (a LarzChain transaction, a GemVault
+      fiat charge, an audit log).
+
+    Because authorization happens before any debit, a declined payment leaves
+    wallet balances untouched - there is never a partial settlement.
+    """
+
+    def authorize(self, src, dst, amount, kind):
+        """Return True to allow this transfer. Override to gate on external
+        state. ``kind`` is ``"pay"`` or ``"subscribe"``. Default: allow all."""
+        return True
+
+    def record(self, txn, kind, memo):
+        """Called after a successful transfer. Override to persist/broadcast the
+        movement to a real ledger. ``memo`` carries the paywall name for a
+        subscription (else None). Default: do nothing (in-memory only)."""
+        pass
+
+    def transfer(self, src, dst, amount, src_label=None, dst_label=None,
+                 kind="pay", memo=None):
+        """Move ``amount`` (Money) from wallet ``src`` to wallet ``dst``.
+
+        Returns the :class:`Transaction` to append to the ledger. The
+        ``*_label`` names are how the wallets were referred to in the statement
+        (so the ledger reads the way the source code did); they default to the
+        wallets' own names. Raises :class:`SettlementError` if declined.
+        """
+        if not self.authorize(src, dst, amount, kind):
+            raise SettlementError(
+                "settlement declined: %s from '%s' to '%s'"
+                % (amount, src_label if src_label is not None else src.name,
+                   dst_label if dst_label is not None else dst.name))
+        src.debit(amount)
+        dst.credit(amount)
+        txn = Transaction(src_label if src_label is not None else src.name,
+                          dst_label if dst_label is not None else dst.name,
+                          amount)
+        self.record(txn, kind, memo)
+        return txn
+
+
+class CallbackSettlement(Settlement):
+    """A settlement backend wired to plain callables - the quickest way to
+    attach Larzscript to a real system without writing a subclass.
+
+    ``on_authorize(src, dst, amount, kind) -> bool`` gates each payment (it may
+    also raise its own error); ``on_record(txn, kind, memo)`` is called after a
+    successful move. Either may be omitted.
+    """
+
+    __slots__ = ("_on_authorize", "_on_record")
+
+    def __init__(self, on_authorize=None, on_record=None):
+        self._on_authorize = on_authorize
+        self._on_record = on_record
+
+    def authorize(self, src, dst, amount, kind):
+        if self._on_authorize is None:
+            return True
+        return bool(self._on_authorize(src, dst, amount, kind))
+
+    def record(self, txn, kind, memo):
+        if self._on_record is not None:
+            self._on_record(txn, kind, memo)
 
 
 # --------------------------------------------------------------------------- #
