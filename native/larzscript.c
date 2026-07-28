@@ -350,7 +350,7 @@ static Token *lex(const char *src){
       while(src[j] && src[j]!='"'){
         if(src[j]=='\\' && src[j+1]){
           char e=src[j+1];
-          buf[b++]= e=='n'?'\n': e=='t'?'\t': e;
+          buf[b++]= e=='n'?'\n': e=='t'?'\t': e=='r'?'\r': e=='0'?'\0': e;
           j+=2; continue;
         }
         buf[b++]=src[j++];

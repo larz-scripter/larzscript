@@ -3,3 +3,5 @@
 # Add your package by opening a PR that appends a line here.
 mathx  https://github.com/larz-scripter/lz-mathx
 greet  https://github.com/larz-scripter/lz-greet
+json   https://github.com/larz-scripter/lz-json
+http   https://github.com/larz-scripter/lz-http
