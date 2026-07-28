@@ -50,14 +50,15 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   `qemu-system-x86_64`, `xorriso`). Tested **headlessly** over QEMU's serial
   console. QEMU's `-kernel` is 32-bit-only, so 64-bit kernels boot via the GRUB
   ISO — the same path VirtualBox / real hardware use.
-- Milestones ✅: boot → long mode → the interpreter runs on bare metal →
-  a read-only RAM filesystem (`import`/`read_file`/`listdir` work) → **a PS/2
-  keyboard + scrolling VGA console**, so it's usable *locally* on a real machine
-  (type on the keyboard, watch the screen), not just over serial. The shipped
-  ISO boots a demo, then an interactive `larz>` prompt.
-- Next: a **writable / disk-backed** filesystem, and interrupt-driven input — at
-  which point `init.lz` and `larzsh.lz` from Stage 0 run directly on this kernel
-  and LarzOS self-hosts.
+- Milestones ✅: boot → long mode → interpreter on bare metal → RAM filesystem →
+  PS/2 keyboard + scrolling VGA (local I/O) → **a writable filesystem +
+  `larzsh` running on the kernel = SELF-HOSTING.** The Stage 0 shell runs
+  unmodified on our own kernel: `mkdir`/`cd`/`write`/`cat`/`ls`/`rm` against a
+  real in-memory directory tree, money-native compute wallet and all. The
+  shipped ISO boots the demo, then the shell.
+- Next: **disk-backed storage** (ATA/AHCI + an on-disk filesystem) so files
+  survive a reboot; then interrupt-driven input, more drivers, and `init.lz`
+  managing the system. The userland is already 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most

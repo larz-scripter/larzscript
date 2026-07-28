@@ -13,6 +13,7 @@ int larz_main(int argc, char **argv);
 
 void kernel_main(void){
     console_init();
+    vfs_init();                    /* mount the writable filesystem */
     printf("\n");
     printf("  LarzOS  -  the money-native operating system\n");
     printf("  kernel (Stage 1): 64-bit long mode, no Linux underneath.\n");
@@ -32,6 +33,14 @@ void kernel_main(void){
     printf("\n  [ demo complete - interactive Larzscript prompt; exit(0) to halt ]\n\n");
     char *repl2_argv[] = { "larzscript", "repl", 0 };
     larz_main(2, repl2_argv);
+#elif defined(LARZ_SHELL)
+    /* run the boot demo, then launch the LarzOS shell (larzsh) - self-hosting */
+    printf("  Loading /boot.lz from the RAM filesystem...\n");
+    char *boot_argv[] = { "larzscript", "/boot.lz", 0 };
+    larz_main(2, boot_argv);
+    printf("\n  [ starting the LarzOS shell - 'help' for commands, 'exit' to halt ]\n");
+    char *sh_argv[] = { "larzscript", "/larzsh.lz", 0 };
+    larz_main(2, sh_argv);
 #else
     /* deterministic: run the boot program and halt (used by `make test`) */
     printf("  Loading /boot.lz from the RAM filesystem...\n");

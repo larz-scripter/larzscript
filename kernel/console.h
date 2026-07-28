@@ -2,6 +2,7 @@
 #ifndef _LARZOS_CONSOLE_H
 #define _LARZOS_CONSOLE_H
 void console_init(void);
+void vfs_init(void);              /* build the writable filesystem from the initramfs */
 void serial_putc(char c);
 char serial_getc(void);
 char console_getc(void);          /* blocks on serial OR the PS/2 keyboard */

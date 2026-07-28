@@ -426,48 +426,110 @@ int printf(const char *fmt, ...){ Sink s={0,0,0,1}; va_list ap; va_start(ap,fmt)
 /* ======================================================================
  * FILE layer - std streams go to serial; real files don't exist yet
  * ==================================================================== */
-/* the baked-in RAM filesystem (see mkramfs.py / ramfs_gen.c) */
+/* the baked-in initramfs (mkramfs.py / ramfs_gen.c) - seeds the writable VFS */
 typedef struct { const char *path; const unsigned char *data; unsigned size; } RamFile;
 extern const RamFile g_ramfs[];
 extern const int g_ramfs_count;
 
-static const char *basename_of(const char *p){ const char *b=strrchr(p,'/'); return b?b+1:p; }
-static const RamFile *ramfs_find(const char *path){
-    for(int i=0;i<g_ramfs_count;i++) if(strcmp(g_ramfs[i].path,path)==0) return &g_ramfs[i];
-    const char *b=basename_of(path);                      /* flat fs: fall back to basename */
-    for(int i=0;i<g_ramfs_count;i++) if(strcmp(basename_of(g_ramfs[i].path),b)==0) return &g_ramfs[i];
+/* ---- a writable in-memory filesystem, seeded from the initramfs ---- */
+typedef struct VNode {
+    char name[64];
+    int is_dir;
+    unsigned char *data; unsigned size, cap;      /* file contents */
+    struct VNode *child, *next, *parent;          /* directory tree */
+} VNode;
+static VNode *g_root, *g_cwd;
+
+static VNode *vn_new(const char *name, int dir){
+    VNode *n=malloc(sizeof(VNode)); if(!n) return 0;
+    memset(n,0,sizeof(VNode)); strncpy(n->name,name,sizeof(n->name)-1); n->is_dir=dir; return n;
+}
+static VNode *vn_child(VNode *d, const char *name){
+    if(!d||!d->is_dir) return 0;
+    for(VNode *c=d->child;c;c=c->next) if(strcmp(c->name,name)==0) return c;
     return 0;
 }
+static void vn_add(VNode *d, VNode *c){ c->parent=d; c->next=d->child; d->child=c; }
+static void vn_grow(VNode *n, unsigned need){
+    if(n->cap>=need) return;
+    unsigned nc=n->cap?n->cap:64; while(nc<need) nc*=2;
+    n->data=realloc(n->data,nc); n->cap=nc;
+}
+static VNode *vn_resolve(const char *path){
+    VNode *cur=(path[0]=='/')?g_root:g_cwd;
+    char buf[512]; strncpy(buf,path,sizeof(buf)-1); buf[sizeof(buf)-1]=0;
+    char *save=0;
+    for(char *t=strtok_r(buf,"/",&save); t; t=strtok_r(0,"/",&save)){
+        if(strcmp(t,".")==0) continue;
+        if(strcmp(t,"..")==0){ if(cur->parent) cur=cur->parent; continue; }
+        cur=vn_child(cur,t); if(!cur) return 0;
+    }
+    return cur;
+}
+static VNode *vn_parent(const char *path, char *leaf, int leafsz, int mkparents){
+    VNode *cur=(path[0]=='/')?g_root:g_cwd;
+    char buf[512]; strncpy(buf,path,sizeof(buf)-1); buf[sizeof(buf)-1]=0;
+    char *save=0, *t=strtok_r(buf,"/",&save);
+    if(!t) return 0;
+    for(;;){
+        char *nx=strtok_r(0,"/",&save);
+        if(!nx){ strncpy(leaf,t,leafsz-1); leaf[leafsz-1]=0; return cur; }
+        if(strcmp(t,".")==0){}
+        else if(strcmp(t,"..")==0){ if(cur->parent) cur=cur->parent; }
+        else { VNode *c=vn_child(cur,t); if(!c){ if(!mkparents) return 0; c=vn_new(t,1); if(!c) return 0; vn_add(cur,c); } if(!c->is_dir) return 0; cur=c; }
+        t=nx;
+    }
+}
+static VNode *vn_open_write(const char *path, int trunc){
+    char leaf[64]; VNode *p=vn_parent(path,leaf,sizeof leaf,1);
+    if(!p) return 0;
+    VNode *f=vn_child(p,leaf);
+    if(f){ if(f->is_dir) return 0; if(trunc){ f->size=0; if(f->data) f->data[0]=0; } return f; }
+    f=vn_new(leaf,0); if(!f) return 0; vn_add(p,f); return f;
+}
+void vfs_init(void){
+    g_root=vn_new("",1); g_cwd=g_root;
+    vn_add(g_root, vn_new("home",1));
+    vn_add(g_root, vn_new("tmp",1));
+    for(int i=0;i<g_ramfs_count;i++){
+        VNode *f=vn_open_write(g_ramfs[i].path,1);
+        if(f && g_ramfs[i].size){ vn_grow(f,g_ramfs[i].size+1); memcpy(f->data,g_ramfs[i].data,g_ramfs[i].size); f->size=g_ramfs[i].size; f->data[f->size]=0; }
+    }
+}
 
-struct _LZ_FILE { int kind; const unsigned char *data; unsigned size, pos; };  /* 0..2=std, 3=ramfile */
+struct _LZ_FILE { int kind; VNode *vn; unsigned pos; int writing; };  /* 0..2=std, 3=vfs file */
 static FILE _stdin={0,0,0,0}, _stdout={1,0,0,0}, _stderr={2,0,0,0};
 FILE *stdin=&_stdin, *stdout=&_stdout, *stderr=&_stderr;
-
 static int is_std(FILE *f){ return f==&_stdin||f==&_stdout||f==&_stderr; }
 
 int putchar(int c){ serial_putc((char)c); return c; }
 int puts(const char *s){ con_puts(s); serial_putc('\n'); return 0; }
-int fputs(const char *s, FILE *f){ if(is_std(f)) con_puts(s); return 0; }
-int fputc(int c, FILE *f){ if(is_std(f)) serial_putc((char)c); return c; }
-int fflush(FILE *f){ (void)f; return 0; }
-int fprintf(FILE *f, const char *fmt, ...){
-    Sink s = { 0,0,0, is_std(f) };
-    va_list ap; va_start(ap,fmt); vformat(&s,fmt,ap); va_end(ap);
-    return (int)s.len;
+int fputs(const char *s, FILE *f){
+    if(is_std(f)){ con_puts(s); return 0; }
+    if(f->writing && f->vn){ unsigned l=(unsigned)strlen(s); vn_grow(f->vn,f->vn->size+l+1); memcpy(f->vn->data+f->vn->size,s,l); f->vn->size+=l; f->vn->data[f->vn->size]=0; }
+    return 0;
 }
+int fputc(int c, FILE *f){
+    if(is_std(f)) serial_putc((char)c);
+    else if(f->writing && f->vn){ vn_grow(f->vn,f->vn->size+2); f->vn->data[f->vn->size++]=(unsigned char)c; f->vn->data[f->vn->size]=0; }
+    return c;
+}
+int fflush(FILE *f){ (void)f; return 0; }
+int fprintf(FILE *f, const char *fmt, ...){ Sink s={0,0,0,is_std(f)}; va_list ap; va_start(ap,fmt); vformat(&s,fmt,ap); va_end(ap); return (int)s.len; }
 size_t fwrite(const void *p, size_t sz, size_t nm, FILE *f){
-    if(is_std(f)){ const char *b=p; size_t t=sz*nm; while(t--) serial_putc(*b++); }
-    return nm;
+    size_t t=sz*nm;
+    if(is_std(f)){ const char *b=p; while(t--) serial_putc(*b++); return nm; }
+    if(f->writing && f->vn){ vn_grow(f->vn,f->vn->size+(unsigned)t+1); memcpy(f->vn->data+f->vn->size,p,t); f->vn->size+=(unsigned)t; f->vn->data[f->vn->size]=0; return nm; }
+    return 0;
 }
 size_t fread(void *p, size_t sz, size_t nm, FILE *f){
-    if(f->kind!=3) return 0;
-    size_t want=sz*nm, avail=f->size - f->pos;
+    if(is_std(f)||!f->vn||f->writing) return 0;
+    size_t want=sz*nm, avail=f->vn->size - f->pos;
     if(want>avail) want=avail;
-    memcpy(p, f->data + f->pos, want);
+    memcpy(p, f->vn->data + f->pos, want);
     f->pos += (unsigned)want;
     return sz? want/sz : 0;
 }
-/* stdin: serial line editor (echo + backspace). ramfile: read one line. */
 char *fgets(char *buf, int size, FILE *f){
     if(f==&_stdin){
         int n=0;
@@ -478,21 +540,22 @@ char *fgets(char *buf, int size, FILE *f){
             if(c>=32 && c<127 && n<size-2){ buf[n++]=c; serial_putc(c); }
         }
     }
-    if(f->kind==3){
-        if(f->pos>=f->size) return 0;
+    if(f->vn && !f->writing){
+        if(f->pos>=f->vn->size) return 0;
         int n=0;
-        while(f->pos<f->size && n<size-1){ char c=(char)f->data[f->pos++]; buf[n++]=c; if(c=='\n') break; }
+        while(f->pos<f->vn->size && n<size-1){ char c=(char)f->vn->data[f->pos++]; buf[n++]=c; if(c=='\n') break; }
         buf[n]=0; return buf;
     }
     return 0;
 }
 FILE *fopen(const char *path, const char *mode){
-    if(mode && (mode[0]=='w'||mode[0]=='a')) return 0;    /* read-only fs */
-    const RamFile *rf=ramfs_find(path);
-    if(!rf) return 0;
+    VNode *vn; int writing=0; unsigned pos=0;
+    if(mode && mode[0]=='w'){ vn=vn_open_write(path,1); writing=1; }
+    else if(mode && mode[0]=='a'){ vn=vn_open_write(path,0); writing=1; }
+    else { vn=vn_resolve(path); if(vn && vn->is_dir) return 0; }
+    if(!vn) return 0;
     FILE *f=malloc(sizeof(FILE)); if(!f) return 0;
-    f->kind=3; f->data=rf->data; f->size=rf->size; f->pos=0;
-    return f;
+    f->kind=3; f->vn=vn; f->pos=pos; f->writing=writing; return f;
 }
 int fclose(FILE *f){ if(f && !is_std(f)) free(f); return 0; }
 FILE *popen(const char *c, const char *m){ (void)c;(void)m; return 0; }
@@ -503,35 +566,65 @@ int pclose(FILE *f){ (void)f; return -1; }
  * ==================================================================== */
 void exit(int code){ con_puts("\n[larzscript exited]\n"); qemu_exit((unsigned char)code); for(;;) __asm__ volatile("hlt"); }
 void abort(void){ exit(134); }
-char *getenv(const char *n){ (void)n; return 0; }
-int system(const char *c){ (void)c; return -1; }
-char *realpath(const char *p, char *r){ (void)p;(void)r; return 0; }
-char *getcwd(char *b, size_t n){ if(b&&n){ strncpy(b,"/",n); return b; } return 0; }
-int chdir(const char *p){ (void)p; return -1; }
-int rmdir(const char *p){ (void)p; return -1; }
-int unlink(const char *p){ (void)p; return -1; }
-int access(const char *p, int m){ (void)p;(void)m; return -1; }
+char *getenv(const char *n){
+    if(strcmp(n,"HOME")==0)            return "/home";
+    if(strcmp(n,"USER")==0)            return "larz";
+    if(strcmp(n,"SHELL")==0)           return "/larzsh.lz";
+    if(strcmp(n,"LARZSCRIPT_PATH")==0) return "/";   /* baked modules live at root */
+    return 0;
+}
+int system(const char *c){ (void)c; return -1; }   /* no processes on bare metal */
+char *realpath(const char *p, char *r){ (void)r; if(!vn_resolve(p)) return 0; char *o=malloc(strlen(p)+1); if(o) strcpy(o,p); return o; }
+char *getcwd(char *b, size_t n){
+    if(!b||!n) return 0;
+    if(g_cwd==g_root){ strncpy(b,"/",n); b[n-1]=0; return b; }
+    char tmp[512]; int ti=(int)sizeof(tmp); tmp[--ti]=0;
+    for(VNode *c=g_cwd; c && c!=g_root; c=c->parent){
+        int l=(int)strlen(c->name); ti-=l; if(ti<1) break;
+        memcpy(tmp+ti,c->name,l); tmp[--ti]='/';
+    }
+    strncpy(b,tmp+ti,n); b[n-1]=0; return b;
+}
+int chdir(const char *p){ VNode *n=vn_resolve(p); if(!n||!n->is_dir) return -1; g_cwd=n; return 0; }
+static int vn_unlink(const char *p){
+    VNode *n=vn_resolve(p); if(!n||n==g_root||!n->parent) return -1;
+    VNode *par=n->parent;
+    if(par->child==n) par->child=n->next;
+    else for(VNode *c=par->child;c;c=c->next) if(c->next==n){ c->next=n->next; break; }
+    if(n->data) free(n->data);
+    free(n);
+    return 0;
+}
+int rmdir(const char *p){ return vn_unlink(p); }
+int unlink(const char *p){ return vn_unlink(p); }
+int remove(const char *p){ return vn_unlink(p); }
+int access(const char *p, int m){ (void)m; return vn_resolve(p)?0:-1; }
 int usleep(unsigned us){ for(volatile unsigned i=0;i<us*20u;i++){} return 0; }
 unsigned sleep(unsigned s){ (void)s; return 0; }
 int stat(const char *p, struct stat *b){
-    const RamFile *rf=ramfs_find(p);
-    if(!rf) return -1;
-    if(b){ b->st_mode=S_IFREG; b->st_size=rf->size; }
+    VNode *n=vn_resolve(p); if(!n) return -1;
+    if(b){ b->st_mode = n->is_dir?S_IFDIR:S_IFREG; b->st_size=n->size; }
     return 0;
 }
-int mkdir(const char *p, mode_t m){ (void)p;(void)m; return -1; }   /* read-only fs */
-int rename(const char *o, const char *nw){ (void)o;(void)nw; return -1; }
-int remove(const char *p){ (void)p; return -1; }
-
-/* opendir enumerates the whole (flat) ramfs; readdir yields basenames */
-struct _LZ_DIR { int idx; struct dirent ent; };
-DIR *opendir(const char *n){ (void)n; DIR *d=malloc(sizeof(DIR)); if(d) d->idx=0; return d; }
+int mkdir(const char *p, mode_t m){
+    (void)m; char leaf[64]; VNode *par=vn_parent(p,leaf,sizeof leaf,1);
+    if(!par || vn_child(par,leaf)) return -1;
+    VNode *d=vn_new(leaf,1); if(!d) return -1; vn_add(par,d); return 0;
+}
+int rename(const char *o, const char *nw){
+    VNode *n=vn_resolve(o); if(!n) return -1;
+    char leaf[64]; VNode *np=vn_parent(nw,leaf,sizeof leaf,1); if(!np) return -1;
+    VNode *par=n->parent;
+    if(par){ if(par->child==n) par->child=n->next; else for(VNode*c=par->child;c;c=c->next) if(c->next==n){ c->next=n->next; break; } }
+    strncpy(n->name,leaf,sizeof(n->name)-1); n->name[sizeof(n->name)-1]=0; vn_add(np,n); return 0;
+}
+struct _LZ_DIR { VNode *cur; struct dirent ent; };
+DIR *opendir(const char *n){ VNode *d=(n&&n[0])?vn_resolve(n):g_cwd; if(!d||!d->is_dir) return 0; DIR *dp=malloc(sizeof(DIR)); if(dp) dp->cur=d->child; return dp; }
 struct dirent *readdir(DIR *d){
-    if(!d || d->idx>=g_ramfs_count) return 0;
-    const char *b=basename_of(g_ramfs[d->idx++].path);
-    strncpy(d->ent.d_name, b, sizeof(d->ent.d_name)-1);
+    if(!d||!d->cur) return 0;
+    strncpy(d->ent.d_name,d->cur->name,sizeof(d->ent.d_name)-1);
     d->ent.d_name[sizeof(d->ent.d_name)-1]=0;
-    return &d->ent;
+    d->cur=d->cur->next; return &d->ent;
 }
 int closedir(DIR *d){ if(d) free(d); return 0; }
 time_t time(time_t *t){ if(t)*t=0; return 0; }
