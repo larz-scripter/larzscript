@@ -173,9 +173,14 @@ fn analyze(img) gas 500 { ... }   # metered: each call costs gas
 - **v1.0 (this release)** — **pluggable settlement**: `pay`/`subscribe` settle
   through a swappable backend that can authorize against, and record to, a real
   ledger (fiat gateway / on-chain), with the program unchanged.
+- **On-chain settlement (shipped)** — [LarzChain](https://github.com/larz-scripter/larzchain)
+  ships a `LarzChainSettlement` backend (`larzchain.larzscript_settlement`): the
+  same `.lz` program settles every `pay`/`subscribe` as a real signed LARZ
+  transaction, authorized against on-chain balances. Plug it in with
+  `run(program, settlement=LarzChainSettlement(node))`.
 - **Next** — a native standalone build already runs `.lz` with zero Python (see
-  `native/`); on-chain settlement adapters that deploy `.lz` as contracts which
-  also speak fiat are the ongoing direction.
+  `native/`); a fiat-gateway settlement adapter and deploying `.lz` as on-chain
+  contracts that also speak fiat are the ongoing direction.
 
 ## Learn to code with Larz
 
