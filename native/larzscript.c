@@ -28,6 +28,7 @@
  *   stdlib:   print money len range str int float bool type abs min max sum
  *             sorted reversed floor ceil round sqrt pow chr ord assert input
  *             keys values push map filter reduce join enumerate zip exit
+ *             all any count unique hex bin oct gcd factorial sign clamp list dict
  *             read_file write_file append_file file_exists; `args` = argv list
  *   strings/lists also support repetition: "ab"*3, [0]*5
  *   money:    $ = integer cents; price; pay .. from .. to ..; require;
@@ -848,6 +849,9 @@ static Value method_call(Interp *ip, Value obj, const char *name, Value *args, i
         if(strcmp(m,"index")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","index expects one argument"); for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) return V_number(i); return V_number(-1); }
         if(strcmp(m,"sort")==0){ qsort(l->items,l->n,sizeof(Value),qsort_value_cmp); return V_nil(); }
         if(strcmp(m,"reverse")==0){ for(int i=0,j=l->n-1;i<j;i++,j--){ Value t=l->items[i]; l->items[i]=l->items[j]; l->items[j]=t; } return V_nil(); }
+        if(strcmp(m,"count")==0){ if(na!=1) runtime_error(ip,"LarzTypeError","count expects one argument"); long long c=0; for(int i=0;i<l->n;i++) if(values_equal(l->items[i],args[0])) c++; return V_number((double)c); }
+        if(strcmp(m,"extend")==0){ if(na!=1||args[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","extend expects a list"); for(int i=0;i<args[0].list->n;i++) list_push(l,args[0].list->items[i]); return V_nil(); }
+        if(strcmp(m,"clear")==0){ l->n=0; return V_nil(); }
         runtime_error(ip,"LarzTypeError","a list has no method '%s'", m);
       }
       if(obj.t==V_DICT){
@@ -868,6 +872,9 @@ static Value method_call(Interp *ip, Value obj, const char *name, Value *args, i
         if(strcmp(m,"ends_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ends_with expects a string"); size_t ls=strlen(s), le=strlen(args[0].str); return V_bool(ls>=le && strcmp(s+ls-le,args[0].str)==0); }
         if(strcmp(m,"replace")==0){ if(na!=2||args[0].t!=V_STR||args[1].t!=V_STR) runtime_error(ip,"LarzTypeError","replace expects two strings"); const char *from=args[0].str,*to=args[1].str; size_t lf=strlen(from); if(lf==0) return V_string(xstrdup(s)); SB b; b.s=NULL;b.n=0;b.cap=0; const char *p=s; while(*p){ if(strncmp(p,from,lf)==0){ sb_puts(&b,to); p+=lf; } else sb_putc(&b,*p++); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
         if(strcmp(m,"split")==0){ List *r=list_new(); if(na==0||args[0].t!=V_STR||args[0].str[0]==0){ for(const char *p=s;*p;p++){ char *c=xstrndup(p,1); list_push(r,V_string(c)); } return V_list(r); } const char *sep=args[0].str; size_t ls=strlen(sep); const char *p=s,*q; while((q=strstr(p,sep))){ list_push(r,V_string(xstrndup(p,q-p))); p=q+ls; } list_push(r,V_string(xstrdup(p))); return V_list(r); }
+        if(strcmp(m,"capitalize")==0){ char *r=xstrdup(s); if(r[0]){ r[0]=toupper((unsigned char)r[0]); for(char *p=r+1;*p;p++) *p=tolower((unsigned char)*p); } return V_string(r); }
+        if(strcmp(m,"title")==0){ char *r=xstrdup(s); int start=1; for(char *p=r;*p;p++){ if(isspace((unsigned char)*p)){ start=1; } else { *p = start?toupper((unsigned char)*p):tolower((unsigned char)*p); start=0; } } return V_string(r); }
+        if(strcmp(m,"ljust")==0||strcmp(m,"rjust")==0){ if(na<1||!is_num(args[0])) runtime_error(ip,"LarzTypeError","%s expects a width",m); int w=(int)args[0].num; char fill=(na>=2&&args[1].t==V_STR&&args[1].str[0])?args[1].str[0]:' '; int ls=(int)strlen(s); int pad=w>ls?w-ls:0; SB b; b.s=NULL;b.n=0;b.cap=0; if(m[0]=='r'){ for(int i=0;i<pad;i++) sb_putc(&b,fill); sb_puts(&b,s); } else { sb_puts(&b,s); for(int i=0;i<pad;i++) sb_putc(&b,fill); } sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
         runtime_error(ip,"LarzTypeError","a string has no method '%s'", m);
       }
       runtime_error(ip,"LarzTypeError","cannot call a method on that value");
@@ -1320,6 +1327,20 @@ static Value bi_write_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR)
 static Value bi_append_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","append_file() expects a path and content"); FILE *f=fopen(a[0].str,"ab"); if(!f) runtime_error(ip,"IOError","cannot append to file '%s'", a[0].str); char *s=str_of(a[1]); fputs(s,f); fclose(f); return V_nil(); }
 static Value bi_file_exists(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","file_exists() expects a path string"); FILE *f=fopen(a[0].str,"rb"); if(f){ fclose(f); return V_bool(1);} return V_bool(0); }
 static Value bi_exit(Interp *ip, Value *a, int n){ (void)ip; int code = (n>=1&&is_num(a[0]))?(int)a[0].num:0; exit(code); }
+static Value bi_all(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","all() expects a list"); for(int i=0;i<a[0].list->n;i++) if(!truthy(a[0].list->items[i])) return V_bool(0); return V_bool(1); }
+static Value bi_any(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","any() expects a list"); for(int i=0;i<a[0].list->n;i++) if(truthy(a[0].list->items[i])) return V_bool(1); return V_bool(0); }
+static Value bi_count(Interp *ip, Value *a, int n){ if(n!=2) runtime_error(ip,"LarzTypeError","count() expects a list/string and a value"); long long c=0; if(a[0].t==V_LIST){ for(int i=0;i<a[0].list->n;i++) if(values_equal(a[0].list->items[i],a[1])) c++; } else if(a[0].t==V_STR&&a[1].t==V_STR&&a[1].str[0]){ const char *p=a[0].str,*q; size_t l=strlen(a[1].str); while((q=strstr(p,a[1].str))){ c++; p=q+l; } } else runtime_error(ip,"LarzTypeError","count() expects a list, or two strings"); return V_number((double)c); }
+static Value bi_unique(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","unique() expects a list"); List *r=list_new(); for(int i=0;i<a[0].list->n;i++){ int seen=0; for(int j=0;j<r->n;j++) if(values_equal(r->items[j],a[0].list->items[i])){ seen=1; break; } if(!seen) list_push(r,a[0].list->items[i]); } return V_list(r); }
+static Value _base_str(long long v, int base, const char *prefix){ char buf[80]; int neg=v<0; unsigned long long u=neg?(unsigned long long)(-v):(unsigned long long)v; int k=0; if(u==0) buf[k++]='0'; while(u){ int d=u%base; buf[k++]= d<10 ? '0'+d : 'a'+(d-10); u/=base; } SB b; b.s=NULL;b.n=0;b.cap=0; if(neg) sb_putc(&b,'-'); sb_puts(&b,prefix); for(int i=k-1;i>=0;i--) sb_putc(&b,buf[i]); sb_putc(&b,0); return V_string(b.s?b.s:xstrdup("")); }
+static Value bi_hex(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","hex() expects a number"); return _base_str((long long)a[0].num,16,"0x"); }
+static Value bi_bin(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","bin() expects a number"); return _base_str((long long)a[0].num,2,"0b"); }
+static Value bi_oct(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","oct() expects a number"); return _base_str((long long)a[0].num,8,"0o"); }
+static Value bi_gcd(Interp *ip, Value *a, int n){ if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","gcd() expects two numbers"); long long x=(long long)a[0].num, y=(long long)a[1].num; if(x<0)x=-x; if(y<0)y=-y; while(y){ long long t=x%y; x=y; y=t; } return V_number((double)x); }
+static Value bi_factorial(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","factorial() expects a number"); long long k=(long long)a[0].num; if(k<0) runtime_error(ip,"LarzValueError","factorial() of a negative number"); double r=1; for(long long i=2;i<=k;i++) r*=i; return V_number(r); }
+static Value bi_sign(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","sign() expects one argument"); if(a[0].t==V_MONEY) return V_number(a[0].cents<0?-1:(a[0].cents>0?1:0)); if(is_num(a[0])) return V_number(a[0].num<0?-1:(a[0].num>0?1:0)); runtime_error(ip,"LarzTypeError","sign() expects a number or money"); return V_nil(); }
+static Value bi_clamp(Interp *ip, Value *a, int n){ if(n!=3) runtime_error(ip,"LarzTypeError","clamp() expects a value, low and high"); if(value_compare(a[0],a[1])<0) return a[1]; if(value_compare(a[0],a[2])>0) return a[2]; return a[0]; }
+static Value bi_list(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","list() expects one argument"); List *r=list_new(); if(a[0].t==V_LIST){ for(int i=0;i<a[0].list->n;i++) list_push(r,a[0].list->items[i]); } else if(a[0].t==V_DICT){ for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].key); } else if(a[0].t==V_STR){ for(const char *p=a[0].str;*p;p++) list_push(r,V_string(xstrndup(p,1))); } else runtime_error(ip,"LarzTypeError","list() expects a list, dict or string"); return V_list(r); }
+static Value bi_dict(Interp *ip, Value *a, int n){ Dict *d=dict_new(); if(n==0) return V_dict(d); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","dict() expects a list of [key, value] pairs"); for(int i=0;i<a[0].list->n;i++){ Value pr=a[0].list->items[i]; if(pr.t!=V_LIST||pr.list->n!=2) runtime_error(ip,"LarzTypeError","dict() pairs must be [key, value] lists"); dict_set(d, pr.list->items[0], pr.list->items[1]); } return V_dict(d); }
 
 static Builtin B_print = {"print", bi_print};
 static Builtin B_money = {"money", bi_money};
@@ -1334,11 +1355,13 @@ static Builtin B_chr={"chr",bi_chr}, B_ord={"ord",bi_ord}, B_assert={"assert",bi
 static Builtin B_keys={"keys",bi_keys}, B_values={"values",bi_values};
 static Builtin B_map={"map",bi_map}, B_filter={"filter",bi_filter}, B_reduce={"reduce",bi_reduce}, B_join={"join",bi_join}, B_enumerate={"enumerate",bi_enumerate};
 static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_write_file={"write_file",bi_write_file}, B_append_file={"append_file",bi_append_file}, B_file_exists={"file_exists",bi_file_exists}, B_exit={"exit",bi_exit};
+static Builtin B_all={"all",bi_all}, B_any={"any",bi_any}, B_count={"count",bi_count}, B_unique={"unique",bi_unique};
+static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct}, B_gcd={"gcd",bi_gcd}, B_factorial={"factorial",bi_factorial}, B_sign={"sign",bi_sign}, B_clamp={"clamp",bi_clamp}, B_list={"list",bi_list}, B_dict={"dict",bi_dict};
 
 /* ===================== REPL ===================== */
 static void repl(Interp *ip){
   char line[8192];
-  printf("Larzscript native REPL (v1.5.0) - type statements; Ctrl-D to exit.\n");
+  printf("Larzscript native REPL (v1.6.0) - type statements; Ctrl-D to exit.\n");
   for(;;){
     printf("larz> "); fflush(stdout);
     if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
@@ -1411,6 +1434,19 @@ static void define_builtins(Env *g){
   env_define(g, "append_file", V_builtin(&B_append_file));
   env_define(g, "file_exists", V_builtin(&B_file_exists));
   env_define(g, "exit",   V_builtin(&B_exit));
+  env_define(g, "all",    V_builtin(&B_all));
+  env_define(g, "any",    V_builtin(&B_any));
+  env_define(g, "count",  V_builtin(&B_count));
+  env_define(g, "unique", V_builtin(&B_unique));
+  env_define(g, "hex",    V_builtin(&B_hex));
+  env_define(g, "bin",    V_builtin(&B_bin));
+  env_define(g, "oct",    V_builtin(&B_oct));
+  env_define(g, "gcd",    V_builtin(&B_gcd));
+  env_define(g, "factorial", V_builtin(&B_factorial));
+  env_define(g, "sign",   V_builtin(&B_sign));
+  env_define(g, "clamp",  V_builtin(&B_clamp));
+  env_define(g, "list",   V_builtin(&B_list));
+  env_define(g, "dict",   V_builtin(&B_dict));
 }
 
 static void install_builtins(Interp *ip){
@@ -1536,7 +1572,7 @@ int main(int argc, char **argv){
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.5.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.6.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }

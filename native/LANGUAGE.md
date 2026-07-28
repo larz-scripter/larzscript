@@ -98,6 +98,7 @@ builtins `map`, `filter`, `reduce`.
 let xs = [1, 2, 3]
 xs[0] = 10           # element assignment
 xs.push(4); xs.pop(); xs.sort(); xs.reverse()
+xs.count(1); xs.extend([5, 6]); xs.clear()
 xs[1:3]; xs[:2]; xs[-2:]              # slicing (lists and strings)
 
 let d = {"a": 1}
@@ -115,6 +116,7 @@ f-strings interpolate expressions; `{{`/`}}` are literal braces.
 print(f"hi {name}, {1 + 2} = {1+2}")
 "HELLO".lower(); "  x  ".strip(); "a,b".split(","); "ab".replace("a","A")
 "hello".contains("ell"); "hi".starts_with("h"); "hi".ends_with("i")
+"hello world".capitalize(); "hello world".title(); "x".ljust(5); "x".rjust(5, ".")
 ```
 
 ---
@@ -160,9 +162,11 @@ and `wallet.debit(m)` adjust it. Run with `--ledger` to print the money ledger.
 
 `print len range str int float bool type abs min max sum sorted reversed
 floor ceil round sqrt pow chr ord assert input keys values push money
-map filter reduce join enumerate zip exit`
+map filter reduce join enumerate zip exit all any count unique hex bin oct
+gcd factorial sign clamp list dict`
 
 `range(n)`, `range(start, stop)`, `range(start, stop, step)`.
+`list(x)` builds a list from a string/dict/list; `dict(pairs)` from `[[k, v], ...]`.
 
 `"ab" * 3` and `[0] * 5` repeat strings and lists.
 

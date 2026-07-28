@@ -108,7 +108,8 @@ dict `keys`/`values`/`has`/`get`/`remove` · string
 **Builtins:** `print len range str int float bool type abs min max sum sorted
 reversed floor ceil round sqrt pow chr ord assert input keys values push money
 map filter reduce join enumerate zip exit read_file write_file append_file
-file_exists` · `args` (command-line args) · `"ab"*3` / `[0]*5` repetition.
+file_exists all any count unique hex bin oct gcd factorial sign clamp list dict`
+· `args` (command-line args) · `"ab"*3` / `[0]*5` repetition.
 
 **Editor support:** syntax highlighting for VS Code and Vim — see
 [`../editors/`](../editors/).
