@@ -675,8 +675,27 @@ static char *proc_content(const char *path){
     else snprintf(c,256,"no such /proc file\n");
     return c;
 }
+/* ---- current user + home-directory permissions ---- */
+static char g_user[64]="root";                        /* set via /dev/user (login/su) */
+static int perm_ok(const char *path){
+    if(!path || strncmp(path,"/home/",6)!=0) return 1;    /* only guard /home */
+    const char *seg=path+6;
+    if(seg[0]=='.') return 1;                             /* /home/.larzos = shared state */
+    char name[64]; int i=0; while(seg[i] && seg[i]!='/' && i<63){ name[i]=seg[i]; i++; } name[i]=0;
+    if(name[0]==0) return 1;                              /* "/home" or "/home/" */
+    if(strcmp(g_user,"root")==0) return 1;               /* root sees all */
+    return strcmp(name,g_user)==0;                        /* only your own home */
+}
+
 FILE *fopen(const char *path, const char *mode){
     int reading = !mode || mode[0]=='r';
+    if(!reading && strcmp(path,"/dev/user")==0){          /* set the current user */
+        VNode *e=vn_new("u",0); if(!e) return 0;
+        FILE *f=malloc(sizeof(FILE)); if(!f){ free(e); return 0; }
+        f->kind=3; f->vn=e; f->pos=0; f->writing=1; f->ephemeral=1;
+        strncpy(f->netpath,"/dev/user",sizeof(f->netpath)-1); f->netpath[sizeof(f->netpath)-1]=0;
+        return f;
+    }
     if(reading && strncmp(path,"/proc/",6)==0) return ephemeral_file(proc_content(path));
     if(reading && strcmp(path,"/dev/password")==0){   /* masked console line read */
         VNode *e=vn_new("pw",0); if(!e) return 0;
@@ -708,6 +727,7 @@ FILE *fopen(const char *path, const char *mode){
         }
         return f;
     }
+    if(!perm_ok(path)) return 0;                          /* home-directory privacy */
     VNode *vn; int writing=0; unsigned pos=0;
     if(mode && mode[0]=='w'){ vn=vn_open_write(path,1); writing=1; }
     else if(mode && mode[0]=='a'){ vn=vn_open_write(path,0); writing=1; }
@@ -719,7 +739,13 @@ FILE *fopen(const char *path, const char *mode){
 int fclose(FILE *f){
     if(!f || is_std(f)) return 0;
     int w=f->writing, net=f->netpath[0]!=0, eph=f->ephemeral;
-    if(net) net_vfile_write(f->netpath, (char*)(f->vn->data?f->vn->data:(unsigned char*)""), (int)f->vn->size);
+    if(net){
+        if(strcmp(f->netpath,"/dev/user")==0){            /* set current user (trim newline) */
+            int k=0; unsigned char *d=f->vn->data;
+            while(k<63 && d && d[k] && d[k]!='\n' && d[k]!='\r'){ g_user[k]=(char)d[k]; k++; }
+            g_user[k]=0;
+        } else net_vfile_write(f->netpath, (char*)(f->vn->data?f->vn->data:(unsigned char*)""), (int)f->vn->size);
+    }
     if(eph){ if(f->vn){ if(f->vn->data) free(f->vn->data); free(f->vn); } }
     free(f);
     if(w && !net && !eph) fs_sync();      /* persist only real /home writes */
@@ -752,8 +778,9 @@ char *getcwd(char *b, size_t n){
     }
     strncpy(b,tmp+ti,n); b[n-1]=0; return b;
 }
-int chdir(const char *p){ VNode *n=vn_resolve(p); if(!n||!n->is_dir) return -1; g_cwd=n; return 0; }
+int chdir(const char *p){ if(!perm_ok(p)) return -1; VNode *n=vn_resolve(p); if(!n||!n->is_dir) return -1; g_cwd=n; return 0; }
 static int vn_unlink(const char *p){
+    if(!perm_ok(p)) return -1;
     VNode *n=vn_resolve(p); if(!n||n==g_root||!n->parent) return -1;
     VNode *par=n->parent;
     if(par->child==n) par->child=n->next;
@@ -808,12 +835,14 @@ int usleep(unsigned us){
 }
 unsigned sleep(unsigned s){ while(s--) usleep(1000000); return 0; }
 int stat(const char *p, struct stat *b){
+    if(!perm_ok(p)) return -1;
     VNode *n=vn_resolve(p); if(!n) return -1;
     if(b){ b->st_mode = n->is_dir?S_IFDIR:S_IFREG; b->st_size=n->size; }
     return 0;
 }
 int mkdir(const char *p, mode_t m){
-    (void)m; char leaf[64]; VNode *par=vn_parent(p,leaf,sizeof leaf,1);
+    (void)m; if(!perm_ok(p)) return -1;
+    char leaf[64]; VNode *par=vn_parent(p,leaf,sizeof leaf,1);
     if(!par || vn_child(par,leaf)) return -1;
     VNode *d=vn_new(leaf,1); if(!d) return -1; vn_add(par,d); fs_sync(); return 0;
 }
@@ -825,7 +854,7 @@ int rename(const char *o, const char *nw){
     strncpy(n->name,leaf,sizeof(n->name)-1); n->name[sizeof(n->name)-1]=0; vn_add(np,n); fs_sync(); return 0;
 }
 struct _LZ_DIR { VNode *cur; struct dirent ent; };
-DIR *opendir(const char *n){ VNode *d=(n&&n[0])?vn_resolve(n):g_cwd; if(!d||!d->is_dir) return 0; DIR *dp=malloc(sizeof(DIR)); if(dp) dp->cur=d->child; return dp; }
+DIR *opendir(const char *n){ if(n && n[0] && !perm_ok(n)) return 0; VNode *d=(n&&n[0])?vn_resolve(n):g_cwd; if(!d||!d->is_dir) return 0; DIR *dp=malloc(sizeof(DIR)); if(dp) dp->cur=d->child; return dp; }
 struct dirent *readdir(DIR *d){
     if(!d||!d->cur) return 0;
     strncpy(d->ent.d_name,d->cur->name,sizeof(d->ent.d_name)-1);

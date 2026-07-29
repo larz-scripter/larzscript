@@ -14,6 +14,7 @@ fn run(args) {
     let pw = read_file("/dev/password")
     if auth.verify(name.strip(), pw) {
       auth.set_session(name.strip())
+      write_file("/dev/user", name.strip())          # tell the kernel who is logged in
       mkdir("/home/" + name.strip())
       print("")
       if file_exists("/etc/motd") { print(read_file("/etc/motd")) }
