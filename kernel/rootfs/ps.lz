@@ -1,0 +1,12 @@
+import "auth" as auth
+fn run(args) {
+  print("USER      WHAT")
+  print(auth.session().ljust(10) + "larzsh (login shell)")
+  let c = "/home/.larzos/services.conf"
+  if file_exists(c) {
+    for l in read_file(c).split("\n") {
+      let p = l.split(" ")
+      if len(p) >= 2 and p[1] == "1" { print("root".ljust(10) + "service: " + p[0]) }
+    }
+  }
+}

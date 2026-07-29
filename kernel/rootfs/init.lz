@@ -1,7 +1,8 @@
-# init - LarzOS PID 1: bring the system up with a boot log, then hand off to the
-# login shell. (Kernel mode -DLARZ_INIT runs this, then larzsh.)
+# init - LarzOS PID 1: bring the system up (FHS layout, network, services), then
+# either auto-start the web service (target=web) or hand off to login.
 import "bank" as bank
 fn _host() { let f = "/home/.larzos/hostname"; return file_exists(f) ? read_file(f).strip() : "larzos" }
+fn _target() { let f = "/home/.larzos/default"; return file_exists(f) ? read_file(f).strip() : "multi-user" }
 fn ok(m) { print("  [  ok  ] " + m) }
 fn _enabled() {
   let out = []
@@ -14,25 +15,42 @@ fn _enabled() {
   }
   return out
 }
+fn _layout() {
+  for d in ["/etc", "/var", "/var/log", "/bin", "/root", "/home"] { mkdir(d) }
+  write_file("/etc/os-release", "NAME=LarzOS\nVERSION=1.0\nID=larzos\nPRETTY_NAME=\"LarzOS 1.0 (money-native)\"\n")
+  write_file("/etc/motd", "  Welcome to LarzOS - the money-native operating system.\n  On this OS, money is a first-class primitive. Type 'help'.\n")
+}
 fn run(args) {
   print("")
   print("  LarzOS  -  the money-native operating system")
   print("  booting " + _host() + " ...")
   print("")
   mkdir("/home"); mkdir("/home/.larzos")
+  _layout()
   ok("mounted filesystem  (/ ramfs, /home persistent)")
+  ok("system layout ready  (/etc /var/log /home)")
   if time() > 0 { ok("system clock synced from RTC") } else { ok("no clock") }
   let st = read_file("/net/status")
-  if st.contains("link: up") {
+  let net_up = st.contains("link: up")
+  if net_up {
     let ipl = "network up"
     for l in st.split("\n") { if l.starts_with("ip:") { ipl = "network up  (" + l.strip() + ")" } }
     ok(ipl)
-  } else { ok("network: no link (add a NIC)") }
+  } else { ok("network: no link") }
   ok("wallet: " + bank.fmt(bank.balance()) + " compute credit")
   let svcs = _enabled()
   ok(len(svcs) > 0 ? "services enabled: " + join(svcs, ", ") : "no services enabled")
   print("")
-  print("  " + _host() + " ready. Type 'help', or 'service start web' to serve.")
+  let target = _target()
+  let web_on = false
+  for s in svcs { if s == "web" { web_on = true } }
+  if target == "web" and web_on and net_up {
+    print("  default target: web  ->  starting the web service (headless)")
+    print("")
+    import "webserver" as _w        # runs the server; never returns (headless)
+  } else {
+    if target == "web" { print("  default target: web, but web/network unavailable -> login") }
+    else { print("  default target: multi-user  ->  login") }
+  }
 }
-
-run([])   # init runs as a program (not an imported command), so invoke it
+run([])

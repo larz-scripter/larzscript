@@ -654,8 +654,30 @@ char *fgets(char *buf, int size, FILE *f){
     }
     return 0;
 }
+static unsigned vn_total(VNode *d){                   /* bytes used under a dir */
+    unsigned t=0; for(VNode *c=d->child;c;c=c->next){ if(c->is_dir) t+=vn_total(c); else t+=c->size; } return t;
+}
+static FILE *ephemeral_file(char *content){           /* a read-only FILE over a malloc'd string */
+    if(!content) return 0;
+    VNode *e=vn_new("x",0); if(!e){ free(content); return 0; }
+    e->data=(unsigned char*)content; e->size=(unsigned)strlen(content); e->cap=e->size+1;
+    FILE *f=malloc(sizeof(FILE)); if(!f){ free(content); free(e); return 0; }
+    f->kind=3; f->vn=e; f->pos=0; f->writing=0; f->ephemeral=1; f->netpath[0]=0;
+    return f;
+}
+static char *proc_content(const char *path){
+    char *c=malloc(256); if(!c) return 0;
+    if(strcmp(path,"/proc/meminfo")==0)
+        snprintf(c,256,"MemTotal: %u KB\nMemUsed:  %u KB\nMemFree:  %u KB\n",
+            (unsigned)(HEAP_BYTES/1024),(unsigned)(arena_used/1024),(unsigned)((HEAP_BYTES-arena_used)/1024));
+    else if(strcmp(path,"/proc/diskinfo")==0)
+        snprintf(c,256,"filesystem: LarzFS\nmount:      /home (persistent)\nused:       %u bytes\n", g_home?vn_total(g_home):0);
+    else snprintf(c,256,"no such /proc file\n");
+    return c;
+}
 FILE *fopen(const char *path, const char *mode){
     int reading = !mode || mode[0]=='r';
+    if(reading && strncmp(path,"/proc/",6)==0) return ephemeral_file(proc_content(path));
     if(reading && strcmp(path,"/dev/password")==0){   /* masked console line read */
         VNode *e=vn_new("pw",0); if(!e) return 0;
         char *buf=malloc(256); if(!buf){ free(e); return 0; }

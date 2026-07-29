@@ -14,8 +14,10 @@ fn run(args) {
     let pw = read_file("/dev/password")
     if auth.verify(name.strip(), pw) {
       auth.set_session(name.strip())
+      mkdir("/home/" + name.strip())
       print("")
-      print("Welcome to LarzOS, " + name.strip() + ".")
+      if file_exists("/etc/motd") { print(read_file("/etc/motd")) }
+      print("Logged in as " + name.strip() + ".")
       print("")
       return
     }

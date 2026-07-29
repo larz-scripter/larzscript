@@ -1,0 +1,1 @@
+fn run(args) { print("halting LarzOS (reset the VM to reboot)..."); exit(0) }

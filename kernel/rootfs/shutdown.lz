@@ -1,0 +1,1 @@
+fn run(args) { print("shutting down LarzOS..."); exit(0) }

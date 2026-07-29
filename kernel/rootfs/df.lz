@@ -1,0 +1,1 @@
+fn run(args) { print(read_file("/proc/diskinfo").strip()) }

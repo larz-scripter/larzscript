@@ -42,12 +42,9 @@ fn fmt_money(cents) {
 
 fn short_cwd() {
   let c = cwd()
-  let home = env("HOME")
-  if home != nil and home != "" and c.starts_with(home) {
-    let tail = c[len(home):]
-    if tail == "" { return "~" }
-    return "~" + tail
-  }
+  let home = "/home/" + auth.session()
+  if c == home { return "~" }
+  if c.starts_with(home + "/") { return "~" + c[len(home):] }
   return c
 }
 
@@ -89,7 +86,9 @@ fn cmd_help() {
   print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
   print("  <name> ARGS     run an installed package (e.g. banner, todo, figlet)")
-  print("  server:         service | hostname | logs | date | uptime | netstat | ping")
+  print("  server:         service | target | logs | uname | free | df | ps | hostname")
+  print("  users:          whoami | id | users | useradd | passwd | su | logout")
+  print("  net/time:       netstat | ping | date | uptime | reboot | shutdown")
   print("  about           about LarzOS")
   print("  help            this help")
   print("  exit            leave LarzOS")
@@ -221,6 +220,8 @@ fn hostname() {
 }
 
 fn main() {
+  let home = "/home/" + auth.session()
+  mkdir(home); chdir(home)          # start in the user's home directory
   let state = {}
   while true {
     let line = input(auth.session() + "@" + hostname() + ":" + short_cwd() + " (" + bank.fmt(bank.balance()) + ")$ ")

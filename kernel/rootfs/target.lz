@@ -1,0 +1,7 @@
+fn run(args) {
+  let f = "/home/.larzos/default"
+  if len(args) == 0 { print("default target: " + (file_exists(f) ? read_file(f).strip() : "multi-user")); return }
+  if args[0] != "web" and args[0] != "multi-user" { print("targets: multi-user | web"); return }
+  mkdir("/home/.larzos"); write_file(f, args[0])
+  print("default target set to " + args[0] + " (takes effect next boot)")
+}

@@ -1,0 +1,1 @@
+fn run(args) { print(file_exists("/etc/motd") ? read_file("/etc/motd").strip() : "LarzOS") }

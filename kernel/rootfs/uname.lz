@@ -1,0 +1,4 @@
+fn run(args) {
+  if len(args) > 0 and args[0] == "-a" { print("LarzOS larzos 1.0 x86_64 Larzscript money-native") }
+  else { print("LarzOS") }
+}
