@@ -773,12 +773,27 @@ static char *proc_content(const char *path){
 }
 /* ---- current user + home-directory permissions ---- */
 static char g_user[64]="root";                        /* set via /dev/user (login/su) */
+static void canon(const char *path, char *out, int outsz){  /* -> absolute, .. and . resolved */
+    char work[512];
+    if(path && path[0]=='/'){ strncpy(work,path,sizeof work-1); work[sizeof work-1]=0; }
+    else { char cw[256]; getcwd(cw,sizeof cw); snprintf(work,sizeof work,"%s/%s",cw,path?path:""); }
+    char *segs[64]; int ns=0, save_i=0; (void)save_i; char *save=0;
+    for(char *t=strtok_r(work,"/",&save); t; t=strtok_r(0,"/",&save)){
+        if(strcmp(t,".")==0) continue;
+        if(strcmp(t,"..")==0){ if(ns>0) ns--; continue; }
+        if(ns<64) segs[ns++]=t;
+    }
+    int p=0; if(p<outsz-1) out[p++]='/';
+    for(int i=0;i<ns;i++){ int l=(int)strlen(segs[i]); if(i>0 && p<outsz-1) out[p++]='/'; for(int k=0;k<l && p<outsz-1;k++) out[p++]=segs[i][k]; }
+    out[p]=0;
+}
 static int perm_ok(const char *path){
-    if(!path || strncmp(path,"/home/",6)!=0) return 1;    /* only guard /home */
-    const char *seg=path+6;
+    char abs[512]; canon(path, abs, sizeof abs);
+    if(strncmp(abs,"/home/",6)!=0) return 1;              /* only guard /home */
+    const char *seg=abs+6;
     if(seg[0]=='.') return 1;                             /* /home/.larzos = shared state */
     char name[64]; int i=0; while(seg[i] && seg[i]!='/' && i<63){ name[i]=seg[i]; i++; } name[i]=0;
-    if(name[0]==0) return 1;                              /* "/home" or "/home/" */
+    if(name[0]==0) return 1;
     if(strcmp(g_user,"root")==0) return 1;               /* root sees all */
     return strcmp(name,g_user)==0;                        /* only your own home */
 }

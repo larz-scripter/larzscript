@@ -1,0 +1,5 @@
+# resolve - DNS lookup of a hostname (uses the OS resolver over UDP)
+fn run(args) {
+  if len(args) == 0 { print("usage: resolve <hostname>"); return }
+  print(args[0] + " -> " + read_file("/net/resolve/" + args[0]).strip())
+}

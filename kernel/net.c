@@ -331,6 +331,56 @@ int net_http_get(const unsigned char dstip[4], u16 port, const char *path, char 
     return total;
 }
 
+/* ---- UDP + a tiny DNS resolver ---- */
+static unsigned char g_dns[4]={10,0,2,3};                 /* QEMU SLIRP DNS */
+static void udp_send(const u8 dmac[6], const u8 dip[4], u16 sport, u16 dport, const u8 *data, int dlen){
+    u8 pkt[20+8+512]; u8 *ip=pkt, *udp=pkt+20;
+    udp[0]=(u8)(sport>>8); udp[1]=(u8)sport; udp[2]=(u8)(dport>>8); udp[3]=(u8)dport;
+    int ulen=8+dlen; udp[4]=(u8)(ulen>>8); udp[5]=(u8)ulen; udp[6]=0; udp[7]=0;
+    if(dlen>0) memcpy(udp+8, data, (size_t)dlen);
+    int total=20+ulen;
+    ip[0]=0x45;ip[1]=0; ip[2]=(u8)(total>>8);ip[3]=(u8)total;
+    ip[4]=0;ip[5]=0; ip[6]=0x40;ip[7]=0; ip[8]=64; ip[9]=17; ip[10]=0;ip[11]=0;
+    memcpy(ip+12,g_ip,4); memcpy(ip+16,dip,4);
+    u16 ic=checksum(ip,20); ip[10]=(u8)(ic>>8); ip[11]=(u8)ic;
+    eth_send(dmac, 0x0800, pkt, total);
+}
+int dns_resolve(const char *host, unsigned char out[4]){
+    if(!g_net_up) return 0;
+    unsigned char dmac[6];
+    if(!arp_resolve(g_dns, dmac)){
+        if(!g_gwmac_known){ if(!arp_resolve(g_gw,g_gwmac)) return 0; g_gwmac_known=1; }
+        memcpy(dmac,g_gwmac,6);
+    }
+    unsigned char m[512]; int dl=0;
+    m[dl++]=0x12; m[dl++]=0x34; m[dl++]=0x01; m[dl++]=0x00;    /* id, RD */
+    m[dl++]=0; m[dl++]=1; m[dl++]=0;m[dl++]=0; m[dl++]=0;m[dl++]=0; m[dl++]=0;m[dl++]=0;  /* qd=1 */
+    const char *p=host;
+    while(*p){ const char *d=p; while(*d && *d!='.') d++; int ll=(int)(d-p); m[dl++]=(u8)ll; for(int i=0;i<ll;i++) m[dl++]=(u8)p[i]; p=d; if(*p=='.')p++; }
+    m[dl++]=0; m[dl++]=0;m[dl++]=1; m[dl++]=0;m[dl++]=1;        /* A, IN */
+    udp_send(dmac, g_dns, 40000, 53, m, dl);
+    for(int tries=0; tries<10000000; tries++){
+        unsigned char *fr; if(nic_rx(&fr)<=0) continue;
+        u16 et=(u16)(fr[12]<<8|fr[13]); if(et!=0x0800) continue;
+        u8 *ip=fr+14; if(ip[9]!=17) continue;
+        int ihl=(ip[0]&0x0F)*4; u8 *udp=ip+ihl;
+        if(((udp[0]<<8)|udp[1])!=53) continue;
+        u8 *d=udp+8; int off=12;
+        while(d[off]!=0){ if(d[off]>=0xC0){ off++; break; } off+=d[off]+1; } off++;
+        off+=4;
+        int an=(d[6]<<8)|d[7];
+        for(int a=0;a<an;a++){
+            if(d[off]>=0xC0) off+=2; else { while(d[off]!=0) off+=d[off]+1; off++; }
+            int type=(d[off]<<8)|d[off+1]; off+=8;         /* type(2)+class(2)+ttl(4) */
+            int rd=(d[off]<<8)|d[off+1]; off+=2;
+            if(type==1 && rd==4){ out[0]=d[off];out[1]=d[off+1];out[2]=d[off+2];out[3]=d[off+3]; return 1; }
+            off+=rd;
+        }
+        return 0;
+    }
+    return 0;
+}
+
 void net_selftest(void){
     if(!net_init()){ printf("  net: no NIC found (add -device rtl8139)\n"); return; }
     printf("  net: RTL8139 up  MAC %02x:%02x:%02x:%02x:%02x:%02x  IP %d.%d.%d.%d  GW %d.%d.%d.%d\n",
@@ -353,6 +403,13 @@ static int parse_ip(const char *s, unsigned char ip[4]){
 }
 char *net_vfile(const char *path){          /* returns malloc'd content, or 0 */
     if(strcmp(path,"/net/http/accept")==0) return g_net_up ? net_http_accept() : 0;
+    if(strncmp(path,"/net/resolve/",13)==0){
+        char *b=malloc(64); if(!b) return 0;
+        unsigned char ip[4];
+        if(dns_resolve(path+13, ip)) snprintf(b,64,"%d.%d.%d.%d\n",ip[0],ip[1],ip[2],ip[3]);
+        else snprintf(b,64,"resolve failed\n");
+        return b;
+    }
     if(strncmp(path,"/net/get/",9)==0){       /* HTTP GET: /net/get/<ip[:port]>/<path> */
         const char *r=path+9; unsigned char ip[4]={0,0,0,0}; int o=0,v=0;
         const char *p=r;

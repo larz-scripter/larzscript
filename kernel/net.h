@@ -9,6 +9,7 @@ void  net_vfile_write(const char *path, const char *data, int len);   /* write t
 char *net_http_accept(void);         /* block for an HTTP request (malloc'd) */
 void  net_http_reply(const char *data, int len);
 int   net_http_get(const unsigned char ip[4], unsigned short port, const char *path, char *out, int outmax);
+int   dns_resolve(const char *host, unsigned char out[4]);
 extern int g_net_up;
 extern unsigned char g_mac[6];
 extern unsigned char g_ip[4], g_gw[4];
