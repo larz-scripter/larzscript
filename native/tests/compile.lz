@@ -1,18 +1,15 @@
 fn sq(n) { return n * n }
-let acc = []
-for x in [10, 20, 30] { push(acc, sq(x)) }
+let nums = [1, 2, 3, 4]
+print("map:", map(sq, nums))
+print("filter:", filter(fn(x) { return x > 2 }, nums))
+print("reduce:", reduce(fn(a, b) { return a + b }, nums, 100))
+fn adder(k) { return fn(x) { return x + k } }
+print("adder(7)(35):", adder(7)(35))
 let d = {}
 for w in "a b a c a b".split(" ") { d[w] = d.get(w, 0) + 1 }
-print(f"squared={acc} counts={d}")
+print(f"counts={d}")
 wallet alice = $30.00
 wallet treasury
-price seat = $12.50
 paywall pro = $9.00 / month to treasury
-fn onboard(u) gas 50 {
-  require u.balance >= seat, "need a seat"
-  pay seat from u to treasury
-  subscribe u to pro
-}
-onboard(alice)
-print(f"alice={alice.balance} treasury={treasury.balance} hasPro={alice has pro}")
-print("plan:", pro)
+subscribe alice to pro
+print(f"alice={alice.balance} treasury={treasury.balance} hasPro={alice has pro} plan={pro}")

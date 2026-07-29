@@ -1,3 +1,6 @@
-squared=[100, 400, 900] counts={a: 3, b: 2, c: 1}
-alice=$8.50 treasury=$21.50 hasPro=true
-plan: <paywall pro: $9.00/month>
+map: [1, 4, 9, 16]
+filter: [3, 4]
+reduce: 110
+adder(7)(35): 42
+counts={a: 3, b: 2, c: 1}
+alice=$21.00 treasury=$9.00 hasPro=true plan=<paywall pro: $9.00/month>

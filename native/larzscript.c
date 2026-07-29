@@ -296,6 +296,7 @@ typedef struct Node {
   long long gas; int has_gas;
   char *src, *dst;            /* pay / subscribe */
   char *period;               /* paywall */
+  int lam_id;                 /* larzc: 1-based id of a hoisted lambda/nested-fn (0 = none) */
 } Node;
 
 static int g_parse_line=0;   /* line of the most recently consumed token */
@@ -1749,6 +1750,71 @@ static const char *USAGE =
  * ==================================================================== */
 static void ec_expr(Node *n);
 static int  ec_lc=0;
+
+/* ============================ larzc closures ============================
+ * Lambdas (anonymous fn) and nested named fns are hoisted to top-level C
+ * functions with a uniform signature  LZ __lamN(LZ *cap, LZ *args). A closure
+ * VALUE (t=9) pairs that fn pointer with a by-value snapshot of its captured
+ * free variables. Calls through a value go via lz_call(); named top-level
+ * functions used as values get an adapter closure. map/filter/reduce use these.
+ * (Limitation: captures are by value, so mutating a captured outer local from
+ * inside a closure is not shared back - the common factory/callback cases work.)
+ * ==================================================================== */
+typedef struct { char **v; int n, cap; } SSet;
+static int ss_has(SSet *s, const char *x){ for(int i=0;i<s->n;i++) if(!strcmp(s->v[i],x)) return 1; return 0; }
+static void ss_add(SSet *s, const char *x){ if(ss_has(s,x)) return; if(s->n>=s->cap){ s->cap=s->cap?s->cap*2:8; s->v=(char**)realloc(s->v,s->cap*sizeof(char*)); } s->v[s->n++]=(char*)x; }
+static void ss_copy(SSet *dst, SSet *src){ for(int i=0;i<src->n;i++) ss_add(dst, src->v[i]); }
+
+static Node **g_lams=0; static int g_nlams=0;      /* hoisted lambdas / nested fns (lam_id = index+1) */
+static Node **g_topfn=0; static int g_ntopfn=0;     /* top-level function nodes */
+static SSet   g_globals={0,0,0};                    /* top-level names (accessible everywhere) */
+static int is_topfn(const char *name, int *arity){ for(int i=0;i<g_ntopfn;i++) if(g_topfn[i]->name && !strcmp(g_topfn[i]->name,name)){ if(arity)*arity=g_topfn[i]->nparams; return 1; } return 0; }
+
+static void fv_stmt(Node *n, SSet *bound, SSet *out);
+static void fv_expr(Node *n, SSet *bound, SSet *out){
+  if(!n) return;
+  switch(n->kind){
+    case N_NAME: if(!ss_has(bound,n->name)) ss_add(out,n->name); break;
+    case N_FN: { SSet nb={0,0,0}; ss_copy(&nb,bound); for(int i=0;i<n->nparams;i++) ss_add(&nb,n->params[i]); if(n->name) ss_add(&nb,n->name); fv_stmt(n->b,&nb,out); free(nb.v); break; }
+    case N_UN: case N_GET: case N_FSTR: fv_expr(n->a,bound,out); break;
+    case N_BIN: case N_INDEX: fv_expr(n->a,bound,out); fv_expr(n->b,bound,out); break;
+    case N_TERNARY: fv_expr(n->a,bound,out); fv_expr(n->b,bound,out); fv_expr(n->c,bound,out); break;
+    case N_METHOD: case N_CALL: fv_expr(n->a,bound,out); for(int i=0;i<n->nkids;i++) fv_expr(n->kids[i],bound,out); break;
+    case N_ARRAY: case N_DICT: for(int i=0;i<n->nkids;i++) fv_expr(n->kids[i],bound,out); break;
+    default: break;
+  }
+}
+static void fv_stmt(Node *n, SSet *bound, SSet *out){
+  if(!n) return;
+  switch(n->kind){
+    case N_BLOCK: for(int i=0;i<n->nkids;i++) fv_stmt(n->kids[i],bound,out); break;
+    case N_LET: fv_expr(n->a,bound,out); ss_add(bound,n->name); break;
+    case N_ASSIGN: if(!ss_has(bound,n->name)) ss_add(out,n->name); fv_expr(n->a,bound,out); break;
+    case N_SETINDEX: fv_expr(n->a,bound,out); fv_expr(n->b,bound,out); fv_expr(n->c,bound,out); break;
+    case N_EXPR: case N_RETURN: case N_PAY: case N_REQUIRE: fv_expr(n->a,bound,out); break;
+    case N_IF: fv_expr(n->a,bound,out); fv_stmt(n->b,bound,out); if(n->c) fv_stmt(n->c,bound,out); break;
+    case N_WHILE: fv_expr(n->a,bound,out); fv_stmt(n->b,bound,out); break;
+    case N_FOR: { fv_expr(n->a,bound,out); SSet nb={0,0,0}; ss_copy(&nb,bound); ss_add(&nb,n->name); fv_stmt(n->b,&nb,out); free(nb.v); break; }
+    case N_FN: { SSet nb={0,0,0}; ss_copy(&nb,bound); for(int i=0;i<n->nparams;i++) ss_add(&nb,n->params[i]); if(n->name) ss_add(&nb,n->name); fv_stmt(n->b,&nb,out); free(nb.v); if(n->name) ss_add(bound,n->name); break; }
+    default: break;
+  }
+}
+/* captured names of a lambda: free vars of its body (minus its params/name) that are not globals */
+static void lam_captures(Node *lam, SSet *out){
+  SSet bound={0,0,0}, frees={0,0,0};
+  for(int i=0;i<lam->nparams;i++) ss_add(&bound, lam->params[i]);
+  if(lam->name) ss_add(&bound, lam->name);
+  fv_stmt(lam->b, &bound, &frees);
+  for(int i=0;i<frees.n;i++) if(!ss_has(&g_globals, frees.v[i])) ss_add(out, frees.v[i]);
+  free(bound.v); free(frees.v);
+}
+/* walk a subtree, giving every nested lambda / nested named-fn a lam_id */
+static void collect_lams(Node *n){
+  if(!n) return;
+  if(n->kind==N_FN){ if(!n->lam_id){ g_lams=(Node**)realloc(g_lams,(g_nlams+1)*sizeof(Node*)); g_lams[g_nlams++]=n; n->lam_id=g_nlams; } collect_lams(n->b); return; }
+  collect_lams(n->a); collect_lams(n->b); collect_lams(n->c);
+  for(int i=0;i<n->nkids;i++) collect_lams(n->kids[i]);
+}
 static void ec_str_lit(const char *s){ putchar('"'); for(const char*p=s;*p;p++){ if(*p=='"'||*p=='\\') putchar('\\'); if(*p=='\n'){ printf("\\n"); continue; } if(*p=='\t'){ printf("\\t"); continue; } putchar(*p); } putchar('"'); }
 static void ec_raw(const char *s){ for(const char*p=s;*p;p++){ if(*p=='"'||*p=='\\') putchar('\\'); if(*p=='\n'){ printf("\\n"); continue; } putchar(*p); } }
 static void ec_binop(Node *n, const char *fn){ printf("%s(",fn); ec_expr(n->a); printf(","); ec_expr(n->b); printf(")"); }
@@ -1760,7 +1826,19 @@ static void ec_expr(Node *n){
     case N_BOOL: printf("lzbool(%d)", n->boolean); break;
     case N_NIL: printf("lznil()"); break;
     case N_FSTR: ec_expr(n->a); break;   /* desugared to a "+"-concat of literals and str(expr) */
-    case N_NAME: printf("%s", n->name); break;
+    case N_NAME: {
+      int ar; if(is_topfn(n->name,&ar)){ printf("lzclosure(__adapt_%s, %d, \"%s\", 0)", n->name, ar, n->name); }  /* function used as a value */
+      else printf("%s", n->name);
+      break;
+    }
+    case N_FN: {   /* lambda / nested fn used as an expression -> a closure value */
+      SSet cap={0,0,0}; lam_captures(n, &cap);
+      printf("lzclosure(__lam%d, %d, \"%s\", %d", n->lam_id, n->nparams, n->name?n->name:"?", cap.n);
+      for(int i=0;i<cap.n;i++){ printf(", %s", cap.v[i]); }
+      printf(")");
+      free(cap.v);
+      break;
+    }
     case N_UN:
       if(strcmp(n->op,"not")==0){ printf("lzbool(!lztruthy("); ec_expr(n->a); printf("))"); }
       else { printf("lz_sub(lznum(0),"); ec_expr(n->a); printf(")"); }
@@ -1797,15 +1875,23 @@ static void ec_expr(Node *n){
       break;
     }
     case N_CALL: {
-      if(n->a->kind!=N_NAME){ fprintf(stderr,"larzc: only named calls are supported\n"); exit(1); }
-      const char*fn=n->a->name;
-      if(!strcmp(fn,"print")){ printf("lz_print(%d",n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); }
-      else if(!strcmp(fn,"str")){ printf("lz_str_("); ec_expr(n->kids[0]); printf(")"); }
-      else if(!strcmp(fn,"int")){ printf("lz_int("); ec_expr(n->kids[0]); printf(")"); }
-      else if(!strcmp(fn,"len")){ printf("lz_len("); ec_expr(n->kids[0]); printf(")"); }
-      else if(!strcmp(fn,"push")){ printf("lz_push("); ec_expr(n->kids[0]); printf(","); ec_expr(n->kids[1]); printf(")"); }
-      else if(!strcmp(fn,"keys")){ printf("lz_keys("); ec_expr(n->kids[0]); printf(")"); }
-      else { printf("%s(",fn); for(int i=0;i<n->nkids;i++){ if(i)printf(","); ec_expr(n->kids[i]); } printf(")"); }
+      if(n->a->kind==N_NAME){
+        const char*fn=n->a->name;
+        if(!strcmp(fn,"print")){ printf("lz_print(%d",n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break; }
+        else if(!strcmp(fn,"str")){ printf("lz_str_("); ec_expr(n->kids[0]); printf(")"); break; }
+        else if(!strcmp(fn,"int")){ printf("lz_int("); ec_expr(n->kids[0]); printf(")"); break; }
+        else if(!strcmp(fn,"len")){ printf("lz_len("); ec_expr(n->kids[0]); printf(")"); break; }
+        else if(!strcmp(fn,"push")){ printf("lz_push("); ec_expr(n->kids[0]); printf(","); ec_expr(n->kids[1]); printf(")"); break; }
+        else if(!strcmp(fn,"keys")){ printf("lz_keys("); ec_expr(n->kids[0]); printf(")"); break; }
+        else if(!strcmp(fn,"map")){ printf("lz_map("); ec_expr(n->kids[0]); printf(","); ec_expr(n->kids[1]); printf(")"); break; }
+        else if(!strcmp(fn,"filter")){ printf("lz_filter("); ec_expr(n->kids[0]); printf(","); ec_expr(n->kids[1]); printf(")"); break; }
+        else if(!strcmp(fn,"reduce")){ printf("lz_reduce("); ec_expr(n->kids[0]); printf(","); ec_expr(n->kids[1]); printf(","); if(n->nkids>=3) ec_expr(n->kids[2]); else printf("lznil()"); printf(",%d)", n->nkids>=3?1:0); break; }
+        else if(is_topfn(fn,0)){ printf("%s(",fn); for(int i=0;i<n->nkids;i++){ if(i)printf(","); ec_expr(n->kids[i]); } printf(")"); break; }
+        /* else: a variable/param holding a closure -> fall through to lz_call */
+      }
+      printf("lz_call("); ec_expr(n->a); printf(", %d, ", n->nkids);
+      if(n->nkids==0) printf("0"); else { printf("(LZ[]){"); for(int i=0;i<n->nkids;i++){ if(i)printf(","); ec_expr(n->kids[i]); } printf("}"); }
+      printf(")");
       break;
     }
     default: fprintf(stderr,"larzc: unsupported expression (node %d)\n", n->kind); exit(1);
@@ -1822,6 +1908,7 @@ static void ec_stmt(Node *n, int d){
     case N_PAY: ec_ind(d); printf("lz_pay(%s, %s, ", n->src, n->dst); ec_expr(n->a); printf(");\n"); break;
     case N_PAYWALL: ec_ind(d); printf("LZ %s = lzpaywall((", n->name); ec_expr(n->a); printf(").n, \""); ec_raw(n->period); printf("\", \""); ec_raw(n->name); printf("\", %s);\n", n->dst); break;
     case N_SUBSCRIBE: ec_ind(d); printf("lz_subscribe(%s, %s);\n", n->src, n->dst); break;
+    case N_FN: { SSet cap={0,0,0}; lam_captures(n,&cap); ec_ind(d); printf("LZ %s = lzclosure(__lam%d, %d, \"%s\", %d", n->name, n->lam_id, n->nparams, n->name?n->name:"?", cap.n); for(int i=0;i<cap.n;i++) printf(", %s", cap.v[i]); printf(");\n"); free(cap.v); break; }
     case N_REQUIRE: ec_ind(d); printf("if(!lztruthy("); ec_expr(n->a); printf(")){fputs(\"RequireError: "); ec_raw(n->str?n->str:"requirement not met"); printf("\\n\",stderr);exit(1);}\n"); break;
     case N_EXPR: ec_ind(d); ec_expr(n->a); printf(";\n"); break;
     case N_RETURN: ec_ind(d); printf("return "); if(n->a) ec_expr(n->a); else printf("lznil()"); printf(";\n"); break;
@@ -1881,7 +1968,14 @@ static void emit_runtime(void){
   puts("static void lz_dput(LZ D,const char*k,LZ val){int j=lz_dfind(D,k);DCT*d=(DCT*)D.p;if(j>=0){d->vals[j]=val;return;}if(d->n>=d->cap){d->cap=d->cap?d->cap*2:8;d->keys=(char**)realloc(d->keys,d->cap*sizeof(char*));d->vals=(LZ*)realloc(d->vals,d->cap*sizeof(LZ));}d->keys[d->n]=strdup(k);d->vals[d->n++]=val;}");
   puts("static int lz_lenN(LZ v){if(v.t==4)return((LST*)v.p)->n;if(v.t==5)return((DCT*)v.p)->n;if(v.t==2)return v.s?(int)strlen(v.s):0;return 0;}");
   puts("static LZ lz_index(LZ o,LZ i){if(o.t==5){if(i.t==2){int j=lz_dfind(o,i.s);return j>=0?((DCT*)o.p)->vals[j]:lznil();}int idx=(int)i.n;DCT*d=(DCT*)o.p;if(idx<0||idx>=d->n)return lznil();return lzstr(d->keys[idx]);}int idx=(int)i.n;if(o.t==4){LST*l=(LST*)o.p;if(idx<0)idx+=l->n;if(idx<0||idx>=l->n)return lznil();return l->items[idx];}if(o.t==2){int n=(int)strlen(o.s);if(idx<0)idx+=n;if(idx<0||idx>=n)return lznil();char b[2]={o.s[idx],0};return lzstr(b);}return lznil();}");
-  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7||v.t==8)return 1;return 0;}");
+  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7||v.t==8||v.t==9)return 1;return 0;}");
+  /* closures (t=9): fn pointer + by-value captured environment; map/filter/reduce use lz_call */
+  puts("typedef struct{LZ(*fn)(LZ*,LZ*);LZ*cap;char*name;}CLO;");
+  puts("static LZ lzclosure(LZ(*fn)(LZ*,LZ*),int arity,const char*name,int ncap,...){(void)arity;CLO*c=(CLO*)malloc(sizeof(CLO));c->fn=fn;c->name=strdup(name);c->cap=ncap?(LZ*)malloc(ncap*sizeof(LZ)):0;va_list ap;va_start(ap,ncap);for(int i=0;i<ncap;i++)c->cap[i]=va_arg(ap,LZ);va_end(ap);LZ v={9,0,0,c};return v;}");
+  puts("static LZ lz_call(LZ f,int argc,LZ*args){(void)argc;if(f.t==9){CLO*c=(CLO*)f.p;return c->fn(c->cap,args);}fputs(\"LarzTypeError: value is not a function\\n\",stderr);exit(1);}");
+  puts("static LZ lz_map(LZ f,LZ L){LZ r=lzlist();LST*l=(LST*)L.p;for(int i=0;i<l->n;i++){LZ a[1]={l->items[i]};lz_push(r,lz_call(f,1,a));}return r;}");
+  puts("static LZ lz_filter(LZ f,LZ L){LZ r=lzlist();LST*l=(LST*)L.p;for(int i=0;i<l->n;i++){LZ a[1]={l->items[i]};if(lztruthy(lz_call(f,1,a)))lz_push(r,l->items[i]);}return r;}");
+  puts("static LZ lz_reduce(LZ f,LZ L,LZ init,int has_init){LST*l=(LST*)L.p;int i=0;LZ acc;if(has_init)acc=init;else{acc=l->n?l->items[0]:lznil();i=1;}for(;i<l->n;i++){LZ a[2]={acc,l->items[i]};acc=lz_call(f,2,a);}return acc;}");
   puts("static char*lz_tostr(LZ v){");
   puts("  char b[64];");
   puts("  if(v.t==2)return v.s?v.s:(char*)\"\";");
@@ -1895,6 +1989,7 @@ static void emit_runtime(void){
   puts("    r[len++]='}';r[len]=0;return r;}");
   puts("  if(v.t==6){long long c=(long long)v.n,ac=c<0?-c:c;sprintf(b,\"%s$%lld.%02lld\",c<0?\"-\":\"\",ac/100,ac%100);return strdup(b);}");
   puts("  if(v.t==8){PW*p=(PW*)v.p;long long c=p->price<0?-p->price:p->price;char*r=(char*)malloc(strlen(p->name)+strlen(p->period)+48);sprintf(r,\"<paywall %s: $%lld.%02lld/%s>\",p->name,c/100,c%100,p->period);return r;}");
+  puts("  if(v.t==9){CLO*c=(CLO*)v.p;char*r=(char*)malloc(strlen(c->name)+8);sprintf(r,\"<fn %s>\",c->name);return r;}");
   puts("  return strdup(\"nil\");}");
   puts("static LZ lz_dictn(int n,...){LZ D=lzdict();va_list ap;va_start(ap,n);for(int i=0;i<n;i++){LZ k=va_arg(ap,LZ),val=va_arg(ap,LZ);lz_dput(D,lz_tostr(k),val);}va_end(ap);return D;}");
   puts("static LZ lz_keys(LZ D){LZ r=lzlist();if(D.t==5){DCT*d=(DCT*)D.p;for(int i=0;i<d->n;i++)lz_push(r,lzstr(d->keys[i]));}return r;}");
@@ -1931,12 +2026,36 @@ static void emit_runtime(void){
   puts("static LZ lz_int(LZ v){return v.t==2?lznum((double)atoll(v.s)):lznum((double)(long long)v.n);}");
   puts("static LZ lz_str_(LZ v){return lzstr(lz_tostr(v));}");
 }
+static void emit_topfn_sig(Node *k){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf(")"); }
 static void emit_c(Node *prog){
   emit_runtime();
-  /* top-level let/price/wallet become globals so functions can reference them */
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) printf("LZ %s;\n", k->name); }
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf(");\n"); } }
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf("){\n"); ec_stmt(k->b,1); printf("  return lznil();\n}\n"); } }
+  /* gather top-level globals + functions */
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i];
+    if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) && k->name) ss_add(&g_globals, k->name);
+    if(k->kind==N_FN && k->name){ ss_add(&g_globals, k->name); g_topfn=(Node**)realloc(g_topfn,(g_ntopfn+1)*sizeof(Node*)); g_topfn[g_ntopfn++]=k; }
+  }
+  /* give every nested lambda / nested named fn a hoist id */
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN) collect_lams(k->b); else collect_lams(k); }
+
+  /* top-level let/price/wallet/paywall become C globals so functions can reference them */
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) && k->name) printf("LZ %s;\n", k->name); }
+  /* forward declarations: top-level fns + their value-adapters + hoisted lambdas */
+  for(int i=0;i<g_ntopfn;i++){ emit_topfn_sig(g_topfn[i]); printf(";\n"); printf("LZ __adapt_%s(LZ*,LZ*);\n", g_topfn[i]->name); }
+  for(int i=0;i<g_nlams;i++) printf("LZ __lam%d(LZ*,LZ*);\n", g_lams[i]->lam_id);
+  /* top-level fn definitions */
+  for(int i=0;i<g_ntopfn;i++){ Node*k=g_topfn[i]; emit_topfn_sig(k); printf("{\n"); ec_stmt(k->b,1); printf("  return lznil();\n}\n"); }
+  /* value-adapters: wrap a named fn under the uniform closure calling convention */
+  for(int i=0;i<g_ntopfn;i++){ Node*k=g_topfn[i]; printf("LZ __adapt_%s(LZ*cap,LZ*a){(void)cap;(void)a;return %s(", k->name, k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("a[%d]", j); } printf(");}\n"); }
+  /* hoisted lambda / nested-fn definitions: params from __args, captures from __cap */
+  for(int i=0;i<g_nlams;i++){ Node*lam=g_lams[i];
+    printf("LZ __lam%d(LZ*__cap,LZ*__args){(void)__cap;(void)__args;\n", lam->lam_id);
+    for(int j=0;j<lam->nparams;j++) printf("  LZ %s = __args[%d];\n", lam->params[j], j);
+    SSet cap={0,0,0}; lam_captures(lam,&cap);
+    for(int j=0;j<cap.n;j++) printf("  LZ %s = __cap[%d];\n", cap.v[j], j);
+    free(cap.v);
+    ec_stmt(lam->b,1);
+    printf("  return lznil();\n}\n");
+  }
   printf("int main(void){\n");
   for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i];
     if(k->kind==N_FN) continue;
