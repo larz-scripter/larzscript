@@ -1,0 +1,12 @@
+# top - a one-shot LarzOS system dashboard
+import "bank" as bank
+import "auth" as auth
+fn run(args) {
+  print("======== LarzOS ========")
+  print(read_file("/proc/uptime").split("\n")[1])          # seconds line
+  print(read_file("/proc/meminfo").strip())
+  print(read_file("/proc/diskinfo").split("\n")[2])        # used bytes
+  print("user: " + auth.session() + "    wallet: " + bank.fmt(bank.balance()))
+  for l in read_file("/proc/tasks").split("\n") { if l.starts_with("task") { print(l) } }
+  print(read_file("/proc/gas").split("\n")[0])
+}

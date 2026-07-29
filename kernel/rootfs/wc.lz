@@ -1,0 +1,8 @@
+fn run(args) {
+  if len(args) == 0 { print("usage: wc <file>"); return }
+  let t = read_file(args[0])
+  let lines = 0
+  let words = 0
+  for line in t.split("\n") { lines = lines + 1; for w in line.split(" ") { if w.strip() != "" { words = words + 1 } } }
+  print(str(lines - 1) + " lines  " + str(words) + " words  " + str(len(t)) + " bytes  " + args[0])
+}

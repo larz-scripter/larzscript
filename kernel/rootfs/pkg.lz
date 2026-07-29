@@ -7,7 +7,7 @@
 import "bank" as bank
 let REPO   = "/repo"
 let LIB    = "/home/.larzpkg"
-let REMOTE = "10.0.2.2:28000"
+let REMOTE_F = "/home/.larzos/repo"
 
 fn _meta(name) { let m = REPO + "/" + name + "/meta"; return file_exists(m) ? read_file(m).strip() : "" }
 fn _available() { return file_exists(REPO) ? sorted(listdir(REPO)) : [] }
@@ -45,7 +45,20 @@ fn cmd_info(name) {
 }
 
 # --- the money-native App Store (over the network) ---
-fn _fetch(sub) { return read_file("/net/get/" + REMOTE + "/" + sub) }
+fn _remote() { return file_exists(REMOTE_F) ? read_file(REMOTE_F).strip() : "10.0.2.2:28000" }
+fn _isip(s) { for ch in s { if not ((ch >= "0" and ch <= "9") or ch == ".") { return false } } return true }
+fn _fetch(sub) {                                # resolves a hostname via DNS if needed
+  let r = _remote()
+  let host = r
+  let port = ""
+  if r.contains(":") { let p = r.split(":"); host = p[0]; port = ":" + p[1] }
+  if not _isip(host) {
+    let ip = read_file("/net/resolve/" + host).strip()
+    if ip == "resolve failed" { return "ERR" }
+    host = ip
+  }
+  return read_file("/net/get/" + host + port + "/" + sub)
+}
 fn _index() { return _fetch("repo/index").strip() }        # lines: name|price_cents|description
 fn _find(idx, name) {                                       # -> [price, desc] or nil
   for line in idx.split("\n") {
@@ -56,8 +69,8 @@ fn _find(idx, name) {                                       # -> [price, desc] o
 }
 fn cmd_store() {
   let idx = _index()
-  if idx == "ERR" or idx == "" { print("store: cannot reach " + REMOTE); return }
-  print("LarzOS App Store  @  " + REMOTE + "     (wallet: " + bank.fmt(bank.balance()) + ")")
+  if idx == "ERR" or idx == "" { print("store: cannot reach " + _remote()); return }
+  print("LarzOS App Store  @  " + _remote() + "     (wallet: " + bank.fmt(bank.balance()) + ")")
   for line in idx.split("\n") {
     if line.strip() == "" { continue }
     let f = line.split("|")
@@ -69,7 +82,7 @@ fn cmd_store() {
 }
 fn cmd_get(name) {
   let idx = _index()
-  if idx == "ERR" { print("store: cannot reach " + REMOTE); return }
+  if idx == "ERR" { print("store: cannot reach " + _remote()); return }
   let hit = _find(idx, name)
   if hit == nil { print("no such app: " + name); return }
   let cost = hit[0]
@@ -110,6 +123,10 @@ fn run(args) {
   else if cmd == "installed" {
     let inst = _installed()
     if len(inst) == 0 { print("(nothing installed)") } else { for i in inst { print("  " + i) } }
+  }
+  else if cmd == "repo" {
+    if len(args) >= 2 { mkdir("/home/.larzos"); write_file(REMOTE_F, args[1]); print("app store repo set to " + args[1]) }
+    else { print("app store repo: " + _remote() + "  (hostnames resolved via DNS)") }
   }
   else if cmd == "info" and len(args) >= 2 { cmd_info(args[1]) }
   else { print("unknown: pkg " + join(args, " ") + "   (try 'pkg help')") }

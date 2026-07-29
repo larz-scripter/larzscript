@@ -1,0 +1,6 @@
+fn run(args) {
+  if len(args) == 0 { print("usage: head <file> [n]"); return }
+  let n = len(args) > 1 ? int(args[1]) : 10
+  let i = 0
+  for l in read_file(args[0]).split("\n") { if i >= n { break } print(l); i = i + 1 }
+}

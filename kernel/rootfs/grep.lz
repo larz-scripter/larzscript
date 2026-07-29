@@ -1,0 +1,4 @@
+fn run(args) {
+  if len(args) < 2 { print("usage: grep <pattern> <file>"); return }
+  for line in read_file(args[1]).split("\n") { if line.contains(args[0]) { print(line) } }
+}
