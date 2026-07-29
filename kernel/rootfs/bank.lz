@@ -1,8 +1,9 @@
-# bank - the LarzOS money service: a shared wallet + an append-only ledger.
-# The wallet is compute credit; buying apps debits it and FAILS CLOSED with no
-# funds - the money-native guarantee, enforced by the OS. import "bank" as bank
-let _W = "/home/.larzos/wallet.cents"
-let _L = "/home/.larzos/ledger"
+# bank - per-user wallets + a shared ledger. Each user has their own wallet;
+# `pay` transfers between users. import "bank" as bank
+import "auth" as auth
+let _DIR = "/home/.larzos/w"
+let _L   = "/home/.larzos/ledger"
+fn _wf(u) { return _DIR + "/" + u }
 fn fmt(cents) {
   let sign = cents < 0 ? "-" : ""
   let c = cents < 0 ? 0 - cents : cents
@@ -10,19 +11,22 @@ fn fmt(cents) {
   let r = c - d * 100
   return sign + "$" + str(d) + "." + (r < 10 ? "0" + str(r) : str(r))
 }
-fn balance() { return file_exists(_W) ? int(read_file(_W).strip()) : 10000 }
-fn _set(c) { mkdir("/home/.larzos"); write_file(_W, str(c)) }
-fn _log(sym, cents, memo) { mkdir("/home/.larzos"); append_file(_L, sym + " " + fmt(cents) + "  " + memo + "\n") }
-fn credit(cents, memo) { let b = balance() + cents; _set(b); _log("+", cents, memo); return b }
-fn debit(cents, memo) {
-  let b = balance()
-  if b < cents { return false }          # fails closed
-  _set(b - cents); _log("-", cents, memo); return true
-}
-fn spend(cents) {                          # silent metering debit (no ledger); fails closed
-  let b = balance()
+fn balance_of(u) { let f = _wf(u); return file_exists(f) ? int(read_file(f).strip()) : 10000 }
+fn _set(u, c) { mkdir(_DIR); write_file(_wf(u), str(c)) }
+fn balance() { return balance_of(auth.session()) }
+fn _log(line) { mkdir("/home/.larzos"); append_file(_L, line + "\n") }
+fn credit(cents, memo) { let u = auth.session(); let b = balance_of(u) + cents; _set(u, b); _log("+ " + fmt(cents) + "  " + u + "  " + memo); return b }
+fn debit(cents, memo)  { let u = auth.session(); let b = balance_of(u); if b < cents { return false } _set(u, b - cents); _log("- " + fmt(cents) + "  " + u + "  " + memo); return true }
+fn spend(cents)        { let u = auth.session(); let b = balance_of(u); if b < cents { return false } _set(u, b - cents); return true }
+fn transfer(dst, cents) {
+  let src = auth.session()
+  if dst == src or cents <= 0 { return false }
+  let b = balance_of(src)
   if b < cents { return false }
-  _set(b - cents); return true
+  _set(src, b - cents)
+  _set(dst, balance_of(dst) + cents)
+  _log("pay " + fmt(cents) + "  " + src + " -> " + dst)
+  return true
 }
 fn ledger() { return file_exists(_L) ? read_file(_L) : "" }
-fn run(args) { print("bank: balance " + fmt(balance())) }
+fn run(args) { print("bank: " + auth.session() + " balance " + fmt(balance())) }
