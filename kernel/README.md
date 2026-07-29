@@ -111,7 +111,10 @@ persisting across reboots.
 `/home/.larzos/users` and passwords are masked at the prompt. `useradd`,
 `passwd`, `su`, `users`, `whoami`, and `id` manage accounts, each user gets a
 `/home/<user>` (the shell starts there, shown as `~`), and the prompt shows the
-logged-in user. Accounts persist and wrong passwords are rejected.
+logged-in user. Accounts persist and wrong passwords are rejected. **Home
+directories are private** — the kernel tracks the current user (set at
+login/`su`) and enforces it in the VFS, so one user can't read or `cd` into
+another's `/home/<user>`; `root` sees all.
 
 **Unix layout, `/proc`, and boot targets.** `init` builds an FHS-ish layout
 (`/etc`, `/var/log`, `/bin`, `/root`, `/home`) with `/etc/os-release` and
