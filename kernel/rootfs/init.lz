@@ -1,0 +1,38 @@
+# init - LarzOS PID 1: bring the system up with a boot log, then hand off to the
+# login shell. (Kernel mode -DLARZ_INIT runs this, then larzsh.)
+import "bank" as bank
+fn _host() { let f = "/home/.larzos/hostname"; return file_exists(f) ? read_file(f).strip() : "larzos" }
+fn ok(m) { print("  [  ok  ] " + m) }
+fn _enabled() {
+  let out = []
+  let c = "/home/.larzos/services.conf"
+  if file_exists(c) {
+    for l in read_file(c).split("\n") {
+      let p = l.split(" ")
+      if len(p) >= 2 and p[1] == "1" { out.push(p[0]) }
+    }
+  }
+  return out
+}
+fn run(args) {
+  print("")
+  print("  LarzOS  -  the money-native operating system")
+  print("  booting " + _host() + " ...")
+  print("")
+  mkdir("/home"); mkdir("/home/.larzos")
+  ok("mounted filesystem  (/ ramfs, /home persistent)")
+  if time() > 0 { ok("system clock synced from RTC") } else { ok("no clock") }
+  let st = read_file("/net/status")
+  if st.contains("link: up") {
+    let ipl = "network up"
+    for l in st.split("\n") { if l.starts_with("ip:") { ipl = "network up  (" + l.strip() + ")" } }
+    ok(ipl)
+  } else { ok("network: no link (add a NIC)") }
+  ok("wallet: " + bank.fmt(bank.balance()) + " compute credit")
+  let svcs = _enabled()
+  ok(len(svcs) > 0 ? "services enabled: " + join(svcs, ", ") : "no services enabled")
+  print("")
+  print("  " + _host() + " ready. Type 'help', or 'service start web' to serve.")
+}
+
+run([])   # init runs as a program (not an imported command), so invoke it

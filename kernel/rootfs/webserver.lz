@@ -16,6 +16,7 @@ fn html(path) {
     "<p><a href=\"/pay\">Unlock Pro (" + str(pro) + ")</a></p>"
 }
 
+mkdir("/home/.larzos")
 print("LarzOS web server listening on port 80")
 while true {
   let req = read_file("/net/http/accept")
@@ -27,5 +28,6 @@ while true {
   let resp = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: " +
              str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
   write_file("/net/http/reply", resp)
+  append_file("/home/.larzos/web.log", str(int(time())) + "  GET " + path + "\n")
   print("served " + path)
 }

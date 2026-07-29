@@ -1,0 +1,7 @@
+# hostname - show or set the machine name (persisted)
+fn run(args) {
+  let f = "/home/.larzos/hostname"
+  if len(args) == 0 { print(file_exists(f) ? read_file(f).strip() : "larzos"); return }
+  mkdir("/home/.larzos"); write_file(f, args[0])
+  print("hostname set to " + args[0])
+}

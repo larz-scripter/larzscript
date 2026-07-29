@@ -88,6 +88,7 @@ fn cmd_help() {
   print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
   print("  <name> ARGS     run an installed package (e.g. banner, todo, figlet)")
+  print("  server:         service | hostname | logs | date | uptime | netstat | ping")
   print("  about           about LarzOS")
   print("  help            this help")
   print("  exit            leave LarzOS")
@@ -214,10 +215,15 @@ fn resolve_bin() {
   return bin
 }
 
+fn hostname() {
+  let f = "/home/.larzos/hostname"
+  return file_exists(f) ? read_file(f).strip() : "larzos"
+}
+
 fn main() {
   let state = {}
   while true {
-    let line = input("larzos:" + short_cwd() + " " + bank.fmt(bank.balance()) + " $ ")
+    let line = input("root@" + hostname() + ":" + short_cwd() + " (" + bank.fmt(bank.balance()) + ")$ ")
     if line == nil { print(""); break }          # EOF (Ctrl-D or end of piped input)
     let trimmed = line.strip()
     if trimmed == "" { continue }

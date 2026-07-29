@@ -1,0 +1,7 @@
+# logs - show the web server request log
+fn run(args) {
+  let f = "/home/.larzos/web.log"
+  if not file_exists(f) { print("(no logs yet - start the web service)"); return }
+  let l = read_file(f).strip()
+  print(l == "" ? "(empty)" : l)
+}
