@@ -1759,6 +1759,7 @@ static void ec_expr(Node *n){
     case N_STR: printf("lzstr("); ec_str_lit(n->str); printf(")"); break;
     case N_BOOL: printf("lzbool(%d)", n->boolean); break;
     case N_NIL: printf("lznil()"); break;
+    case N_FSTR: ec_expr(n->a); break;   /* desugared to a "+"-concat of literals and str(expr) */
     case N_NAME: printf("%s", n->name); break;
     case N_UN:
       if(strcmp(n->op,"not")==0){ printf("lzbool(!lztruthy("); ec_expr(n->a); printf("))"); }
@@ -1791,6 +1792,7 @@ static void ec_expr(Node *n){
       else if(!strcmp(o,">")) ec_cmp(n,3);
       else if(!strcmp(o,"<=")) ec_cmp(n,4);
       else if(!strcmp(o,">=")) ec_cmp(n,5);
+      else if(!strcmp(o,"has")){ printf("lzbool(lz_has_sub("); ec_expr(n->a); printf(","); ec_expr(n->b); printf("))"); }
       else { fprintf(stderr,"larzc: unsupported operator '%s'\n",o); exit(1); }
       break;
     }
@@ -1818,6 +1820,8 @@ static void ec_stmt(Node *n, int d){
     case N_PRICE: ec_ind(d); printf("LZ %s = ", n->name); ec_expr(n->a); printf(";\n"); break;
     case N_WALLET: ec_ind(d); printf("LZ %s = lzwallet(", n->name); if(n->a){ printf("("); ec_expr(n->a); printf(").n"); } else printf("0"); printf(");\n"); break;
     case N_PAY: ec_ind(d); printf("lz_pay(%s, %s, ", n->src, n->dst); ec_expr(n->a); printf(");\n"); break;
+    case N_PAYWALL: ec_ind(d); printf("LZ %s = lzpaywall((", n->name); ec_expr(n->a); printf(").n, \""); ec_raw(n->period); printf("\", \""); ec_raw(n->name); printf("\", %s);\n", n->dst); break;
+    case N_SUBSCRIBE: ec_ind(d); printf("lz_subscribe(%s, %s);\n", n->src, n->dst); break;
     case N_REQUIRE: ec_ind(d); printf("if(!lztruthy("); ec_expr(n->a); printf(")){fputs(\"RequireError: "); ec_raw(n->str?n->str:"requirement not met"); printf("\\n\",stderr);exit(1);}\n"); break;
     case N_EXPR: ec_ind(d); ec_expr(n->a); printf(";\n"); break;
     case N_RETURN: ec_ind(d); printf("return "); if(n->a) ec_expr(n->a); else printf("lznil()"); printf(";\n"); break;
@@ -1862,6 +1866,12 @@ static void emit_runtime(void){
   puts("static double lz_mround(double x){return (double)(long long)(x>=0?x+0.5:x-0.5);}");
   puts("static LZ lz_wbal(LZ w){return lzmoney((double)((WAL*)w.p)->cents);}");
   puts("static LZ lz_pay(LZ src,LZ dst,LZ amt){WAL*s=(WAL*)src.p,*e=(WAL*)dst.p;long long c=(long long)amt.n;if(s->cents<c){fputs(\"MoneyError: insufficient funds\\n\",stderr);exit(1);}s->cents-=c;e->cents+=c;return lznil();}");
+  /* paywall (t=8) + subscriptions: subscribe charges the wallet, pays the payee, records the (wallet,paywall) pair; `has` checks it */
+  puts("typedef struct{long long price;char*period;char*name;void*payee;}PW;");
+  puts("static LZ lzpaywall(double price,const char*period,const char*name,LZ payee){PW*p=(PW*)calloc(1,sizeof(PW));p->price=(long long)price;p->period=strdup(period);p->name=strdup(name);p->payee=payee.p;LZ v={8,0,0,p};return v;}");
+  puts("static void**g_subs=0;static int g_nsub=0,g_subcap=0;");
+  puts("static LZ lz_subscribe(LZ w,LZ pw){WAL*wl=(WAL*)w.p;PW*p=(PW*)pw.p;if(p->price>wl->cents){fputs(\"MoneyError: insufficient funds\\n\",stderr);exit(1);}wl->cents-=p->price;if(p->payee)((WAL*)p->payee)->cents+=p->price;if(g_nsub+2>g_subcap){g_subcap=g_subcap?g_subcap*2:16;g_subs=(void**)realloc(g_subs,g_subcap*sizeof(void*));}g_subs[g_nsub++]=w.p;g_subs[g_nsub++]=pw.p;return lznil();}");
+  puts("static int lz_has_sub(LZ w,LZ pw){for(int i=0;i<g_nsub;i+=2)if(g_subs[i]==w.p&&g_subs[i+1]==pw.p)return 1;return 0;}");
   puts("static LZ lzlist(){LST*l=(LST*)calloc(1,sizeof(LST));LZ v={4,0,0,l};return v;}");
   puts("static LZ lz_push(LZ L,LZ e){LST*l=(LST*)L.p;if(l->n>=l->cap){l->cap=l->cap?l->cap*2:8;l->items=(LZ*)realloc(l->items,l->cap*sizeof(LZ));}l->items[l->n++]=e;return lznil();}");
   puts("static LZ lz_listn(int n,...){LZ L=lzlist();va_list ap;va_start(ap,n);for(int i=0;i<n;i++)lz_push(L,va_arg(ap,LZ));va_end(ap);return L;}");
@@ -1871,7 +1881,7 @@ static void emit_runtime(void){
   puts("static void lz_dput(LZ D,const char*k,LZ val){int j=lz_dfind(D,k);DCT*d=(DCT*)D.p;if(j>=0){d->vals[j]=val;return;}if(d->n>=d->cap){d->cap=d->cap?d->cap*2:8;d->keys=(char**)realloc(d->keys,d->cap*sizeof(char*));d->vals=(LZ*)realloc(d->vals,d->cap*sizeof(LZ));}d->keys[d->n]=strdup(k);d->vals[d->n++]=val;}");
   puts("static int lz_lenN(LZ v){if(v.t==4)return((LST*)v.p)->n;if(v.t==5)return((DCT*)v.p)->n;if(v.t==2)return v.s?(int)strlen(v.s):0;return 0;}");
   puts("static LZ lz_index(LZ o,LZ i){if(o.t==5){if(i.t==2){int j=lz_dfind(o,i.s);return j>=0?((DCT*)o.p)->vals[j]:lznil();}int idx=(int)i.n;DCT*d=(DCT*)o.p;if(idx<0||idx>=d->n)return lznil();return lzstr(d->keys[idx]);}int idx=(int)i.n;if(o.t==4){LST*l=(LST*)o.p;if(idx<0)idx+=l->n;if(idx<0||idx>=l->n)return lznil();return l->items[idx];}if(o.t==2){int n=(int)strlen(o.s);if(idx<0)idx+=n;if(idx<0||idx>=n)return lznil();char b[2]={o.s[idx],0};return lzstr(b);}return lznil();}");
-  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7)return 1;return 0;}");
+  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7||v.t==8)return 1;return 0;}");
   puts("static char*lz_tostr(LZ v){");
   puts("  char b[64];");
   puts("  if(v.t==2)return v.s?v.s:(char*)\"\";");
@@ -1884,6 +1894,7 @@ static void emit_runtime(void){
   puts("    for(int i=0;i<d->n;i++){if(i){r[len++]=',';r[len++]=' ';}char*e=lz_tostr(d->vals[i]);size_t kl=strlen(d->keys[i]),el=strlen(e);while(len+kl+el+8>cap){cap*=2;r=(char*)realloc(r,cap);}memcpy(r+len,d->keys[i],kl);len+=kl;r[len++]=':';r[len++]=' ';memcpy(r+len,e,el);len+=el;}");
   puts("    r[len++]='}';r[len]=0;return r;}");
   puts("  if(v.t==6){long long c=(long long)v.n,ac=c<0?-c:c;sprintf(b,\"%s$%lld.%02lld\",c<0?\"-\":\"\",ac/100,ac%100);return strdup(b);}");
+  puts("  if(v.t==8){PW*p=(PW*)v.p;long long c=p->price<0?-p->price:p->price;char*r=(char*)malloc(strlen(p->name)+strlen(p->period)+48);sprintf(r,\"<paywall %s: $%lld.%02lld/%s>\",p->name,c/100,c%100,p->period);return r;}");
   puts("  return strdup(\"nil\");}");
   puts("static LZ lz_dictn(int n,...){LZ D=lzdict();va_list ap;va_start(ap,n);for(int i=0;i<n;i++){LZ k=va_arg(ap,LZ),val=va_arg(ap,LZ);lz_dput(D,lz_tostr(k),val);}va_end(ap);return D;}");
   puts("static LZ lz_keys(LZ D){LZ r=lzlist();if(D.t==5){DCT*d=(DCT*)D.p;for(int i=0;i<d->n;i++)lz_push(r,lzstr(d->keys[i]));}return r;}");
@@ -1923,7 +1934,7 @@ static void emit_runtime(void){
 static void emit_c(Node *prog){
   emit_runtime();
   /* top-level let/price/wallet become globals so functions can reference them */
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET) printf("LZ %s;\n", k->name); }
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) printf("LZ %s;\n", k->name); }
   for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf(");\n"); } }
   for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf("){\n"); ec_stmt(k->b,1); printf("  return lznil();\n}\n"); } }
   printf("int main(void){\n");
@@ -1931,6 +1942,7 @@ static void emit_c(Node *prog){
     if(k->kind==N_FN) continue;
     if(k->kind==N_LET||k->kind==N_PRICE){ ec_ind(1); printf("%s = ", k->name); ec_expr(k->a); printf(";\n"); }
     else if(k->kind==N_WALLET){ ec_ind(1); printf("%s = lzwallet(", k->name); if(k->a){ printf("("); ec_expr(k->a); printf(").n"); } else printf("0"); printf(");\n"); }
+    else if(k->kind==N_PAYWALL){ ec_ind(1); printf("%s = lzpaywall((", k->name); ec_expr(k->a); printf(").n, \""); ec_raw(k->period); printf("\", \""); ec_raw(k->name); printf("\", %s);\n", k->dst); }
     else ec_stmt(k,1);
   }
   printf("  return 0;\n}\n");

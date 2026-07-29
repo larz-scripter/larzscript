@@ -1,13 +1,18 @@
 fn sq(n) { return n * n }
 let acc = []
 for x in [10, 20, 30] { push(acc, sq(x)) }
-print("squared:", acc)
 let d = {}
 for w in "a b a c a b".split(" ") { d[w] = d.get(w, 0) + 1 }
-print("counts:", d)
-wallet buyer = $20.00
-wallet shop
-price item = $12.50
-fn sell(b) { require b.balance >= item, "no funds"; pay item from b to shop }
-sell(buyer)
-print("buyer:", buyer.balance, "shop:", shop.balance, "fee:", item * 0.1)
+print(f"squared={acc} counts={d}")
+wallet alice = $30.00
+wallet treasury
+price seat = $12.50
+paywall pro = $9.00 / month to treasury
+fn onboard(u) gas 50 {
+  require u.balance >= seat, "need a seat"
+  pay seat from u to treasury
+  subscribe u to pro
+}
+onboard(alice)
+print(f"alice={alice.balance} treasury={treasury.balance} hasPro={alice has pro}")
+print("plan:", pro)
