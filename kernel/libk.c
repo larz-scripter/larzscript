@@ -80,9 +80,7 @@ static const char kmap_s[0x40] = {
     'B','N','M','<','>','?', 0, '*', 0, ' ', 0,0,0,0,0,0,
 };
 static int kbd_shift=0, kbd_caps=0;
-static int kbd_poll(void){                 /* returns an ASCII char, or -1 */
-    if(!(inb(0x64)&1)) return -1;
-    unsigned char sc=inb(0x60);
+int kbd_translate(unsigned char sc){       /* scancode -> ASCII, or -1 (used by IRQ1) */
     if(sc==0x2A||sc==0x36){ kbd_shift=1; return -1; }
     if(sc==0xAA||sc==0xB6){ kbd_shift=0; return -1; }
     if(sc==0x3A){ kbd_caps^=1; return -1; }
@@ -93,13 +91,21 @@ static int kbd_poll(void){                 /* returns an ASCII char, or -1 */
     char c = kbd_shift ? kmap_s[sc] : kmap[sc];
     return c? (unsigned char)c : -1;
 }
+static int kbd_poll(void){ if(!(inb(0x64)&1)) return -1; return kbd_translate(inb(0x60)); }
 
-/* Block for a char from EITHER the serial line or the PS/2 keyboard, so the
- * same kernel works over a serial console (headless) and locally (keyboard). */
+/* interrupt-driven keyboard: IRQ1 pushes chars into this ring */
+static volatile char kbring[256]; static volatile int kbhead=0, kbtail=0;
+void kbring_push(char c){ int nx=(kbhead+1)&255; if(nx!=kbtail){ kbring[kbhead]=c; kbhead=nx; } }
+static int kbring_pop(void){ if(kbtail==kbhead) return -1; char c=kbring[kbtail]; kbtail=(kbtail+1)&255; return (unsigned char)c; }
+int g_irq_on=0;
+
+/* Block for a char from EITHER the serial line or the keyboard. Once interrupts
+ * are on, keys come from the IRQ ring; before that, we poll directly. */
 char console_getc(void){
     for(;;){
         if(serial_can_read()) return (char)inb(COM1);
-        int k=kbd_poll(); if(k>0) return (char)k;
+        if(g_irq_on){ int k=kbring_pop(); if(k>=0) return (char)k; }
+        else { int k=kbd_poll(); if(k>0) return (char)k; }
     }
 }
 
@@ -113,6 +119,48 @@ void console_init(void){
     clock_init();                            /* calibrate the TSC against the PIT */
 }
 void qemu_exit(unsigned char code){ outb(0xf4, code); }
+
+/* ======================================================================
+ * Interrupts: IDT + PIC remap + timer(IRQ0) + keyboard(IRQ1). See interrupt.S.
+ * ==================================================================== */
+struct iframe { uint64_t r15,r14,r13,r12,r11,r10,r9,r8,rbp,rdi,rsi,rdx,rcx,rbx,rax, int_no, err, rip, cs, rflags, rsp, ss; };
+struct idtent { u16 lo, sel; u8 ist, flags; u16 mid; uint32_t hi, zero; } __attribute__((packed));
+struct idtptr { u16 limit; uint64_t base; } __attribute__((packed));
+static struct idtent g_idt[256];
+extern void *isr_stub_table[];
+static volatile unsigned long long g_ticks=0;
+static void idt_set(int n, void *h){
+    uint64_t a=(uint64_t)h;
+    g_idt[n].lo=a&0xFFFF; g_idt[n].sel=0x08; g_idt[n].ist=0; g_idt[n].flags=0x8E;
+    g_idt[n].mid=(a>>16)&0xFFFF; g_idt[n].hi=(a>>32)&0xFFFFFFFF; g_idt[n].zero=0;
+}
+void interrupt_dispatch(struct iframe *f){                /* called from isr_common */
+    unsigned n=(unsigned)f->int_no;
+    if(n<32){                                             /* CPU exception: report + halt */
+        printf("\n[CPU exception %u  err=%x  RIP=%lx]  halting.\n", n, (unsigned)f->err, (unsigned long)f->rip);
+        for(;;) __asm__ volatile("cli; hlt");
+    }
+    if(n==32) g_ticks++;                                  /* timer */
+    else if(n==33){ unsigned char sc=inb(0x60); int c=kbd_translate(sc); if(c>0) kbring_push((char)c); }
+    if(n>=40) outb(0xA0,0x20);                            /* EOI to slave */
+    outb(0x20,0x20);                                      /* EOI to master */
+}
+static void pic_remap(void){
+    outb(0x20,0x11); outb(0xA0,0x11);
+    outb(0x21,0x20); outb(0xA1,0x28);                     /* master->32, slave->40 */
+    outb(0x21,0x04); outb(0xA1,0x02);
+    outb(0x21,0x01); outb(0xA1,0x01);
+    outb(0x21,0xFC); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) + IRQ1 (kbd) */
+}
+void ints_init(void){
+    for(int i=0;i<48;i++) idt_set(i, isr_stub_table[i]);
+    struct idtptr p; p.limit=sizeof(g_idt)-1; p.base=(uint64_t)g_idt;
+    __asm__ volatile("lidt %0"::"m"(p));
+    pic_remap();
+    outb(0x43,0x36); outb(0x40, 11932&0xFF); outb(0x40, (11932>>8)&0xFF);   /* PIT ch0 ~100 Hz */
+    g_irq_on=1;
+    __asm__ volatile("sti");
+}
 
 static void con_puts(const char *s){ while(*s) serial_putc(*s++); }
 
@@ -672,6 +720,8 @@ static char *proc_content(const char *path){
             (unsigned)(HEAP_BYTES/1024),(unsigned)(arena_used/1024),(unsigned)((HEAP_BYTES-arena_used)/1024));
     else if(strcmp(path,"/proc/diskinfo")==0)
         snprintf(c,256,"filesystem: LarzFS\nmount:      /home (persistent)\nused:       %u bytes\n", g_home?vn_total(g_home):0);
+    else if(strcmp(path,"/proc/uptime")==0)
+        snprintf(c,256,"ticks: %llu\nseconds: %llu  (timer IRQ @ 100 Hz)\n", g_ticks, g_ticks/100);
     else snprintf(c,256,"no such /proc file\n");
     return c;
 }
@@ -836,6 +886,7 @@ int usleep(unsigned us){
 unsigned sleep(unsigned s){ while(s--) usleep(1000000); return 0; }
 int stat(const char *p, struct stat *b){
     if(!perm_ok(p)) return -1;
+    if(strncmp(p,"/proc/",6)==0){ if(b){ b->st_mode=S_IFREG; b->st_size=0; } return 0; }  /* virtual */
     VNode *n=vn_resolve(p); if(!n) return -1;
     if(b){ b->st_mode = n->is_dir?S_IFDIR:S_IFREG; b->st_size=n->size; }
     return 0;

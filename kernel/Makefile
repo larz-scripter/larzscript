@@ -23,7 +23,7 @@ AFLAGS := -m64 -ffreestanding -fno-pie
 LDFLAGS := -m elf_x86_64 -T linker.ld -nostdlib -no-pie -z max-page-size=0x1000
 
 KERNEL := larzkernel.elf
-OBJS   := boot.o setjmp.o kernel.o libk.o net.o ramfs_gen.o larzscript.o
+OBJS   := boot.o setjmp.o interrupt.o kernel.o libk.o net.o ramfs_gen.o larzscript.o
 ROOTFS := $(wildcard rootfs/* rootfs/repo/*/*)
 
 QEMU   := qemu-system-x86_64
@@ -34,6 +34,8 @@ boot.o: boot.S
 	$(CC) $(AFLAGS) -c boot.S -o boot.o
 setjmp.o: setjmp.S
 	$(CC) $(AFLAGS) -c setjmp.S -o setjmp.o
+interrupt.o: interrupt.S
+	$(CC) $(AFLAGS) -c interrupt.S -o interrupt.o
 kernel.o: kernel.c console.h
 	$(CC) $(CFLAGS) -c kernel.c -o kernel.o
 libk.o: libk.c console.h
