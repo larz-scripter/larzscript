@@ -100,21 +100,17 @@ static int kbring_pop(void){ if(kbtail==kbhead) return -1; char c=kbring[kbtail]
 int g_irq_on=0;
 
 /* Block for a char from the serial line OR the PS/2 keyboard.
- * We accept keys two ways and don't depend on either alone:
- *   1) the IRQ1 ring, if the keyboard interrupt is being delivered, and
- *   2) a direct poll of the controller (0x64/0x60), which works even when the
- *      IRQ is never delivered (some VMs / real hardware after our 8042 setup).
- * The direct poll runs with interrupts off so it can't race the IRQ1 handler
- * for the same scancode byte. This makes local typing robust on QEMU,
- * VirtualBox and bare metal alike. */
+ * The keyboard is read by POLLING the 8042 output buffer directly - a single
+ * reader of port 0x60, so there's no double-read. IRQ1 is masked at the PIC
+ * (see pic_remap) precisely so the interrupt handler can't also consume the
+ * same scancode (which produced duplicated keys on IRQ-delivering hosts like
+ * QEMU). Polling reads the scancode buffer whether or not the host delivers
+ * the keyboard interrupt, which is exactly what VirtualBox / real hardware
+ * needed. The timer IRQ0 still drives the scheduler; only IRQ1 is polled. */
 char console_getc(void){
     for(;;){
         if(serial_can_read()) return (char)inb(COM1);
-        int k=kbring_pop(); if(k>=0) return (char)k;      /* IRQ-driven key, if any */
-        __asm__ volatile("cli");
-        int p=kbd_poll();                                 /* race-free direct poll */
-        __asm__ volatile("sti");
-        if(p>0) return (char)p;
+        int k=kbring_pop(); if(k>=0) return (char)k;       /* keys captured by the timer tick */
     }
 }
 
@@ -186,12 +182,23 @@ uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_com
         printf("\n[CPU exception %u  err=%x  RIP=%lx]  halting.\n", n, (unsigned)f->err, (unsigned long)f->rip);
         for(;;) __asm__ volatile("cli; hlt");
     }
-    if(n==32){                                            /* timer: tick, gas, switch task */
+    if(n==32){                                            /* timer: tick, poll keyboard, gas, switch task */
         g_ticks++;
+        /* Poll the PS/2 keyboard here, at 100 Hz, from the always-firing timer.
+         * This is the SOLE reader of port 0x60, so keys are never double-read,
+         * and capture doesn't depend on the keyboard IRQ being delivered (it
+         * isn't, on some VirtualBox/HW setups). Mouse (aux) bytes are discarded. */
+        for(int guard=0; guard<32; guard++){
+            unsigned char st=inb(0x64);
+            if(!(st&1)) break;                            /* output buffer empty */
+            unsigned char sc=inb(0x60);                   /* read clears the buffer */
+            if(st&0x20) continue;                         /* bit5 set = mouse byte -> ignore */
+            int c=kbd_translate(sc); if(c>0) kbring_push((char)c);
+        }
         if(g_gas_on && g_cur==0){ g_gas_used++; if(g_gas_used > g_gas_budget){ larz_gas_kill=1; g_gas_on=0; } }
         rsp=schedule(rsp);
     }
-    else if(n==33){ unsigned char sc=inb(0x60); int c=kbd_translate(sc); if(c>0) kbring_push((char)c); }
+    else if(n==33){ unsigned char sc=inb(0x60); int c=kbd_translate(sc); if(c>0) kbring_push((char)c); }  /* IRQ1 masked; kept harmless */
     if(n>=40) outb(0xA0,0x20);                            /* EOI to slave */
     outb(0x20,0x20);                                      /* EOI to master */
     return rsp;
@@ -201,7 +208,7 @@ static void pic_remap(void){
     outb(0x21,0x20); outb(0xA1,0x28);                     /* master->32, slave->40 */
     outb(0x21,0x04); outb(0xA1,0x02);
     outb(0x21,0x01); outb(0xA1,0x01);
-    outb(0x21,0xFC); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) + IRQ1 (kbd) */
+    outb(0x21,0xFD); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) only; IRQ1 (kbd) is polled */
 }
 
 /* ---- 8042 PS/2 controller bring-up ----
