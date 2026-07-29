@@ -19,7 +19,7 @@ void kernel_main(void){
     vfs_init();                    /* mount the writable filesystem */
     printf("\n");
     net_selftest();                /* detect the NIC + ping the gateway */
-    printf("  input: PS/2 keyboard = timer-polled (100 Hz)  [build kbd5]\n");
+    printf("  input: PS/2 keyboard = IRQ1 + timer-poll backup  [build kbd8]\n");
     printf("  LarzOS  -  the money-native operating system\n");
     printf("  kernel (Stage 1): 64-bit long mode, no Linux underneath.\n");
     printf("  The Larzscript interpreter is running on bare metal.\n");

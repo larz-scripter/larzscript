@@ -91,7 +91,6 @@ int kbd_translate(unsigned char sc){       /* scancode -> ASCII, or -1 (used by 
     char c = kbd_shift ? kmap_s[sc] : kmap[sc];
     return c? (unsigned char)c : -1;
 }
-static int kbd_poll(void){ if(!(inb(0x64)&1)) return -1; return kbd_translate(inb(0x60)); }
 
 /* interrupt-driven keyboard: IRQ1 pushes chars into this ring */
 static volatile char kbring[256]; static volatile int kbhead=0, kbtail=0;
@@ -175,6 +174,23 @@ void sched_init(void){                                    /* task 0 = the main/i
     task_create(task_b);
 }
 
+/* Drain the 8042 output buffer into the key ring. Called from BOTH the keyboard
+ * IRQ (n==33, immediate - no lost keys on fast bursts) AND the timer tick
+ * (n==32, a 100 Hz safety net in case the host doesn't deliver the keyboard
+ * IRQ). It's dup-free: every read is guarded by the status bit and reading
+ * clears the byte, and interrupt handlers don't nest, so whichever fires first
+ * consumes the byte and the other sees an empty buffer. Mouse (aux) bytes are
+ * skipped. This is robust across QEMU, VirtualBox and bare metal. */
+static void kbd_drain(void){
+    for(int g=0; g<32; g++){
+        unsigned char st=inb(0x64);
+        if(!(st&1)) break;                                /* output buffer empty */
+        unsigned char sc=inb(0x60);                       /* read clears the byte */
+        if(st&0x20) continue;                             /* bit5 = mouse (aux) byte -> ignore */
+        int c=kbd_translate(sc); if(c>0) kbring_push((char)c);
+    }
+}
+
 uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_common; returns new rsp */
     struct iframe *f=(struct iframe*)rsp;
     unsigned n=(unsigned)f->int_no;
@@ -182,23 +198,13 @@ uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_com
         printf("\n[CPU exception %u  err=%x  RIP=%lx]  halting.\n", n, (unsigned)f->err, (unsigned long)f->rip);
         for(;;) __asm__ volatile("cli; hlt");
     }
-    if(n==32){                                            /* timer: tick, poll keyboard, gas, switch task */
+    if(n==32){                                            /* timer: tick, poll kbd (backup), gas, switch task */
         g_ticks++;
-        /* Poll the PS/2 keyboard here, at 100 Hz, from the always-firing timer.
-         * This is the SOLE reader of port 0x60, so keys are never double-read,
-         * and capture doesn't depend on the keyboard IRQ being delivered (it
-         * isn't, on some VirtualBox/HW setups). Mouse (aux) bytes are discarded. */
-        for(int guard=0; guard<32; guard++){
-            unsigned char st=inb(0x64);
-            if(!(st&1)) break;                            /* output buffer empty */
-            unsigned char sc=inb(0x60);                   /* read clears the buffer */
-            if(st&0x20) continue;                         /* bit5 set = mouse byte -> ignore */
-            int c=kbd_translate(sc); if(c>0) kbring_push((char)c);
-        }
+        kbd_drain();
         if(g_gas_on && g_cur==0){ g_gas_used++; if(g_gas_used > g_gas_budget){ larz_gas_kill=1; g_gas_on=0; } }
         rsp=schedule(rsp);
     }
-    else if(n==33){ unsigned char sc=inb(0x60); int c=kbd_translate(sc); if(c>0) kbring_push((char)c); }  /* IRQ1 masked; kept harmless */
+    else if(n==33){ kbd_drain(); }                        /* keyboard IRQ: immediate capture */
     if(n>=40) outb(0xA0,0x20);                            /* EOI to slave */
     outb(0x20,0x20);                                      /* EOI to master */
     return rsp;
@@ -208,40 +214,22 @@ static void pic_remap(void){
     outb(0x21,0x20); outb(0xA1,0x28);                     /* master->32, slave->40 */
     outb(0x21,0x04); outb(0xA1,0x02);
     outb(0x21,0x01); outb(0xA1,0x01);
-    outb(0x21,0xFD); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) only; IRQ1 (kbd) is polled */
+    outb(0x21,0xFC); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) + IRQ1 (keyboard) */
 }
 
-/* ---- 8042 PS/2 controller bring-up ----
- * REQUIRED on real hardware and VirtualBox; QEMU is lax and delivers keyboard
- * IRQs even from an uninitialised controller, which is why serial/QEMU boots
- * "just work" but a VM's physical keyboard is dead. We enable the first port,
- * set the IRQ1-enable bit in the config byte (leaving translation ON so the
- * controller keeps emitting scancode set 1, which our kmap decodes), and tell
- * the keyboard device itself to start scanning (0xF4) - VirtualBox needs that. */
-static void i8042_wait_in(void){ for(int i=0;i<200000 && (inb(0x64)&2); i++){} }   /* input buffer empty -> ok to write */
-static void i8042_wait_out(void){ for(int i=0;i<200000 && !(inb(0x64)&1); i++){} } /* output buffer full  -> ok to read  */
-static void i8042_cmd(u8 c){ i8042_wait_in(); outb(0x64,c); }
-static void i8042_data(u8 c){ i8042_wait_in(); outb(0x60,c); }
-static void kbd_init(void){
-    i8042_cmd(0xAD); i8042_cmd(0xA7);                     /* disable both ports during setup */
-    while(inb(0x64)&1) (void)inb(0x60);                   /* flush the output buffer */
-    i8042_cmd(0x20); i8042_wait_out(); u8 cfg=inb(0x60);  /* read controller config byte */
-    cfg |=  0x01;                                         /* bit0: enable first-port (keyboard) IRQ1 */
-    cfg &= ~0x10;                                         /* bit4: clear first-port clock-disable -> port on */
-    cfg |=  0x40;                                         /* bit6: translation on -> scancode set 1 (matches kmap) */
-    i8042_cmd(0x60); i8042_data(cfg);                     /* write it back */
-    i8042_cmd(0xAE);                                      /* enable the first PS/2 port */
-    i8042_data(0xF4);                                     /* keyboard: enable scanning (start sending scancodes) */
-    i8042_wait_out(); (void)inb(0x60);                    /* eat the 0xFA ACK */
-    while(inb(0x64)&1) (void)inb(0x60);                   /* drain anything left */
-}
-
+/* We deliberately do NOT reprogram the 8042 controller. The firmware/BIOS has
+ * already enabled the keyboard port, turned on IRQ1 in the config byte and put
+ * the keyboard into scanning mode before handing off (GRUB reads the keyboard,
+ * so it is provably live by the time we run). An aggressive re-init that
+ * disables the ports and rewrites the config byte was found to leave the
+ * keyboard dead on real VirtualBox - so we just leave the working setup alone,
+ * unmask IRQ1, and let the IRQ handler drain scancodes. */
 void ints_init(void){
     for(int i=0;i<48;i++) idt_set(i, isr_stub_table[i]);
     struct idtptr p; p.limit=sizeof(g_idt)-1; p.base=(uint64_t)g_idt;
     __asm__ volatile("lidt %0"::"m"(p));
-    pic_remap();
-    kbd_init();                                                            /* bring up the PS/2 keyboard (HW/VirtualBox) */
+    pic_remap();                                                           /* unmasks IRQ0 (timer) + IRQ1 (keyboard) */
+    while(inb(0x64)&1) (void)inb(0x60);                                    /* drain any stale scancode so IRQ1 can re-fire */
     outb(0x43,0x36); outb(0x40, 11932&0xFF); outb(0x40, (11932>>8)&0xFF);   /* PIT ch0 ~100 Hz */
     g_irq_on=1;
     __asm__ volatile("sti");
