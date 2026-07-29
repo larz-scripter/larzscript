@@ -1,10 +1,13 @@
 fn sq(n) { return n * n }
-print("sq(9) =", sq(9))
-let xs = [10, 20, 30]
 let acc = []
-for x in xs { push(acc, sq(x)) }
-print("squared:", acc, "first:", acc[0], "len:", len(acc))
+for x in [10, 20, 30] { push(acc, sq(x)) }
+print("squared:", acc)
 let d = {}
 for w in "a b a c a b".split(" ") { d[w] = d.get(w, 0) + 1 }
-print("counts:", d, "keys:", keys(d))
-print("upper:", "larz".upper(), "yes/no:", 3 > 2 ? "y" : "n")
+print("counts:", d)
+wallet buyer = $20.00
+wallet shop
+price item = $12.50
+fn sell(b) { require b.balance >= item, "no funds"; pay item from b to shop }
+sell(buyer)
+print("buyer:", buyer.balance, "shop:", shop.balance, "fee:", item * 0.1)
