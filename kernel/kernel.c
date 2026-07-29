@@ -36,8 +36,10 @@ void kernel_main(void){
     char *repl2_argv[] = { "larzscript", "repl", 0 };
     larz_main(2, repl2_argv);
 #elif defined(LARZ_INIT)
-    /* Linux-server-style boot: init brings the system up, then the login shell */
+    /* Linux-server-style boot: init brings the system up, login authenticates,
+     * then the user's shell runs. */
     { char *a[] = { "larzscript", "/init.lz", 0 };    larz_main(2, a); }
+    { char *a[] = { "larzscript", "/login.lz", 0 };   larz_main(2, a); }
     { char *a[] = { "larzscript", "/larzsh.lz", 0 };  larz_main(2, a); }
 #elif defined(LARZ_SERVER)
     /* boot straight into the Larzscript web server */

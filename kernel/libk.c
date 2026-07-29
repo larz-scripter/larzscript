@@ -656,6 +656,22 @@ char *fgets(char *buf, int size, FILE *f){
 }
 FILE *fopen(const char *path, const char *mode){
     int reading = !mode || mode[0]=='r';
+    if(reading && strcmp(path,"/dev/password")==0){   /* masked console line read */
+        VNode *e=vn_new("pw",0); if(!e) return 0;
+        char *buf=malloc(256); if(!buf){ free(e); return 0; }
+        int n=0;
+        for(;;){
+            char c=console_getc();
+            if(c=='\n'||c=='\r'){ serial_putc('\n'); break; }
+            if(c==0x7F||c==0x08){ if(n>0){ n--; con_puts("\b \b"); } continue; }
+            if(c>=32 && c<127 && n<255){ buf[n++]=c; serial_putc('*'); }
+        }
+        buf[n]=0;
+        e->data=(unsigned char*)buf; e->size=(unsigned)n; e->cap=(unsigned)n+1;
+        FILE *f=malloc(sizeof(FILE)); if(!f){ free(buf); free(e); return 0; }
+        f->kind=3; f->vn=e; f->pos=0; f->writing=0; f->ephemeral=1; f->netpath[0]=0;
+        return f;
+    }
     if(strncmp(path,"/net/",5)==0){                   /* virtual networking files */
         VNode *e=vn_new("net",0); if(!e) return 0;
         FILE *f=malloc(sizeof(FILE)); if(!f){ free(e); return 0; }

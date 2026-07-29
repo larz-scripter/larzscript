@@ -1,0 +1,9 @@
+import "auth" as auth
+fn run(args) {
+  if len(args) < 1 { print("usage: su <name>"); return }
+  if not auth.exists(args[0]) { print("no such user: " + args[0]); return }
+  print("Password: ")
+  let pw = read_file("/dev/password")
+  if auth.verify(args[0], pw) { auth.set_session(args[0]); print("switched to " + args[0]) }
+  else { print("su: authentication failure") }
+}

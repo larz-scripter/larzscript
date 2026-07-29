@@ -11,6 +11,7 @@
 
 let VERSION = "0.1"
 import "bank" as bank
+import "auth" as auth
 let LARZHOME = env("HOME") + "/.larzos"
 let WALLET_FILE = LARZHOME + "/wallet.cents"
 let HISTORY = []
@@ -158,7 +159,6 @@ fn run_command(argv, state) {
   if cmd == "echo" { print(join(rest, " ")); return state }
   if cmd == "cat" { cmd_cat(rest); return state }
   if cmd == "env" { cmd_env(rest); return state }
-  if cmd == "whoami" { print(env("USER")); return state }
   if cmd == "clear" or cmd == "cls" { print(chr(27) + "[2J" + chr(27) + "[H"); return state }
   if cmd == "history" {
     let i = 1
@@ -223,7 +223,7 @@ fn hostname() {
 fn main() {
   let state = {}
   while true {
-    let line = input("root@" + hostname() + ":" + short_cwd() + " (" + bank.fmt(bank.balance()) + ")$ ")
+    let line = input(auth.session() + "@" + hostname() + ":" + short_cwd() + " (" + bank.fmt(bank.balance()) + ")$ ")
     if line == nil { print(""); break }          # EOF (Ctrl-D or end of piped input)
     let trimmed = line.strip()
     if trimmed == "" { continue }

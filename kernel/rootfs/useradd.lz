@@ -1,0 +1,7 @@
+import "auth" as auth
+fn run(args) {
+  if len(args) < 1 { print("usage: useradd <name> [password]"); return }
+  if auth.exists(args[0]) { print("user exists: " + args[0]); return }
+  auth.add(args[0], len(args) > 1 ? args[1] : "larz")
+  print("added user " + args[0])
+}

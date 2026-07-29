@@ -1,0 +1,8 @@
+import "auth" as auth
+fn run(args) {
+  let name = len(args) > 0 ? args[0] : auth.session()
+  print("New password for " + name + ": ")
+  let pw = read_file("/dev/password")
+  auth.add(name, pw)
+  print("password updated for " + name)
+}

@@ -1,0 +1,26 @@
+# login - authenticate a user, then hand off to the shell (kernel runs it after init).
+import "auth" as auth
+fn _host() { let f = "/home/.larzos/hostname"; return file_exists(f) ? read_file(f).strip() : "larzos" }
+fn run(args) {
+  if auth.ensure_root() {
+    print("  (first boot: created user 'root' with password 'larz')")
+    print("")
+  }
+  while true {
+    let name = input(_host() + " login: ")
+    if name == nil { exit(0) }
+    if name.strip() == "" { continue }
+    print("Password: ")
+    let pw = read_file("/dev/password")
+    if auth.verify(name.strip(), pw) {
+      auth.set_session(name.strip())
+      print("")
+      print("Welcome to LarzOS, " + name.strip() + ".")
+      print("")
+      return
+    }
+    print("Login incorrect")
+    print("")
+  }
+}
+run([])

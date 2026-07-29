@@ -1,0 +1,33 @@
+# auth - LarzOS user accounts (shared library).  import "auth" as auth
+# Users are stored in /home/.larzos/users as  username:passwordhash  (persisted).
+let _F = "/home/.larzos/users"
+let _S = "/home/.larzos/session"
+fn hash(s) {                              # djb2 (not cryptographic; fine for a demo)
+  let h = 5381
+  for ch in s { h = (h * 33 + ord(ch)) % 2147483647 }
+  return str(h)
+}
+fn _load() {
+  let d = {}
+  if file_exists(_F) {
+    for l in read_file(_F).split("\n") {
+      if l.strip() == "" { continue }
+      let p = l.split(":")
+      if len(p) >= 2 { d[p[0]] = p[1] }
+    }
+  }
+  return d
+}
+fn _save(d) {
+  let lines = []
+  for name in keys(d) { lines.push(name + ":" + d[name]) }
+  mkdir("/home/.larzos"); write_file(_F, join(lines, "\n"))
+}
+fn exists(name) { return _load().has(name) }
+fn add(name, pw) { let d = _load(); d[name] = hash(pw); _save(d) }
+fn verify(name, pw) { let d = _load(); return d.has(name) and d[name] == hash(pw) }
+fn users() { return sorted(keys(_load())) }
+fn session() { return file_exists(_S) ? read_file(_S).strip() : "root" }
+fn set_session(name) { mkdir("/home/.larzos"); write_file(_S, name) }
+fn ensure_root() { if not exists("root") { add("root", "larz"); return true } return false }
+fn run(args) { print("auth is a library: import \"auth\" as auth") }

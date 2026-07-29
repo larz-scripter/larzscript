@@ -1,0 +1,2 @@
+import "auth" as auth
+fn run(args) { print("user=" + auth.session()) }

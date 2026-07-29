@@ -1,0 +1,2 @@
+import "auth" as auth
+fn run(args) { for u in auth.users() { print(u) } }
