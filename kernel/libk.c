@@ -99,13 +99,22 @@ void kbring_push(char c){ int nx=(kbhead+1)&255; if(nx!=kbtail){ kbring[kbhead]=
 static int kbring_pop(void){ if(kbtail==kbhead) return -1; char c=kbring[kbtail]; kbtail=(kbtail+1)&255; return (unsigned char)c; }
 int g_irq_on=0;
 
-/* Block for a char from EITHER the serial line or the keyboard. Once interrupts
- * are on, keys come from the IRQ ring; before that, we poll directly. */
+/* Block for a char from the serial line OR the PS/2 keyboard.
+ * We accept keys two ways and don't depend on either alone:
+ *   1) the IRQ1 ring, if the keyboard interrupt is being delivered, and
+ *   2) a direct poll of the controller (0x64/0x60), which works even when the
+ *      IRQ is never delivered (some VMs / real hardware after our 8042 setup).
+ * The direct poll runs with interrupts off so it can't race the IRQ1 handler
+ * for the same scancode byte. This makes local typing robust on QEMU,
+ * VirtualBox and bare metal alike. */
 char console_getc(void){
     for(;;){
         if(serial_can_read()) return (char)inb(COM1);
-        if(g_irq_on){ int k=kbring_pop(); if(k>=0) return (char)k; }
-        else { int k=kbd_poll(); if(k>0) return (char)k; }
+        int k=kbring_pop(); if(k>=0) return (char)k;      /* IRQ-driven key, if any */
+        __asm__ volatile("cli");
+        int p=kbd_poll();                                 /* race-free direct poll */
+        __asm__ volatile("sti");
+        if(p>0) return (char)p;
     }
 }
 
