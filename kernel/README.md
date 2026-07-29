@@ -83,6 +83,29 @@ The whole thing — the store client, the wallet/ledger (`bank`), the apps — i
 Larzscript; the kernel just provides an outbound TCP/HTTP client through the
 virtual file `/net/get/<host>/<path>`.
 
+### Server edition — init + services
+
+The shipped build boots like a Linux server: **`init`** brings the system up with
+a `[ ok ]` boot log (filesystem, RTC clock, network + IP, wallet, enabled
+services) and hands off to a login shell (`root@<host>:<cwd> ($balance)$`).
+
+```
+  LarzOS  -  the money-native operating system
+  booting larz-prod ...
+  [  ok  ] mounted filesystem  (/ ramfs, /home persistent)
+  [  ok  ] system clock synced from RTC
+  [  ok  ] network up  (ip: 10.0.2.15)
+  [  ok  ] services enabled: web
+root@larz-prod:/ ($99.93)$ service start web
+```
+
+A **`service`** manager (systemctl-style: `list`/`enable`/`disable`/`start`,
+config persisted) runs registered services; the **`web`** service is the
+Larzscript HTTP server, which logs each request with a timestamp to a file you
+read with **`logs`**. `hostname`, `date`, `uptime`, `netstat`, `ping`, `ledger`,
+and the `pkg` App Store round out the admin toolkit — all Larzscript, all
+persisting across reboots.
+
 ### Clock & networking
 
 A CMOS/RTC driver gives real wall-clock time and a PIT-calibrated TSC gives a

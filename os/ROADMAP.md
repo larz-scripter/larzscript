@@ -70,10 +70,14 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   **`ledger`**, and installs survive reboots. This is the unique thing: money is
   a first-class OS primitive, so the app store is money-native. Verified over
   QEMU.
+- Also ✅: **server edition** — an `init` with a `[ ok ]` boot log, a systemctl-
+  style **`service`** manager, a persisted **`hostname`** in the login prompt, and
+  a web server that **logs requests** (viewable with `logs`). Boots like a Linux
+  server; all state persists across reboots.
 - Next: a multi-connection / keep-alive web server; interrupt-driven I/O; a
-  bigger on-disk filesystem; `init.lz` supervising services; and more money-
-  native OS features (per-process gas accounting, HTTP 402 paywalls served by
-  the kernel). Userland stays 100% Larzscript.
+  bigger on-disk filesystem; auto-starting enabled services at boot; users/login;
+  and more money-native OS features (per-process gas accounting, kernel HTTP 402
+  paywalls). Userland stays 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most
