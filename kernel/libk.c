@@ -194,11 +194,38 @@ static void pic_remap(void){
     outb(0x21,0x01); outb(0xA1,0x01);
     outb(0x21,0xFC); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) + IRQ1 (kbd) */
 }
+
+/* ---- 8042 PS/2 controller bring-up ----
+ * REQUIRED on real hardware and VirtualBox; QEMU is lax and delivers keyboard
+ * IRQs even from an uninitialised controller, which is why serial/QEMU boots
+ * "just work" but a VM's physical keyboard is dead. We enable the first port,
+ * set the IRQ1-enable bit in the config byte (leaving translation ON so the
+ * controller keeps emitting scancode set 1, which our kmap decodes), and tell
+ * the keyboard device itself to start scanning (0xF4) - VirtualBox needs that. */
+static void i8042_wait_in(void){ for(int i=0;i<200000 && (inb(0x64)&2); i++){} }   /* input buffer empty -> ok to write */
+static void i8042_wait_out(void){ for(int i=0;i<200000 && !(inb(0x64)&1); i++){} } /* output buffer full  -> ok to read  */
+static void i8042_cmd(u8 c){ i8042_wait_in(); outb(0x64,c); }
+static void i8042_data(u8 c){ i8042_wait_in(); outb(0x60,c); }
+static void kbd_init(void){
+    i8042_cmd(0xAD); i8042_cmd(0xA7);                     /* disable both ports during setup */
+    while(inb(0x64)&1) (void)inb(0x60);                   /* flush the output buffer */
+    i8042_cmd(0x20); i8042_wait_out(); u8 cfg=inb(0x60);  /* read controller config byte */
+    cfg |=  0x01;                                         /* bit0: enable first-port (keyboard) IRQ1 */
+    cfg &= ~0x10;                                         /* bit4: clear first-port clock-disable -> port on */
+    cfg |=  0x40;                                         /* bit6: translation on -> scancode set 1 (matches kmap) */
+    i8042_cmd(0x60); i8042_data(cfg);                     /* write it back */
+    i8042_cmd(0xAE);                                      /* enable the first PS/2 port */
+    i8042_data(0xF4);                                     /* keyboard: enable scanning (start sending scancodes) */
+    i8042_wait_out(); (void)inb(0x60);                    /* eat the 0xFA ACK */
+    while(inb(0x64)&1) (void)inb(0x60);                   /* drain anything left */
+}
+
 void ints_init(void){
     for(int i=0;i<48;i++) idt_set(i, isr_stub_table[i]);
     struct idtptr p; p.limit=sizeof(g_idt)-1; p.base=(uint64_t)g_idt;
     __asm__ volatile("lidt %0"::"m"(p));
     pic_remap();
+    kbd_init();                                                            /* bring up the PS/2 keyboard (HW/VirtualBox) */
     outb(0x43,0x36); outb(0x40, 11932&0xFF); outb(0x40, (11932>>8)&0xFF);   /* PIT ch0 ~100 Hz */
     g_irq_on=1;
     __asm__ volatile("sti");
