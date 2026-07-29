@@ -1,62 +1,118 @@
-# webserver.lz - a money-native web server, in Larzscript, on bare metal.
-# Premium articles are paywalled: an unpaid request gets HTTP 402 Payment
-# Required; /buy settles the price from the OS wallet (FAILS CLOSED with no
-# funds) and records it; purchases persist across reboots. No Linux underneath.
+# webserver.lz - a money-native web SERVICE in Larzscript, on bare metal.
+# Visitors register/log in over HTTP (cookie sessions); each has their OWN wallet
+# ($10 signup bonus). Premium articles are paywalled: unpaid -> HTTP 402; /buy
+# charges THAT user's wallet (FAILS CLOSED), and ownership is per-user. Accounts,
+# balances and purchases persist across reboots (sessions are in-memory).
 import "bank" as bank
-let PAID = "/home/.larzos/web-purchases"
+let UDB = "/home/.larzos/webusers"       # user:passwordhash:balance_cents
+let PDB = "/home/.larzos/webpaid"        # user:item
+let SESSIONS = {}                        # sid -> user (in-memory)
+let TICK = [0]
 let ARTICLES = {
-  "welcome":  ["Welcome to LarzOS", "This whole site is served by a Larzscript program on a bare-metal 64-bit kernel.", 0],
-  "deepdive": ["LarzOS Deep Dive", "Premium: the kernel, the interpreter on bare metal, the money-native app store, all the way down.", 200],
-  "moat":     ["Why money-native wins", "Premium: because payments belong IN the operating system, not bolted on after.", 500]
+  "welcome":  ["Welcome", "A money-native web service on a bare-metal 64-bit kernel.", 0],
+  "deepdive": ["Deep Dive", "Premium: how LarzOS works, from the kernel up to the money-native app store.", 200],
+  "moat":     ["The Moat", "Premium: why payments belong IN the operating system, not bolted on.", 500]
 }
-fn _paid() {
-  let out = []
-  if file_exists(PAID) { for l in read_file(PAID).split("\n") { if l.strip() != "" { out.push(l.strip()) } } }
-  return out
-}
-fn _is_paid(item) { for i in _paid() { if i == item { return true } } return false }
-fn _mark(item) { let p = _paid(); p.push(item); mkdir("/home/.larzos"); write_file(PAID, join(p, "\n")) }
-fn qparse(q) {
+fn hash(s) { let h = 5381; for ch in s { h = (h * 33 + ord(ch)) % 2147483647 } return str(h) }
+fn _users() {
   let d = {}
-  for kv in q.split("&") { let p = kv.split("="); if len(p) >= 2 { d[p[0]] = p[1] } }
+  if file_exists(UDB) {
+    for l in read_file(UDB).split("\n") {
+      if l.strip() == "" { continue }
+      let p = l.split(":")
+      if len(p) >= 3 { d[p[0]] = [p[1], int(p[2])] }
+    }
+  }
   return d
 }
-fn page(title, body) { return "<!doctype html><title>" + title + " - LarzOS</title><h1>" + title + "</h1>" + body + "<p><a href=\"/\">home</a></p>" }
-fn home() {
-  let b = "<p>A <b>money-native</b> site served by Larzscript on bare metal. Wallet: " + bank.fmt(bank.balance()) + "</p><ul>"
+fn _save(d) { let ls = []; for u in keys(d) { ls.push(u + ":" + d[u][0] + ":" + str(d[u][1])) } mkdir("/home/.larzos"); write_file(UDB, join(ls, "\n")) }
+fn _register(u, pw) { let d = _users(); if d.has(u) { return false } d[u] = [hash(pw), 1000]; _save(d); return true }
+fn _verify(u, pw) { let d = _users(); return d.has(u) and d[u][0] == hash(pw) }
+fn _balance(u) { let d = _users(); return d.has(u) ? d[u][1] : 0 }
+fn _charge(u, c) { let d = _users(); if not d.has(u) or d[u][1] < c { return false } d[u][1] = d[u][1] - c; _save(d); return true }
+fn _paidset() { let s = []; if file_exists(PDB) { for l in read_file(PDB).split("\n") { if l.strip() != "" { s.push(l.strip()) } } } return s }
+fn _owns(u, item) { let k = u + ":" + item; for e in _paidset() { if e == k { return true } } return false }
+fn _grant(u, item) { let s = _paidset(); s.push(u + ":" + item); mkdir("/home/.larzos"); write_file(PDB, join(s, "\n")) }
+fn _newtok(u) { TICK[0] = TICK[0] + 1; let t = hash(u + "-" + str(TICK[0]) + "-" + str(int(clock() * 1000))); SESSIONS[t] = u; return t }
+fn qparse(q) { let d = {}; for kv in q.split("&") { let p = kv.split("="); if len(p) >= 2 { d[p[0]] = p[1] } } return d }
+fn _cookie(req) {
+  for l in req.split("\n") {
+    if l.starts_with("Cookie:") {
+      for part in l[7:].split(";") { let kv = part.strip().split("="); if len(kv) >= 2 and kv[0] == "sid" { return kv[1] } }
+    }
+  }
+  return ""
+}
+fn _user(req) { let sid = _cookie(req); return SESSIONS.has(sid) ? SESSIONS[sid] : "" }
+fn page(t, b) { return "<!doctype html><title>" + t + " - LarzOS</title><h1>" + t + "</h1>" + b + "<p><a href=\"/\">home</a></p>" }
+fn home(user) {
+  if user == "" {
+    return page("LarzOS", "<p>A money-native web service on bare metal.</p>" +
+      "<p><a href=\"/register?user=alice&pw=pw\">register</a> or " +
+      "<a href=\"/login?user=alice&pw=pw\">log in</a> (demo: alice/pw)</p>")
+  }
+  let b = "<p>Signed in as <b>" + user + "</b> &mdash; wallet " + bank.fmt(_balance(user)) + " (<a href=\"/logout\">logout</a>)</p><ul>"
   for k in keys(ARTICLES) {
     let a = ARTICLES[k]
-    b = b + "<li><a href=\"/read?item=" + k + "\">" + a[0] + "</a> &mdash; " + (a[2] == 0 ? "free" : bank.fmt(a[2])) + "</li>"
+    let tag = a[2] == 0 ? "free" : (_owns(user, k) ? "owned" : bank.fmt(a[2]))
+    b = b + "<li><a href=\"/read?item=" + k + "\">" + a[0] + "</a> &mdash; " + tag + "</li>"
   }
   return page("LarzOS", b + "</ul>")
 }
-fn route(path, query) {
+fn route(req, path, query) {
   let q = qparse(query)
-  if path == "/" or path == "" { return [200, home()] }
+  let user = _user(req)
+  if path == "/" or path == "" { return [200, home(user), ""] }
+  if path == "/register" {
+    let u = q.has("user") ? q["user"] : ""
+    let pw = q.has("pw") ? q["pw"] : ""
+    if u == "" { return [400, page("Error", "<p>need user + pw</p>"), ""] }
+    if not _register(u, pw) { return [200, page("Exists", "<p>user exists</p>"), ""] }
+    return [200, page("Registered", "<p>Welcome " + u + "! " + bank.fmt(1000) + " signup bonus credited.</p>"), "Set-Cookie: sid=" + _newtok(u) + "; Path=/\r\n"]
+  }
+  if path == "/login" {
+    let u = q.has("user") ? q["user"] : ""
+    let pw = q.has("pw") ? q["pw"] : ""
+    if not _verify(u, pw) { return [401, page("Denied", "<p>bad credentials</p>"), ""] }
+    return [200, page("Logged in", "<p>Welcome back, " + u + ".</p>"), "Set-Cookie: sid=" + _newtok(u) + "; Path=/\r\n"]
+  }
+  if path == "/logout" { return [200, page("Bye", "<p>logged out</p>"), "Set-Cookie: sid=; Path=/\r\n"] }
+  if path == "/wallet" {
+    if user == "" { return [401, page("Login", "<p>log in first</p>"), ""] }
+    return [200, page("Wallet", "<p>" + user + ": " + bank.fmt(_balance(user)) + "</p>"), ""]
+  }
   if path == "/read" {
     let item = q.has("item") ? q["item"] : ""
-    if not ARTICLES.has(item) { return [404, page("Not found", "<p>No such article.</p>")] }
+    if not ARTICLES.has(item) { return [404, page("Not found", "<p>404</p>"), ""] }
     let a = ARTICLES[item]
-    if a[2] == 0 or _is_paid(item) { return [200, page(a[0], "<p>" + a[1] + "</p>")] }
-    return [402, page("Payment Required", "<p>&#128274; '" + a[0] + "' costs " + bank.fmt(a[2]) + ".</p><p><a href=\"/buy?item=" + item + "\">Pay " + bank.fmt(a[2]) + " to unlock</a></p>")]
+    if a[2] == 0 { return [200, page(a[0], "<p>" + a[1] + "</p>"), ""] }
+    if user == "" { return [401, page("Login required", "<p>log in to read premium content</p>"), ""] }
+    if _owns(user, item) { return [200, page(a[0], "<p>" + a[1] + "</p>"), ""] }
+    return [402, page("Payment Required", "<p>&#128274; costs " + bank.fmt(a[2]) + ". <a href=\"/buy?item=" + item + "\">Pay from your wallet (" + bank.fmt(_balance(user)) + ")</a></p>"), ""]
   }
   if path == "/buy" {
     let item = q.has("item") ? q["item"] : ""
-    if not ARTICLES.has(item) { return [404, page("Not found", "<p>No such article.</p>")] }
+    if not ARTICLES.has(item) { return [404, page("Not found", "<p>404</p>"), ""] }
+    if user == "" { return [401, page("Login", "<p>log in first</p>"), ""] }
     let a = ARTICLES[item]
-    if a[2] == 0 { return [200, page("Free", "<p><a href=\"/read?item=" + item + "\">read it</a></p>")] }
-    if _is_paid(item) { return [200, page("Already yours", "<p><a href=\"/read?item=" + item + "\">read it</a></p>")] }
-    if bank.debit(a[2], "web: " + item) {
-      _mark(item)
-      return [200, page("Payment accepted", "<p>Paid " + bank.fmt(a[2]) + ". Wallet now " + bank.fmt(bank.balance()) + ".</p><p><a href=\"/read?item=" + item + "\">Read " + a[0] + "</a></p>")]
+    if a[2] == 0 or _owns(user, item) { return [200, page("OK", "<p><a href=\"/read?item=" + item + "\">read</a></p>"), ""] }
+    if _charge(user, a[2]) {
+      _grant(user, item)
+      return [200, page("Paid", "<p>" + user + " paid " + bank.fmt(a[2]) + "; balance now " + bank.fmt(_balance(user)) + ".</p>"), ""]
     }
-    return [402, page("Payment Required", "<p>Insufficient funds (wallet " + bank.fmt(bank.balance()) + "). Fund it and retry.</p>")]
+    return [402, page("Payment Required", "<p>Insufficient funds: balance " + bank.fmt(_balance(user)) + ", need " + bank.fmt(a[2]) + ".</p>"), ""]
   }
-  return [404, page("Not found", "<p>404</p>")]
+  return [404, page("Not found", "<p>404</p>"), ""]
 }
-fn statusline(code) { return code == 200 ? "200 OK" : (code == 402 ? "402 Payment Required" : "404 Not Found") }
+fn statusline(c) {
+  if c == 200 { return "200 OK" }
+  if c == 401 { return "401 Unauthorized" }
+  if c == 402 { return "402 Payment Required" }
+  if c == 400 { return "400 Bad Request" }
+  return "404 Not Found"
+}
 mkdir("/home/.larzos")
-print("LarzOS money-native web server on port 80")
+print("LarzOS money-native web service on port 80")
 while true {
   let req = read_file("/net/http/accept")
   let pq = "/"
@@ -65,9 +121,9 @@ while true {
   let path = pq
   let query = ""
   if pq.contains("?") { let sp = pq.split("?"); path = sp[0]; query = len(sp) > 1 ? sp[1] : "" }
-  let r = route(path, query)
+  let r = route(req, path, query)
   let body = r[1]
-  let resp = "HTTP/1.0 " + statusline(r[0]) + "\r\nContent-Type: text/html\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+  let resp = "HTTP/1.0 " + statusline(r[0]) + "\r\nContent-Type: text/html\r\n" + r[2] + "Content-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
   write_file("/net/http/reply", resp)
   append_file("/home/.larzos/web.log", str(int(time())) + "  " + str(r[0]) + " " + path + "\n")
   print("served " + str(r[0]) + " " + path)
