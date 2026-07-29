@@ -89,10 +89,13 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
 - Also ✅: **file permissions** — home-directory privacy enforced by the kernel
   (each `/home/<user>` is private, `root` sees all), tracking the current user
   via `/dev/user` (set at login/`su`).
-- Next: a multi-connection / keep-alive web server; interrupt-driven I/O
-  (IDT/PIC/timer); per-process gas accounting enforced by the kernel; full path
-  resolution in the permission check; and settling the web treasury to the OS
-  wallet. Userland stays 100% Larzscript.
+- Also ✅: **real interrupts** — an IDT, an 8259 PIC remap, a **100 Hz PIT timer**
+  IRQ (`/proc/uptime`), an **interrupt-driven keyboard**, and CPU exception
+  handlers (print + halt instead of a silent triple fault). The foundation a real
+  OS runs on.
+- Next: **preemptive multitasking / cooperative scheduling** on the timer tick; a
+  multi-connection web server; per-process gas accounting enforced by the kernel;
+  full path resolution in the permission check. Userland stays 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most

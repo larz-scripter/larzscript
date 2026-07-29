@@ -210,6 +210,10 @@ REPL only.
   subtree. `/home` is restored from disk at boot and re-synced on every write/
   `mkdir`/`rm`/`rename`, so files there — including the compute wallet —
   **persist across reboots**. No disk attached ⇒ it cleanly runs RAM-only.
+- **Interrupts** (`interrupt.S` + `libk.c`) — a full IDT, an 8259 PIC remap, a
+  **PIT timer at 100 Hz** (IRQ0 → a tick counter at `/proc/uptime`), and an
+  **interrupt-driven keyboard** (IRQ1 fills a ring buffer). CPU exceptions print
+  `CPU exception N … RIP` and halt instead of a silent triple fault.
 - **PS/2 keyboard + VGA console** (in `libk.c`) — a polled scancode-set-1
   keyboard driver (shift/caps) gives **local input on real hardware / a VM**, and
   a scrolling VGA text console with a hardware cursor gives local output. Input
