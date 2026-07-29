@@ -1,33 +1,74 @@
-# webserver.lz - a money-native HTTP server written in Larzscript, on bare metal.
-wallet treasury
-price pro = $5.00
-
-fn html(path) {
-  if path == "/pay" {
-    return "<!doctype html><title>LarzOS</title><h1>Pro unlocked</h1>" +
-      "<p>Thanks! " + str(pro) + " settles to the treasury (money is a language primitive).</p>" +
-      "<p><a href=\"/\">&larr; home</a></p>"
-  }
-  return "<!doctype html><title>LarzOS</title>" +
-    "<h1>Hello from LarzOS</h1>" +
-    "<p>This page is served by a <b>Larzscript</b> program running on a bare-metal " +
-    "64-bit kernel &mdash; no Linux underneath.</p>" +
-    "<p>Money is native to the language: <code>price pro = $5.00</code> &rarr; " + str(pro) + "</p>" +
-    "<p><a href=\"/pay\">Unlock Pro (" + str(pro) + ")</a></p>"
+# webserver.lz - a money-native web server, in Larzscript, on bare metal.
+# Premium articles are paywalled: an unpaid request gets HTTP 402 Payment
+# Required; /buy settles the price from the OS wallet (FAILS CLOSED with no
+# funds) and records it; purchases persist across reboots. No Linux underneath.
+import "bank" as bank
+let PAID = "/home/.larzos/web-purchases"
+let ARTICLES = {
+  "welcome":  ["Welcome to LarzOS", "This whole site is served by a Larzscript program on a bare-metal 64-bit kernel.", 0],
+  "deepdive": ["LarzOS Deep Dive", "Premium: the kernel, the interpreter on bare metal, the money-native app store, all the way down.", 200],
+  "moat":     ["Why money-native wins", "Premium: because payments belong IN the operating system, not bolted on after.", 500]
 }
-
+fn _paid() {
+  let out = []
+  if file_exists(PAID) { for l in read_file(PAID).split("\n") { if l.strip() != "" { out.push(l.strip()) } } }
+  return out
+}
+fn _is_paid(item) { for i in _paid() { if i == item { return true } } return false }
+fn _mark(item) { let p = _paid(); p.push(item); mkdir("/home/.larzos"); write_file(PAID, join(p, "\n")) }
+fn qparse(q) {
+  let d = {}
+  for kv in q.split("&") { let p = kv.split("="); if len(p) >= 2 { d[p[0]] = p[1] } }
+  return d
+}
+fn page(title, body) { return "<!doctype html><title>" + title + " - LarzOS</title><h1>" + title + "</h1>" + body + "<p><a href=\"/\">home</a></p>" }
+fn home() {
+  let b = "<p>A <b>money-native</b> site served by Larzscript on bare metal. Wallet: " + bank.fmt(bank.balance()) + "</p><ul>"
+  for k in keys(ARTICLES) {
+    let a = ARTICLES[k]
+    b = b + "<li><a href=\"/read?item=" + k + "\">" + a[0] + "</a> &mdash; " + (a[2] == 0 ? "free" : bank.fmt(a[2])) + "</li>"
+  }
+  return page("LarzOS", b + "</ul>")
+}
+fn route(path, query) {
+  let q = qparse(query)
+  if path == "/" or path == "" { return [200, home()] }
+  if path == "/read" {
+    let item = q.has("item") ? q["item"] : ""
+    if not ARTICLES.has(item) { return [404, page("Not found", "<p>No such article.</p>")] }
+    let a = ARTICLES[item]
+    if a[2] == 0 or _is_paid(item) { return [200, page(a[0], "<p>" + a[1] + "</p>")] }
+    return [402, page("Payment Required", "<p>&#128274; '" + a[0] + "' costs " + bank.fmt(a[2]) + ".</p><p><a href=\"/buy?item=" + item + "\">Pay " + bank.fmt(a[2]) + " to unlock</a></p>")]
+  }
+  if path == "/buy" {
+    let item = q.has("item") ? q["item"] : ""
+    if not ARTICLES.has(item) { return [404, page("Not found", "<p>No such article.</p>")] }
+    let a = ARTICLES[item]
+    if a[2] == 0 { return [200, page("Free", "<p><a href=\"/read?item=" + item + "\">read it</a></p>")] }
+    if _is_paid(item) { return [200, page("Already yours", "<p><a href=\"/read?item=" + item + "\">read it</a></p>")] }
+    if bank.debit(a[2], "web: " + item) {
+      _mark(item)
+      return [200, page("Payment accepted", "<p>Paid " + bank.fmt(a[2]) + ". Wallet now " + bank.fmt(bank.balance()) + ".</p><p><a href=\"/read?item=" + item + "\">Read " + a[0] + "</a></p>")]
+    }
+    return [402, page("Payment Required", "<p>Insufficient funds (wallet " + bank.fmt(bank.balance()) + "). Fund it and retry.</p>")]
+  }
+  return [404, page("Not found", "<p>404</p>")]
+}
+fn statusline(code) { return code == 200 ? "200 OK" : (code == 402 ? "402 Payment Required" : "404 Not Found") }
 mkdir("/home/.larzos")
-print("LarzOS web server listening on port 80")
+print("LarzOS money-native web server on port 80")
 while true {
   let req = read_file("/net/http/accept")
-  let path = "/"
-  let first = req.split("\n")[0]
-  let parts = first.split(" ")
-  if len(parts) > 1 { path = parts[1] }
-  let body = html(path)
-  let resp = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: " +
-             str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+  let pq = "/"
+  let parts = req.split("\n")[0].split(" ")
+  if len(parts) > 1 { pq = parts[1] }
+  let path = pq
+  let query = ""
+  if pq.contains("?") { let sp = pq.split("?"); path = sp[0]; query = len(sp) > 1 ? sp[1] : "" }
+  let r = route(path, query)
+  let body = r[1]
+  let resp = "HTTP/1.0 " + statusline(r[0]) + "\r\nContent-Type: text/html\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
   write_file("/net/http/reply", resp)
-  append_file("/home/.larzos/web.log", str(int(time())) + "  GET " + path + "\n")
-  print("served " + path)
+  append_file("/home/.larzos/web.log", str(int(time())) + "  " + str(r[0]) + " " + path + "\n")
+  print("served " + str(r[0]) + " " + path)
 }
