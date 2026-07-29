@@ -10,4 +10,5 @@ char serial_getc(void);
 char console_getc(void);          /* blocks on serial OR the PS/2 keyboard */
 int  serial_can_read(void);
 void qemu_exit(unsigned char code);
+void kbd_diag(void);              /* raw 8042 keyboard diagnostic (never returns) */
 #endif

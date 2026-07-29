@@ -14,12 +14,15 @@ int larz_main(int argc, char **argv);
 
 void kernel_main(void){
     console_init();
+#ifdef LARZ_KBDDIAG
+    kbd_diag();                    /* raw keyboard diagnostic (never returns) */
+#endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */
     sched_init();                  /* preemptive scheduler + background tasks */
     vfs_init();                    /* mount the writable filesystem */
     printf("\n");
     net_selftest();                /* detect the NIC + ping the gateway */
-    printf("  input: PS/2 keyboard = IRQ1 + timer-poll backup  [build kbd8]\n");
+    printf("  input: PS/2 keyboard = direct poll; UART-absent safe  [build kbd11]\n");
     printf("  LarzOS  -  the money-native operating system\n");
     printf("  kernel (Stage 1): 64-bit long mode, no Linux underneath.\n");
     printf("  The Larzscript interpreter is running on bare metal.\n");
