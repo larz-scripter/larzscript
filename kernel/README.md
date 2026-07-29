@@ -160,6 +160,18 @@ curl http://localhost:8080/
 Build it with `EXTRA=-DLARZ_SERVER` (boots straight into the server), or just run
 `webserver` inside `larzsh`.
 
+**HTTP 402 paywalls** — the money-native angle, applied to the web. Premium
+articles are paywalled: an unpaid request gets a real **`HTTP/1.0 402 Payment
+Required`**; `GET /buy?item=…` settles the price from the OS wallet
+(`bank.debit`, **fails closed** with no funds) and marks it paid; then `GET
+/read?item=…` returns `200` with the content. Purchases persist across reboots.
+
+```
+$ curl -i .../read?item=deepdive   → HTTP/1.0 402 Payment Required
+$ curl    .../buy?item=deepdive     → Paid $2.00
+$ curl -i .../read?item=deepdive   → HTTP/1.0 200 OK   (and it stays 200 after reboot)
+```
+
 Build variants: default runs `/boot.lz` then halts (deterministic, for
 `make test`); `EXTRA=-DLARZ_SHELL` = demo then the shell (shipped);
 `EXTRA=-DLARZ_DEMO_REPL` = demo then a raw `larz>` REPL; `EXTRA=-DLARZ_REPL` =
