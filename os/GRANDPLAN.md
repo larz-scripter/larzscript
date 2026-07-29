@@ -10,7 +10,7 @@ userland, all persistent.
 This plan takes it the rest of the way, in dependency order. Each phase ships a
 verifiable milestone.
 
-## Phase 1 — Per-process gas (money-native CPU metering)   ★ the moat
+## Phase 1 — Per-process gas (money-native CPU metering)   ✅ DONE
 The deepest money-native feature and a runaway-program killer, using the timer +
 scheduler we just built.
 - Kernel: meter CPU as timer ticks per command; a budget the kernel enforces.
@@ -23,7 +23,7 @@ scheduler we just built.
 - Verify: a normal command is cheap and completes; an infinite `spin` is killed
   after its budget and billed the maximum.
 
-## Phase 2 — Useful concurrency (web server + shell at once)
+## Phase 2 — Useful concurrency (web server + shell at once)   ⏳ large refactor (interpreter reentrancy) - deferred
 Make multitasking *useful* by running two Larzscript programs concurrently.
 - The interpreter's file-scope state (GC head, error jmp, module cache) becomes
   per-instance (an `Interp`-owned context), so two interpreter tasks don't
@@ -31,14 +31,14 @@ Make multitasking *useful* by running two Larzscript programs concurrently.
 - Run the web service as a background task while the shell stays interactive.
 - Verify: `curl` serves pages while you type commands in the shell.
 
-## Phase 3 — Networking depth
+## Phase 3 — Networking depth   ✅ DNS done; multi-connection deferred
 - **DNS** resolver (UDP) so `pkg`/HTTP client use hostnames, not just IPs.
 - **Multi-connection** web server (a small accept queue; serve back-to-back
   without dropping concurrent SYNs).
 - Sturdier TCP (basic retransmit/timeout).
 - Verify: `pkg` installs from a named host; two quick clients both get served.
 
-## Phase 4 — Filesystem depth
+## Phase 4 — Filesystem depth   ✅ full-path permission check done; per-file mode bits deferred
 - **Full path resolution** in the permission check (close the relative-traversal
   gap): resolve to an absolute path, then authorize.
 - Per-file **ownership + mode bits** (not just path-based home privacy); `ls -l`,
@@ -47,13 +47,13 @@ Make multitasking *useful* by running two Larzscript programs concurrently.
   trees persist efficiently.
 - Verify: ownership survives reboot; `chmod` denies/permits; a big file round-trips.
 
-## Phase 5 — Graphics (framebuffer)
+## Phase 5 — Graphics (framebuffer)   ⏳ future (large; not visible headless)
 - Switch to a **linear framebuffer** (VBE/GOP) instead of VGA text.
 - A font blitter, then a minimal windowing/status UI; the money-native dashboard
   (wallet, services, tasks) rendered graphically.
 - Verify: boots to a graphical screen in QEMU/VirtualBox.
 
-## Phase 6 — The language endgame (`larzc`)
+## Phase 6 — The language endgame (`larzc`)   ⏳ future (very large)
 - A **Larzscript → native code** compiler (emit C first, then direct codegen),
   so kernel-level code can be written in Larzscript and the C seed shrinks toward
   zero — the TempleOS-style "all one language" endgame.
