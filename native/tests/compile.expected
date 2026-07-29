@@ -1,4 +1,4 @@
 sq(9) = 81
 sum 1..100 = 5050
-fib-ish: 25
+squared: [100, 400, 900] len: 3 first: 100
 ternary: yes
