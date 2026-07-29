@@ -1768,6 +1768,9 @@ static void ss_copy(SSet *dst, SSet *src){ for(int i=0;i<src->n;i++) ss_add(dst,
 static Node **g_lams=0; static int g_nlams=0;      /* hoisted lambdas / nested fns (lam_id = index+1) */
 static Node **g_topfn=0; static int g_ntopfn=0;     /* top-level function nodes */
 static SSet   g_globals={0,0,0};                    /* top-level names (accessible everywhere) */
+typedef struct { char *alias, *prefix; SSet fns, globals; } Import;   /* an inlined module */
+static Import *g_imp=0; static int g_nimp=0;
+static Import *imp_find(const char *alias){ for(int i=0;i<g_nimp;i++) if(!strcmp(g_imp[i].alias,alias)) return &g_imp[i]; return 0; }
 static int is_topfn(const char *name, int *arity){ for(int i=0;i<g_ntopfn;i++) if(g_topfn[i]->name && !strcmp(g_topfn[i]->name,name)){ if(arity)*arity=g_topfn[i]->nparams; return 1; } return 0; }
 
 static void fv_stmt(Node *n, SSet *bound, SSet *out);
@@ -1847,9 +1850,17 @@ static void ec_expr(Node *n){
     case N_ARRAY: printf("lz_listn(%d",n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break;
     case N_DICT: printf("lz_dictn(%d",n->nkids/2); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break;
     case N_INDEX: printf("lz_index("); ec_expr(n->a); printf(","); ec_expr(n->b); printf(")"); break;
-    case N_METHOD: printf("lz_method("); ec_expr(n->a); printf(",\"%s\",%d", n->name, n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break;
+    case N_METHOD: {
+      if(n->a->kind==N_NAME){ Import*im=imp_find(n->a->name); if(im){ printf("%s%s(", im->prefix, n->name); for(int i=0;i<n->nkids;i++){ if(i)printf(","); ec_expr(n->kids[i]); } printf(")"); break; } }
+      printf("lz_method("); ec_expr(n->a); printf(",\"%s\",%d", n->name, n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break;
+    }
     case N_MONEY: printf("lzmoney(%lld.0)", n->cents); break;
     case N_GET:
+      if(n->a->kind==N_NAME){ Import*im=imp_find(n->a->name); if(im){
+        if(ss_has(&im->fns, n->name)){ int ar=0; char pn[512]; snprintf(pn,sizeof pn,"%s%s",im->prefix,n->name); is_topfn(pn,&ar); printf("lzclosure(__adapt_%s, %d, \"%s\", 0)", pn, ar, n->name); }
+        else printf("%s%s", im->prefix, n->name);   /* module global */
+        break;
+      } }
       if(!strcmp(n->name,"balance")){ printf("lz_wbal("); ec_expr(n->a); printf(")"); }
       else { fprintf(stderr,"larzc: unsupported property '.%s'\n", n->name); exit(1); }
       break;
@@ -2066,19 +2077,74 @@ static void emit_runtime(void){
   puts("static LZ lz_int(LZ v){return v.t==2?lznum((double)atoll(v.s)):lznum((double)(long long)v.n);}");
   puts("static LZ lz_str_(LZ v){return lzstr(lz_tostr(v));}");
 }
+/* ---- larzc static import: parse a module, mangle its symbols, inline it ----
+ * `import "m" as alias` is resolved + parsed at compile time; the module's
+ * top-level symbols are prefixed (__m_alias_) and inlined into the output, and
+ * alias.member references rewire to the prefixed name. (Dynamic imports and
+ * nested module imports are rejected with a clear error.) */
+static char g_srcdir[4096]="";
+
+static void rename_syms(Node *n, SSet *syms, const char *prefix){
+  if(!n) return;
+  switch(n->kind){
+    case N_NAME: case N_FN: case N_LET: case N_ASSIGN: case N_PRICE: case N_WALLET: case N_PAYWALL:
+      if(n->name && ss_has(syms,n->name)){ char*x=(char*)malloc(strlen(prefix)+strlen(n->name)+1); sprintf(x,"%s%s",prefix,n->name); n->name=x; } break;
+    default: break;
+  }
+  if(n->kind==N_PAY||n->kind==N_SUBSCRIBE){
+    if(n->src && ss_has(syms,n->src)){ char*x=(char*)malloc(strlen(prefix)+strlen(n->src)+1); sprintf(x,"%s%s",prefix,n->src); n->src=x; }
+    if(n->dst && ss_has(syms,n->dst)){ char*x=(char*)malloc(strlen(prefix)+strlen(n->dst)+1); sprintf(x,"%s%s",prefix,n->dst); n->dst=x; }
+  }
+  rename_syms(n->a,syms,prefix); rename_syms(n->b,syms,prefix); rename_syms(n->c,syms,prefix);
+  for(int i=0;i<n->nkids;i++) rename_syms(n->kids[i],syms,prefix);
+}
+static char *imp_resolve(const char *want){
+  static char buf[4096]; FILE*f; const char *exts[2]={"",".lz"};
+  for(int e=0;e<2;e++){
+    if(g_srcdir[0]){ snprintf(buf,sizeof buf,"%s/%s%s",g_srcdir,want,exts[e]); if((f=fopen(buf,"rb"))){fclose(f);return buf;} }
+    snprintf(buf,sizeof buf,"%s%s",want,exts[e]); if((f=fopen(buf,"rb"))){fclose(f);return buf;}
+  }
+  const char *lp=getenv("LARZSCRIPT_PATH");
+  if(lp){ char tmp[4096]; strncpy(tmp,lp,sizeof tmp-1); tmp[sizeof tmp-1]=0; for(char*d=strtok(tmp,":");d;d=strtok(0,":")) for(int e=0;e<2;e++){ snprintf(buf,sizeof buf,"%s/%s%s",d,want,exts[e]); if((f=fopen(buf,"rb"))){fclose(f);return buf;} } }
+  return 0;
+}
+/* parse a module, prefix its symbols, and append its top-level nodes to *T */
+static void load_module(Node *imp, Node ***T, int *nT){
+  if(imp->a->kind!=N_STR){ fprintf(stderr,"larzc: dynamic import is unsupported (import needs a literal path)\n"); exit(1); }
+  char *file=imp_resolve(imp->a->str);
+  if(!file){ fprintf(stderr,"larzc: cannot find module '%s'\n", imp->a->str); exit(1); }
+  Node *mp=parse_program(lex(read_all(file)));
+  Import im; im.alias=imp->name?imp->name:imp->a->str; memset(&im.fns,0,sizeof im.fns); memset(&im.globals,0,sizeof im.globals);
+  char pfx[256]; snprintf(pfx,sizeof pfx,"__m_%s_", im.alias); im.prefix=strdup(pfx);
+  SSet syms={0,0,0};
+  for(int i=0;i<mp->nkids;i++){ Node*k=mp->kids[i];
+    if(k->kind==N_IMPORT){ fprintf(stderr,"larzc: nested import in module '%s' is unsupported\n", im.alias); exit(1); }
+    if(k->kind==N_FN && k->name){ ss_add(&syms,k->name); ss_add(&im.fns,k->name); }
+    else if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL)&&k->name){ ss_add(&syms,k->name); ss_add(&im.globals,k->name); }
+  }
+  rename_syms(mp, &syms, im.prefix);
+  for(int i=0;i<mp->nkids;i++){ *T=(Node**)realloc(*T,(*nT+1)*sizeof(Node*)); (*T)[(*nT)++]=mp->kids[i]; }
+  g_imp=(Import*)realloc(g_imp,(g_nimp+1)*sizeof(Import)); g_imp[g_nimp++]=im;
+}
 static void emit_topfn_sig(Node *k){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf(")"); }
 static void emit_c(Node *prog){
   emit_runtime();
+  /* Build the combined top-level: inlined module nodes (in import order) then the
+   * main program's non-import nodes. Everything downstream treats this uniformly. */
+  Node **T=0; int nT=0;
+  for(int i=0;i<prog->nkids;i++) if(prog->kids[i]->kind==N_IMPORT) load_module(prog->kids[i], &T, &nT);
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_IMPORT) continue; T=(Node**)realloc(T,(nT+1)*sizeof(Node*)); T[nT++]=k; }
+
   /* gather top-level globals + functions */
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i];
+  for(int i=0;i<nT;i++){ Node*k=T[i];
     if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) && k->name) ss_add(&g_globals, k->name);
     if(k->kind==N_FN && k->name){ ss_add(&g_globals, k->name); g_topfn=(Node**)realloc(g_topfn,(g_ntopfn+1)*sizeof(Node*)); g_topfn[g_ntopfn++]=k; }
   }
   /* give every nested lambda / nested named fn a hoist id */
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN) collect_lams(k->b); else collect_lams(k); }
+  for(int i=0;i<nT;i++){ Node*k=T[i]; if(k->kind==N_FN) collect_lams(k->b); else collect_lams(k); }
 
   /* top-level let/price/wallet/paywall become C globals so functions can reference them */
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) && k->name) printf("LZ %s;\n", k->name); }
+  for(int i=0;i<nT;i++){ Node*k=T[i]; if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) && k->name) printf("LZ %s;\n", k->name); }
   /* forward declarations: top-level fns + their value-adapters + hoisted lambdas */
   for(int i=0;i<g_ntopfn;i++){ emit_topfn_sig(g_topfn[i]); printf(";\n"); printf("LZ __adapt_%s(LZ*,LZ*);\n", g_topfn[i]->name); }
   for(int i=0;i<g_nlams;i++) printf("LZ __lam%d(LZ*,LZ*);\n", g_lams[i]->lam_id);
@@ -2097,7 +2163,7 @@ static void emit_c(Node *prog){
     printf("  return lznil();\n}\n");
   }
   printf("int main(void){\n");
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i];
+  for(int i=0;i<nT;i++){ Node*k=T[i];
     if(k->kind==N_FN) continue;
     if(k->kind==N_LET||k->kind==N_PRICE){ ec_ind(1); printf("%s = ", k->name); ec_expr(k->a); printf(";\n"); }
     else if(k->kind==N_WALLET){ ec_ind(1); printf("%s = lzwallet(", k->name); if(k->a){ printf("("); ec_expr(k->a); printf(").n"); } else printf("0"); printf(");\n"); }
@@ -2146,6 +2212,7 @@ int main(int argc, char **argv){
 
   if(want_emit_c){                       /* larzc: transpile to C on stdout */
     if(!path){ fprintf(stderr,"larzscript --emit-c: needs a file\n"); return 1; }
+    { const char*sl=strrchr(path,'/'); if(sl){ size_t d=(size_t)(sl-path); if(d<sizeof g_srcdir){ memcpy(g_srcdir,path,d); g_srcdir[d]=0; } } }  /* module base dir */
     char *src=read_all(path);
     if(setjmp(g_err)){ fprintf(stderr,"%s: SyntaxError: %s\n", path, g_errmsg); return 1; }
     emit_c(parse_program(lex(src)));
