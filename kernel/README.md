@@ -214,6 +214,10 @@ REPL only.
   **PIT timer at 100 Hz** (IRQ0 → a tick counter at `/proc/uptime`), and an
   **interrupt-driven keyboard** (IRQ1 fills a ring buffer). CPU exceptions print
   `CPU exception N … RIP` and halt instead of a silent triple fault.
+- **Preemptive multitasking** — a round-robin **scheduler** switches tasks on the
+  timer tick with a full context switch through the interrupt frame. The
+  interpreter runs as one task; `/proc/tasks` shows background tasks advancing
+  concurrently while the shell stays interactive.
 - **PS/2 keyboard + VGA console** (in `libk.c`) — a polled scancode-set-1
   keyboard driver (shift/caps) gives **local input on real hardware / a VM**, and
   a scrolling VGA text console with a hardware cursor gives local output. Input

@@ -93,8 +93,12 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   IRQ (`/proc/uptime`), an **interrupt-driven keyboard**, and CPU exception
   handlers (print + halt instead of a silent triple fault). The foundation a real
   OS runs on.
-- Next: **preemptive multitasking / cooperative scheduling** on the timer tick; a
-  multi-connection web server; per-process gas accounting enforced by the kernel;
+- Also ✅: **preemptive multitasking** — a round-robin, context-switching
+  scheduler on the timer tick. The interpreter is one task; background tasks run
+  concurrently (`/proc/tasks`). A genuine scheduler on bare metal.
+- Next: run **multiple interpreter tasks** (e.g. the web server as a background
+  task alongside the shell — needs the interpreter made reentrant or per-task
+  state); a multi-connection web server; per-process gas accounting on the timer;
   full path resolution in the permission check. Userland stays 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
