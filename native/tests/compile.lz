@@ -1,0 +1,7 @@
+fn sq(n) { return n * n }
+fn sumto(n) { let t = 0; for i in range(1, n + 1) { t = t + i } return t }
+print("sq(9) =", sq(9))
+print("sum 1..100 =", sumto(100))
+print("fib-ish:", sq(3) + sq(4))
+let msg = "ok" == "ok" ? "yes" : "no"
+print("ternary:", msg)

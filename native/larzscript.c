@@ -1514,7 +1514,7 @@ static int bracket_depth(const char *s){
 static void repl(Interp *ip){
   char line[8192];
   static char buf[1<<16]; buf[0]=0;
-  printf("Larzscript native REPL (v1.12.0) - type statements; Ctrl-D to exit.\n"
+  printf("Larzscript native REPL (v1.13.0) - type statements; Ctrl-D to exit.\n"
          "Definitions can span multiple lines; the '..... ' prompt means more is expected.\n");
   for(;;){
     printf(buf[0] ? "..... " : "larz> "); fflush(stdout);
@@ -1737,20 +1737,141 @@ static const char *USAGE =
   "  larzscript repl                start the interactive REPL\n"
   "  larzscript fmt <file.lz>       print the file, canonically formatted\n"
   "  larzscript --check <file.lz>   syntax-check a file (for editors / CI)\n"
+  "  larzscript --emit-c <file.lz>  compile to C (larzc: gcc it for a native binary)\n"
   "  larzscript [--ledger] <file>   also print the money ledger afterwards\n"
   "  larzscript --version | --help\n";
 
+/* ======================================================================
+ * larzc: a Larzscript -> C compiler backend (--emit-c). Handles a general-
+ * purpose subset (numbers, strings, bools, functions, arithmetic/compare/logic,
+ * if/while/for-in-range, ternary, and print/str/int/len) via a small tagged
+ * value runtime, so gcc can compile it to a native binary.
+ * ==================================================================== */
+static void ec_expr(Node *n);
+static int  ec_lc=0;
+static void ec_str_lit(const char *s){ putchar('"'); for(const char*p=s;*p;p++){ if(*p=='"'||*p=='\\') putchar('\\'); if(*p=='\n'){ printf("\\n"); continue; } if(*p=='\t'){ printf("\\t"); continue; } putchar(*p); } putchar('"'); }
+static void ec_binop(Node *n, const char *fn){ printf("%s(",fn); ec_expr(n->a); printf(","); ec_expr(n->b); printf(")"); }
+static void ec_cmp(Node *n, int op){ printf("lz_cmp("); ec_expr(n->a); printf(","); ec_expr(n->b); printf(",%d)",op); }
+static void ec_expr(Node *n){
+  switch(n->kind){
+    case N_NUM: printf("lznum(%.17g)", n->num); break;
+    case N_STR: printf("lzstr("); ec_str_lit(n->str); printf(")"); break;
+    case N_BOOL: printf("lzbool(%d)", n->boolean); break;
+    case N_NIL: printf("lznil()"); break;
+    case N_NAME: printf("%s", n->name); break;
+    case N_UN:
+      if(strcmp(n->op,"not")==0){ printf("lzbool(!lztruthy("); ec_expr(n->a); printf("))"); }
+      else { printf("lz_sub(lznum(0),"); ec_expr(n->a); printf(")"); }
+      break;
+    case N_TERNARY: printf("(lztruthy("); ec_expr(n->a); printf(")?("); ec_expr(n->b); printf("):("); ec_expr(n->c); printf("))"); break;
+    case N_BIN: {
+      const char*o=n->op;
+      if(!strcmp(o,"+")) ec_binop(n,"lz_add");
+      else if(!strcmp(o,"-")) ec_binop(n,"lz_sub");
+      else if(!strcmp(o,"*")) ec_binop(n,"lz_mul");
+      else if(!strcmp(o,"/")) ec_binop(n,"lz_div");
+      else if(!strcmp(o,"%")) ec_binop(n,"lz_mod");
+      else if(!strcmp(o,"//")) ec_binop(n,"lz_idiv");
+      else if(!strcmp(o,"**")) ec_binop(n,"lz_pow");
+      else if(!strcmp(o,"and")) ec_binop(n,"lz_and");
+      else if(!strcmp(o,"or")) ec_binop(n,"lz_or");
+      else if(!strcmp(o,"==")) ec_cmp(n,0);
+      else if(!strcmp(o,"!=")) ec_cmp(n,1);
+      else if(!strcmp(o,"<")) ec_cmp(n,2);
+      else if(!strcmp(o,">")) ec_cmp(n,3);
+      else if(!strcmp(o,"<=")) ec_cmp(n,4);
+      else if(!strcmp(o,">=")) ec_cmp(n,5);
+      else { fprintf(stderr,"larzc: unsupported operator '%s'\n",o); exit(1); }
+      break;
+    }
+    case N_CALL: {
+      if(n->a->kind!=N_NAME){ fprintf(stderr,"larzc: only named calls are supported\n"); exit(1); }
+      const char*fn=n->a->name;
+      if(!strcmp(fn,"print")){ printf("lz_print(%d",n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); }
+      else if(!strcmp(fn,"str")){ printf("lz_str_("); ec_expr(n->kids[0]); printf(")"); }
+      else if(!strcmp(fn,"int")){ printf("lz_int("); ec_expr(n->kids[0]); printf(")"); }
+      else if(!strcmp(fn,"len")){ printf("lz_len("); ec_expr(n->kids[0]); printf(")"); }
+      else { printf("%s(",fn); for(int i=0;i<n->nkids;i++){ if(i)printf(","); ec_expr(n->kids[i]); } printf(")"); }
+      break;
+    }
+    default: fprintf(stderr,"larzc: unsupported expression (node %d)\n", n->kind); exit(1);
+  }
+}
+static void ec_ind(int d){ for(int i=0;i<d;i++) printf("  "); }
+static void ec_stmt(Node *n, int d){
+  switch(n->kind){
+    case N_LET: ec_ind(d); printf("LZ %s = ", n->name); ec_expr(n->a); printf(";\n"); break;
+    case N_ASSIGN: ec_ind(d); printf("%s = ", n->name); ec_expr(n->a); printf(";\n"); break;
+    case N_EXPR: ec_ind(d); ec_expr(n->a); printf(";\n"); break;
+    case N_RETURN: ec_ind(d); printf("return "); if(n->a) ec_expr(n->a); else printf("lznil()"); printf(";\n"); break;
+    case N_BLOCK: for(int i=0;i<n->nkids;i++) ec_stmt(n->kids[i],d); break;
+    case N_IF:
+      ec_ind(d); printf("if(lztruthy("); ec_expr(n->a); printf(")){\n"); ec_stmt(n->b,d+1); ec_ind(d); printf("}");
+      if(n->c){ printf(" else {\n"); ec_stmt(n->c,d+1); ec_ind(d); printf("}"); } printf("\n"); break;
+    case N_WHILE:
+      ec_ind(d); printf("while(lztruthy("); ec_expr(n->a); printf(")){\n"); ec_stmt(n->b,d+1); ec_ind(d); printf("}\n"); break;
+    case N_FOR: {
+      Node *it=n->a;
+      if(!(it->kind==N_CALL && it->a->kind==N_NAME && !strcmp(it->a->name,"range"))){ fprintf(stderr,"larzc: only 'for x in range(...)' is supported\n"); exit(1); }
+      Node *a0=it->nkids>0?it->kids[0]:NULL, *a1=it->nkids>1?it->kids[1]:NULL, *a2=it->nkids>2?it->kids[2]:NULL;
+      int lc=ec_lc++;
+      ec_ind(d); printf("for(long long _i%d=", lc);
+      if(a1){ printf("(long long)("); ec_expr(a0); printf(").n"); } else printf("0");
+      printf("; _i%d<(long long)(", lc); if(a1) ec_expr(a1); else ec_expr(a0); printf(").n; _i%d+=", lc);
+      if(a2){ printf("(long long)("); ec_expr(a2); printf(").n"); } else printf("1");
+      printf("){\n"); ec_ind(d+1); printf("LZ %s = lznum((double)_i%d);\n", n->name, lc);
+      ec_stmt(n->b,d+1); ec_ind(d); printf("}\n"); break;
+    }
+    default: fprintf(stderr,"larzc: unsupported statement (node %d)\n", n->kind); exit(1);
+  }
+}
+static void emit_runtime(void){
+  puts("/* generated by larzc (larzscript --emit-c) */");
+  puts("#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <stdarg.h>");
+  puts("typedef struct{int t;double n;char*s;}LZ;");
+  puts("static LZ lznil(){LZ v={0,0,0};return v;}");
+  puts("static LZ lznum(double d){LZ v={1,d,0};return v;}");
+  puts("static LZ lzbool(int b){LZ v={3,(double)(b!=0),0};return v;}");
+  puts("static LZ lzstr(const char*s){LZ v={2,0,strdup(s)};return v;}");
+  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];return 0;}");
+  puts("static char*lz_tostr(LZ v){char b[64];if(v.t==2)return v.s?v.s:(char*)\"\";if(v.t==1){if(v.n==(long long)v.n)sprintf(b,\"%lld\",(long long)v.n);else sprintf(b,\"%g\",v.n);return strdup(b);}if(v.t==3)return strdup(v.n?\"true\":\"false\");return strdup(\"nil\");}");
+  puts("static LZ lz_add(LZ a,LZ b){if(a.t==2||b.t==2){char*x=lz_tostr(a),*y=lz_tostr(b);char*r=malloc(strlen(x)+strlen(y)+1);strcpy(r,x);strcat(r,y);LZ v={2,0,r};return v;}return lznum(a.n+b.n);}");
+  puts("static LZ lz_sub(LZ a,LZ b){return lznum(a.n-b.n);}");
+  puts("static LZ lz_mul(LZ a,LZ b){return lznum(a.n*b.n);}");
+  puts("static LZ lz_div(LZ a,LZ b){return lznum(a.n/b.n);}");
+  puts("static LZ lz_mod(LZ a,LZ b){return lznum((double)((long long)a.n%(long long)b.n));}");
+  puts("static LZ lz_idiv(LZ a,LZ b){double d=a.n/b.n;long long f=(long long)d;if((double)f>d)f--;return lznum((double)f);}");
+  puts("static LZ lz_pow(LZ a,LZ b){double r=1,x=a.n;long long e=(long long)b.n;for(long long i=0;i<e;i++)r*=x;return lznum(r);}");
+  puts("static LZ lz_and(LZ a,LZ b){return lztruthy(a)?b:a;}");
+  puts("static LZ lz_or(LZ a,LZ b){return lztruthy(a)?a:b;}");
+  puts("static LZ lz_cmp(LZ a,LZ b,int op){double c;int eq;if(a.t==2&&b.t==2){int r=strcmp(a.s?a.s:\"\",b.s?b.s:\"\");c=r;eq=(r==0);}else{c=a.n-b.n;eq=(a.n==b.n);}int res=0;switch(op){case 0:res=eq;break;case 1:res=!eq;break;case 2:res=c<0;break;case 3:res=c>0;break;case 4:res=c<=0;break;case 5:res=c>=0;break;}return lzbool(res);}");
+  puts("static void lz_p1(LZ v){char*s=lz_tostr(v);fputs(s,stdout);}");
+  puts("static LZ lz_print(int n,...){va_list ap;va_start(ap,n);for(int i=0;i<n;i++){if(i)fputc(' ',stdout);lz_p1(va_arg(ap,LZ));}va_end(ap);fputc('\\n',stdout);return lznil();}");
+  puts("static LZ lz_len(LZ v){return lznum(v.t==2?(double)(v.s?strlen(v.s):0):0);}");
+  puts("static LZ lz_int(LZ v){return v.t==2?lznum((double)atoll(v.s)):lznum((double)(long long)v.n);}");
+  puts("static LZ lz_str_(LZ v){return lzstr(lz_tostr(v));}");
+}
+static void emit_c(Node *prog){
+  emit_runtime();
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf(");\n"); } }
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_FN){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf("){\n"); ec_stmt(k->b,1); printf("  return lznil();\n}\n"); } }
+  printf("int main(void){\n");
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind!=N_FN) ec_stmt(k,1); }
+  printf("  return 0;\n}\n");
+}
+
 int main(int argc, char **argv){
   if(getenv("LZ_GC_STRESS")) g_gc_threshold=0;   /* collect on every statement (test mode) */
-  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0;
+  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0, want_emit_c=0;
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.12.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.13.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
     if(strcmp(a,"--check")==0 || strcmp(a,"check")==0){ want_check=1; continue; }
+    if(strcmp(a,"--emit-c")==0){ want_emit_c=1; continue; }
     if(strcmp(a,"-e")==0 || strcmp(a,"--eval")==0){ if(i+1>=argc){ fprintf(stderr,"larzscript: -e needs code\n"); return 1; } eval_code=argv[++i]; i++; break; }
     if(strcmp(a,"repl")==0){ want_repl=1; i++; break; }
     path=a; i++; break;                 /* the source file; the rest are program args */
@@ -1773,6 +1894,14 @@ int main(int argc, char **argv){
     if(setjmp(g_err)){ fprintf(stderr,"%s: SyntaxError: %s\n", path, g_errmsg); return 1; }
     parse_program(lex(src));
     printf("%s: ok\n", path);
+    return 0;
+  }
+
+  if(want_emit_c){                       /* larzc: transpile to C on stdout */
+    if(!path){ fprintf(stderr,"larzscript --emit-c: needs a file\n"); return 1; }
+    char *src=read_all(path);
+    if(setjmp(g_err)){ fprintf(stderr,"%s: SyntaxError: %s\n", path, g_errmsg); return 1; }
+    emit_c(parse_program(lex(src)));
     return 0;
   }
 

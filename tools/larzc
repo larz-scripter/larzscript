@@ -1,0 +1,13 @@
+#!/bin/sh
+# larzc - compile a Larzscript program to a native binary via C.
+# usage: larzc program.lz [-o output]
+set -e
+src="$1"
+[ -z "$src" ] && { echo "usage: larzc program.lz [-o out]"; exit 1; }
+out="${src%.lz}"
+[ "$2" = "-o" ] && out="$3"
+tmp="$(mktemp).c"
+larzscript --emit-c "$src" > "$tmp"
+cc -O2 -o "$out" "$tmp"
+rm -f "$tmp"
+echo "compiled $src -> $out"
