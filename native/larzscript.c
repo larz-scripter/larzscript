@@ -2105,7 +2105,7 @@ static char *imp_resolve(const char *want){
     snprintf(buf,sizeof buf,"%s%s",want,exts[e]); if((f=fopen(buf,"rb"))){fclose(f);return buf;}
   }
   const char *lp=getenv("LARZSCRIPT_PATH");
-  if(lp){ char tmp[4096]; strncpy(tmp,lp,sizeof tmp-1); tmp[sizeof tmp-1]=0; for(char*d=strtok(tmp,":");d;d=strtok(0,":")) for(int e=0;e<2;e++){ snprintf(buf,sizeof buf,"%s/%s%s",d,want,exts[e]); if((f=fopen(buf,"rb"))){fclose(f);return buf;} } }
+  if(lp){ const char *s=lp; while(*s){ const char *e2=s; while(*e2 && *e2!=':') e2++; int len=(int)(e2-s); if(len>0 && len<3000){ char dir[3072]; memcpy(dir,s,(size_t)len); dir[len]=0; for(int e=0;e<2;e++){ snprintf(buf,sizeof buf,"%s/%s%s",dir,want,exts[e]); if((f=fopen(buf,"rb"))){fclose(f);return buf;} } } s = *e2 ? e2+1 : e2; } }
   return 0;
 }
 /* parse a module, prefix its symbols, and append its top-level nodes to *T */
