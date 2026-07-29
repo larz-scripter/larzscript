@@ -106,6 +106,13 @@ read with **`logs`**. `hostname`, `date`, `uptime`, `netstat`, `ping`, `ledger`,
 and the `pkg` App Store round out the admin toolkit — all Larzscript, all
 persisting across reboots.
 
+**Multi-user login.** The boot sequence is `init → login → shell`. On first boot
+`login` creates `root` (password `larz`); accounts are djb2-hashed in
+`/home/.larzos/users` and passwords are masked at the prompt. `useradd`,
+`passwd`, `su`, `users`, `whoami`, and `id` manage accounts, and the shell prompt
+shows the logged-in user (`root@larz-prod:/ ($99.93)$`). Accounts persist across
+reboots and wrong passwords are rejected.
+
 ### Clock & networking
 
 A CMOS/RTC driver gives real wall-clock time and a PIT-calibrated TSC gives a

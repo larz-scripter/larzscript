@@ -74,8 +74,11 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   style **`service`** manager, a persisted **`hostname`** in the login prompt, and
   a web server that **logs requests** (viewable with `logs`). Boots like a Linux
   server; all state persists across reboots.
-- Next: a multi-connection / keep-alive web server; interrupt-driven I/O; a
-  bigger on-disk filesystem; auto-starting enabled services at boot; users/login;
+- Also ✅: **multi-user login** — `init → login → shell`, hashed + masked
+  passwords, `useradd`/`passwd`/`su`/`users`, session-aware prompt; accounts
+  persist and wrong passwords are rejected.
+- Next: a multi-connection / keep-alive web server; interrupt-driven I/O;
+  auto-starting enabled services at boot; per-user `/home/<user>` + permissions;
   and more money-native OS features (per-process gas accounting, kernel HTTP 402
   paywalls). Userland stays 100% Larzscript.
 
