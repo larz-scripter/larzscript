@@ -1,0 +1,9 @@
+# ledger - show the LarzOS money ledger (every earn and purchase)
+import "bank" as bank
+fn run(args) {
+  let l = bank.ledger().strip()
+  if l == "" { print("(ledger empty)"); return }
+  print(l)
+  print("-------------")
+  print("balance: " + bank.fmt(bank.balance()))
+}

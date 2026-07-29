@@ -10,6 +10,7 @@
 #   echo "pwd\nls\nexit" | larzscript os/larzsh.lz   # scripted
 
 let VERSION = "0.1"
+import "bank" as bank
 let LARZHOME = env("HOME") + "/.larzos"
 let WALLET_FILE = LARZHOME + "/wallet.cents"
 let HISTORY = []
@@ -83,6 +84,7 @@ fn cmd_help() {
   print("  clear           clear the screen")
   print("  balance         show your compute wallet balance")
   print("  earn N          credit N cents of compute (demo)")
+  print("  ledger          show the money ledger (earns + app purchases)")
   print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
   print("  <name> ARGS     run an installed package (e.g. banner, todo, figlet)")
@@ -145,7 +147,6 @@ fn run_command(argv, state) {
 
   if cmd == "exit" or cmd == "quit" or cmd == "logout" {
     print("goodbye.")
-    wallet_save(state["cents"])
     exit(0)
   }
   if cmd == "help" { cmd_help(); return state }
@@ -172,25 +173,28 @@ fn run_command(argv, state) {
     return state
   }
   if cmd == "balance" or cmd == "wallet" {
-    print("compute wallet: " + fmt_money(state["cents"]))
+    print("compute wallet: " + bank.fmt(bank.balance()))
     return state
   }
   if cmd == "earn" or cmd == "credit" {
     let add = 100
     if len(rest) > 0 { add = int(rest[0]) }
-    state["cents"] = state["cents"] + add
-    wallet_save(state["cents"])
-    print("credited " + fmt_money(add) + "; balance " + fmt_money(state["cents"]))
+    bank.credit(add, "earn")
+    print("credited " + bank.fmt(add) + "; balance " + bank.fmt(bank.balance()))
+    return state
+  }
+  if cmd == "ledger" {
+    let l = bank.ledger().strip()
+    print(l == "" ? "(ledger empty)" : l)
     return state
   }
   # Any other word is a command: a Larzscript package (built in, or installed via
   # `pkg`) that defines `fn run(args)`, imported and executed in-process. Metered
-  # - each run costs 1 cent of compute and fails closed.
-  if state["cents"] < 1 {
+  # - each run costs 1 cent of compute and fails closed (the money-native OS).
+  if not bank.spend(1) {
     print("larzsh: out of compute credit - run 'earn 100' to top up")
     return state
   }
-  state["cents"] = state["cents"] - 1
   try {
     import cmd as _mod
     _mod.run(rest)
@@ -211,9 +215,9 @@ fn resolve_bin() {
 }
 
 fn main() {
-  let state = {"cents": wallet_load(), "bin": resolve_bin()}
+  let state = {}
   while true {
-    let line = input("larzos:" + short_cwd() + " " + fmt_money(state["cents"]) + " $ ")
+    let line = input("larzos:" + short_cwd() + " " + bank.fmt(bank.balance()) + " $ ")
     if line == nil { print(""); break }          # EOF (Ctrl-D or end of piped input)
     let trimmed = line.strip()
     if trimmed == "" { continue }
@@ -221,7 +225,6 @@ fn main() {
     let argv = tokenize(trimmed)
     state = run_command(argv, state)
   }
-  wallet_save(state["cents"])
 }
 
 main()

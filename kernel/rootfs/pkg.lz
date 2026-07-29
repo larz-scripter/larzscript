@@ -1,16 +1,23 @@
-# pkg - the LarzOS package manager. Installs Larzscript packages from /repo into
-# /home/.larzpkg (which persists across reboots), so they extend the OS. Once
-# installed, run a package by name in larzsh, or `import "<name>"` from code.
-let REPO = "/repo"
-let LIB  = "/home/.larzpkg"
+# pkg - the LarzOS package manager, with a money-native App Store.
+#
+# Built-in packages under /repo install free. The App Store fetches packages
+# over the network from a remote repo; packages there have PRICES, and buying
+# one debits the OS compute wallet - which FAILS CLOSED with no funds. Every
+# purchase is written to the ledger. Installs persist across reboots (/home).
+import "bank" as bank
+let REPO   = "/repo"
+let LIB    = "/home/.larzpkg"
+let REMOTE = "10.0.2.2:28000"
+
 fn _meta(name) { let m = REPO + "/" + name + "/meta"; return file_exists(m) ? read_file(m).strip() : "" }
 fn _available() { return file_exists(REPO) ? sorted(listdir(REPO)) : [] }
 fn _installed() { return file_exists(LIB) ? sorted(listdir(LIB)) : [] }
+
 fn cmd_list() {
   let avail = _available()
-  if len(avail) == 0 { print("no packages in the repo"); return }
+  if len(avail) == 0 { print("no built-in packages"); return }
   let inst = _installed()
-  print("available packages:")
+  print("built-in packages (free):")
   for name in avail {
     let mark = " "
     for i in inst { if i == name { mark = "*" } }
@@ -24,7 +31,6 @@ fn cmd_install(name) {
   mkdir(LIB); let dst = LIB + "/" + name; mkdir(dst)
   for f in listdir(src) { write_file(dst + "/" + f, read_file(src + "/" + f)) }
   print("installed " + name)
-  if file_exists(dst + "/main.lz") { print("  try:  " + name + "     (or  import \"" + name + "\")") }
 }
 fn cmd_remove(name) {
   let dst = LIB + "/" + name
@@ -37,19 +43,69 @@ fn cmd_info(name) {
   let src = REPO + "/" + name
   if file_exists(src) { print("  files: " + join(listdir(src), ", ")) }
 }
+
+# --- the money-native App Store (over the network) ---
+fn _fetch(sub) { return read_file("/net/get/" + REMOTE + "/" + sub) }
+fn _index() { return _fetch("repo/index").strip() }        # lines: name|price_cents|description
+fn _find(idx, name) {                                       # -> [price, desc] or nil
+  for line in idx.split("\n") {
+    let f = line.split("|")
+    if len(f) > 0 and f[0].strip() == name { return [len(f) > 1 ? int(f[1]) : 0, len(f) > 2 ? f[2] : ""] }
+  }
+  return nil
+}
+fn cmd_store() {
+  let idx = _index()
+  if idx == "ERR" or idx == "" { print("store: cannot reach " + REMOTE); return }
+  print("LarzOS App Store  @  " + REMOTE + "     (wallet: " + bank.fmt(bank.balance()) + ")")
+  for line in idx.split("\n") {
+    if line.strip() == "" { continue }
+    let f = line.split("|")
+    let cost = len(f) > 1 ? int(f[1]) : 0
+    let tag = cost == 0 ? "free" : bank.fmt(cost)
+    print("  " + f[0].ljust(12) + tag.ljust(9) + (len(f) > 2 ? f[2] : ""))
+  }
+  print("buy with:  pkg get <name>")
+}
+fn cmd_get(name) {
+  let idx = _index()
+  if idx == "ERR" { print("store: cannot reach " + REMOTE); return }
+  let hit = _find(idx, name)
+  if hit == nil { print("no such app: " + name); return }
+  let cost = hit[0]
+  if cost > 0 {
+    if not bank.debit(cost, "app: " + name) {
+      print("insufficient funds: " + name + " costs " + bank.fmt(cost) + ", wallet has " + bank.fmt(bank.balance()))
+      print("(run 'earn 500' to top up compute credit)")
+      return
+    }
+    print("paid " + bank.fmt(cost) + " for " + name + "  (wallet: " + bank.fmt(bank.balance()) + ")")
+  }
+  let main = _fetch("repo/" + name + "/main.lz")
+  if main == "ERR" or main.strip() == "" { print("download failed: " + name); return }
+  mkdir(LIB); let dst = LIB + "/" + name; mkdir(dst)
+  write_file(dst + "/main.lz", main)
+  write_file(dst + "/meta", hit[1])
+  print("installed " + name + " (persisted).  run it:  " + name)
+}
+
 fn run(args) {
   if len(args) == 0 or args[0] == "help" {
-    print("pkg - LarzOS package manager")
-    print("  pkg list               list available packages")
-    print("  pkg install <name>     install a package (persists across reboots)")
-    print("  pkg remove <name>      uninstall a package")
-    print("  pkg installed          list installed packages")
-    print("  pkg info <name>        show package details")
+    print("pkg - LarzOS packages")
+    print("  pkg list                built-in packages (free)")
+    print("  pkg install <name>      install a built-in package")
+    print("  pkg store               browse the App Store (network, with prices)")
+    print("  pkg get <name>          buy + install an app (pays from the wallet)")
+    print("  pkg installed           list installed")
+    print("  pkg remove <name>       uninstall")
+    print("  pkg info <name>         details")
     return
   }
   let cmd = args[0]
   if cmd == "list" { cmd_list() }
   else if cmd == "install" and len(args) >= 2 { cmd_install(args[1]) }
+  else if (cmd == "store" or cmd == "update") { cmd_store() }
+  else if cmd == "get" and len(args) >= 2 { cmd_get(args[1]) }
   else if cmd == "remove" and len(args) >= 2 { cmd_remove(args[1]) }
   else if cmd == "installed" {
     let inst = _installed()

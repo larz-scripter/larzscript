@@ -26,6 +26,7 @@ void *memcpy(void*,const void*,size_t);
 void *memset(void*,int,size_t);
 int   memcmp(const void*,const void*,size_t);
 void *malloc(size_t);
+void  free(void*);
 int   strcmp(const char*,const char*);
 int   strncmp(const char*,const char*,size_t);
 
@@ -204,12 +205,12 @@ static u16  tcp_cksum(const u8 *src, const u8 *dst, const u8 *tcp, int len){
     while(sum>>16) sum=(sum&0xFFFF)+(sum>>16);
     return (u16)~sum;
 }
-static struct { int active; u8 mac[6], ip[4]; u16 port; u32 our_seq, their_seq; } conn;
+static struct { int active; u8 mac[6], ip[4]; u16 port, myport; u32 our_seq, their_seq; } conn;
 
 static void tcp_send(u8 flags, const u8 *data, int dlen){
     static u8 pkt[20+20+1460];
     u8 *ip=pkt, *tcp=pkt+20;
-    tcp[0]=0;tcp[1]=80;                                   /* src port 80 */
+    tcp[0]=(u8)(conn.myport>>8); tcp[1]=(u8)conn.myport;  /* our source port */
     tcp[2]=(u8)(conn.port>>8); tcp[3]=(u8)conn.port;
     put32(tcp+4, conn.our_seq); put32(tcp+8, conn.their_seq);
     tcp[12]=0x50; tcp[13]=flags; tcp[14]=0x20; tcp[15]=0x00;  /* offset 5, window 8192 */
@@ -252,7 +253,7 @@ char *net_http_accept(void){                 /* blocks; returns malloc'd request
         int plen=((ip[2]<<8)|ip[3]) - ihl - tcphl;
         if(flags & 0x02){                    /* SYN -> SYN,ACK */
             memcpy(conn.mac, fr+6, 6); memcpy(conn.ip, ip+12, 4);
-            conn.port=sport; conn.their_seq=seq+1; conn.our_seq=12345; conn.active=1;
+            conn.port=sport; conn.myport=80; conn.their_seq=seq+1; conn.our_seq=12345; conn.active=1;
             tcp_send(0x12, 0, 0); conn.our_seq++;
             continue;
         }
@@ -282,6 +283,54 @@ void net_http_reply(const char *data, int len){
     conn.active=0;
 }
 
+/* ---- outbound TCP: a tiny HTTP client (active open) ---- */
+static int tcp_from_server(unsigned char *fr, int *plen, u8 *flags, u32 *seq, u8 **pay){
+    u16 et=(u16)(fr[12]<<8|fr[13]); if(et!=0x0800) return 0;
+    u8 *ip=fr+14; if(ip[9]!=6) return 0;
+    if(memcmp(ip+12, conn.ip, 4)!=0) return 0;
+    int ihl=(ip[0]&0x0F)*4; u8 *tcp=ip+ihl;
+    if(((tcp[0]<<8)|tcp[1])!=conn.port || ((tcp[2]<<8)|tcp[3])!=conn.myport) return 0;
+    int tcphl=(tcp[12]>>4)*4;
+    *plen=((ip[2]<<8)|ip[3]) - ihl - tcphl; *flags=tcp[13]; *seq=get32(tcp+4); *pay=tcp+tcphl;
+    return 1;
+}
+static u16 g_eport=49152;
+int net_http_get(const unsigned char dstip[4], u16 port, const char *path, char *out, int outmax){
+    if(!g_net_up) return -1;
+    if(!g_gwmac_known){ if(!arp_resolve(g_gw,g_gwmac)) return -1; g_gwmac_known=1; }
+    { unsigned char *fr; int guard=200000; while(guard-->0 && nic_rx(&fr)>0){} }  /* drain stale RX */
+    memcpy(conn.mac,g_gwmac,6); memcpy(conn.ip,dstip,4);
+    if(++g_eport < 49152) g_eport=49152;                    /* fresh 4-tuple each connection */
+    conn.port=port; conn.myport=g_eport; conn.our_seq=20000+(u32)g_eport*131; conn.their_seq=0; conn.active=1;
+    tcp_send(0x02,0,0); conn.our_seq++;                 /* SYN */
+    int plen; u8 fl; u32 seq; u8 *pay; int got=0;
+    for(int i=0;i<6000000 && !got;i++){
+        unsigned char *fr; if(nic_rx(&fr)<=0) continue;
+        if(!tcp_from_server(fr,&plen,&fl,&seq,&pay)) continue;
+        if((fl&0x12)==0x12){ conn.their_seq=seq+1; tcp_send(0x10,0,0); got=1; }
+        else if(fl&0x04){ conn.active=0; return -1; }
+    }
+    if(!got){ conn.active=0; return -1; }
+    char req[300]; int rl=0;
+    for(const char *p="GET ";*p;p++) req[rl++]=*p;
+    for(const char *p=path;*p;p++) req[rl++]=*p;
+    for(const char *p=" HTTP/1.0\r\nHost: larzos\r\nConnection: close\r\n\r\n";*p;p++) req[rl++]=*p;
+    tcp_send(0x18,(u8*)req,rl); conn.our_seq += (u32)rl;
+    int total=0, done=0;
+    for(int i=0;i<40000000 && !done;i++){
+        unsigned char *fr; if(nic_rx(&fr)<=0) continue;
+        if(!tcp_from_server(fr,&plen,&fl,&seq,&pay)) continue;
+        if(plen>0 && seq==conn.their_seq){
+            int cp=plen; if(total+cp>outmax) cp=outmax-total;
+            if(cp>0){ memcpy(out+total, pay, (size_t)cp); total+=cp; }
+            conn.their_seq += (u32)plen; tcp_send(0x10,0,0);
+        } else if(plen>0){ tcp_send(0x10,0,0); }     /* out of order: re-ack */
+        if(fl&0x01){ conn.their_seq++; tcp_send(0x10,0,0); done=1; }
+    }
+    conn.active=0;
+    return total;
+}
+
 void net_selftest(void){
     if(!net_init()){ printf("  net: no NIC found (add -device rtl8139)\n"); return; }
     printf("  net: RTL8139 up  MAC %02x:%02x:%02x:%02x:%02x:%02x  IP %d.%d.%d.%d  GW %d.%d.%d.%d\n",
@@ -304,6 +353,23 @@ static int parse_ip(const char *s, unsigned char ip[4]){
 }
 char *net_vfile(const char *path){          /* returns malloc'd content, or 0 */
     if(strcmp(path,"/net/http/accept")==0) return g_net_up ? net_http_accept() : 0;
+    if(strncmp(path,"/net/get/",9)==0){       /* HTTP GET: /net/get/<ip[:port]>/<path> */
+        const char *r=path+9; unsigned char ip[4]={0,0,0,0}; int o=0,v=0;
+        const char *p=r;
+        for(; *p && *p!=':' && *p!='/'; p++){ if(*p=='.'){ if(o<3) ip[o++]=(u8)v; v=0; } else if(*p>='0'&&*p<='9') v=v*10+(*p-'0'); }
+        if(o<4) ip[o++]=(u8)v;
+        int port=80; if(*p==':'){ p++; port=0; for(; *p && *p!='/'; p++) if(*p>='0'&&*p<='9') port=port*10+(*p-'0'); }
+        const char *hp = (*p=='/') ? p : "/";
+        char *resp=malloc(65536); if(!resp) return 0;
+        int len=net_http_get(ip,(u16)port,hp,resp,65535);
+        if(len<0){ free(resp); char *e=malloc(8); if(e) { e[0]='E';e[1]='R';e[2]='R';e[3]='\n';e[4]=0; } return e; }
+        resp[len]=0;
+        char *body=resp;
+        for(int i=0;i+3<len;i++) if(resp[i]=='\r'&&resp[i+1]=='\n'&&resp[i+2]=='\r'&&resp[i+3]=='\n'){ body=resp+i+4; break; }
+        int bl=0; while(body[bl]) bl++;
+        char *out=malloc((size_t)bl+1); if(out){ memcpy(out,body,(size_t)bl+1); }
+        free(resp); return out;
+    }
     char *b=malloc(256); if(!b) return 0;
     if(strcmp(path,"/net/status")==0){
         if(!g_net_up){ snprintf(b,256,"link: down (no NIC)\n"); return b; }

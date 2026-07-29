@@ -8,6 +8,7 @@ char *net_vfile(const char *path);   /* content of a virtual /net/ file (malloc'
 void  net_vfile_write(const char *path, const char *data, int len);   /* write to /net/ */
 char *net_http_accept(void);         /* block for an HTTP request (malloc'd) */
 void  net_http_reply(const char *data, int len);
+int   net_http_get(const unsigned char ip[4], unsigned short port, const char *path, char *out, int outmax);
 extern int g_net_up;
 extern unsigned char g_mac[6];
 extern unsigned char g_ip[4], g_gw[4];

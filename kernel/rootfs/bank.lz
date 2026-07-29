@@ -1,0 +1,28 @@
+# bank - the LarzOS money service: a shared wallet + an append-only ledger.
+# The wallet is compute credit; buying apps debits it and FAILS CLOSED with no
+# funds - the money-native guarantee, enforced by the OS. import "bank" as bank
+let _W = "/home/.larzos/wallet.cents"
+let _L = "/home/.larzos/ledger"
+fn fmt(cents) {
+  let sign = cents < 0 ? "-" : ""
+  let c = cents < 0 ? 0 - cents : cents
+  let d = c // 100
+  let r = c - d * 100
+  return sign + "$" + str(d) + "." + (r < 10 ? "0" + str(r) : str(r))
+}
+fn balance() { return file_exists(_W) ? int(read_file(_W).strip()) : 10000 }
+fn _set(c) { mkdir("/home/.larzos"); write_file(_W, str(c)) }
+fn _log(sym, cents, memo) { mkdir("/home/.larzos"); append_file(_L, sym + " " + fmt(cents) + "  " + memo + "\n") }
+fn credit(cents, memo) { let b = balance() + cents; _set(b); _log("+", cents, memo); return b }
+fn debit(cents, memo) {
+  let b = balance()
+  if b < cents { return false }          # fails closed
+  _set(b - cents); _log("-", cents, memo); return true
+}
+fn spend(cents) {                          # silent metering debit (no ledger); fails closed
+  let b = balance()
+  if b < cents { return false }
+  _set(b - cents); return true
+}
+fn ledger() { return file_exists(_L) ? read_file(_L) : "" }
+fn run(args) { print("bank: balance " + fmt(balance())) }
