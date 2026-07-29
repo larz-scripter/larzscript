@@ -1765,7 +1765,9 @@ static void ec_expr(Node *n){
       break;
     case N_TERNARY: printf("(lztruthy("); ec_expr(n->a); printf(")?("); ec_expr(n->b); printf("):("); ec_expr(n->c); printf("))"); break;
     case N_ARRAY: printf("lz_listn(%d",n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break;
+    case N_DICT: printf("lz_dictn(%d",n->nkids/2); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break;
     case N_INDEX: printf("lz_index("); ec_expr(n->a); printf(","); ec_expr(n->b); printf(")"); break;
+    case N_METHOD: printf("lz_method("); ec_expr(n->a); printf(",\"%s\",%d", n->name, n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break;
     case N_BIN: {
       const char*o=n->op;
       if(!strcmp(o,"+")) ec_binop(n,"lz_add");
@@ -1794,6 +1796,7 @@ static void ec_expr(Node *n){
       else if(!strcmp(fn,"int")){ printf("lz_int("); ec_expr(n->kids[0]); printf(")"); }
       else if(!strcmp(fn,"len")){ printf("lz_len("); ec_expr(n->kids[0]); printf(")"); }
       else if(!strcmp(fn,"push")){ printf("lz_push("); ec_expr(n->kids[0]); printf(","); ec_expr(n->kids[1]); printf(")"); }
+      else if(!strcmp(fn,"keys")){ printf("lz_keys("); ec_expr(n->kids[0]); printf(")"); }
       else { printf("%s(",fn); for(int i=0;i<n->nkids;i++){ if(i)printf(","); ec_expr(n->kids[i]); } printf(")"); }
       break;
     }
@@ -1805,6 +1808,7 @@ static void ec_stmt(Node *n, int d){
   switch(n->kind){
     case N_LET: ec_ind(d); printf("LZ %s = ", n->name); ec_expr(n->a); printf(";\n"); break;
     case N_ASSIGN: ec_ind(d); printf("%s = ", n->name); ec_expr(n->a); printf(";\n"); break;
+    case N_SETINDEX: ec_ind(d); printf("lz_setindex("); ec_expr(n->a); printf(","); ec_expr(n->b); printf(","); ec_expr(n->c); printf(");\n"); break;
     case N_EXPR: ec_ind(d); ec_expr(n->a); printf(";\n"); break;
     case N_RETURN: ec_ind(d); printf("return "); if(n->a) ec_expr(n->a); else printf("lznil()"); printf(";\n"); break;
     case N_BLOCK: for(int i=0;i<n->nkids;i++) ec_stmt(n->kids[i],d); break;
@@ -1845,9 +1849,13 @@ static void emit_runtime(void){
   puts("static LZ lzlist(){LST*l=(LST*)calloc(1,sizeof(LST));LZ v={4,0,0,l};return v;}");
   puts("static LZ lz_push(LZ L,LZ e){LST*l=(LST*)L.p;if(l->n>=l->cap){l->cap=l->cap?l->cap*2:8;l->items=(LZ*)realloc(l->items,l->cap*sizeof(LZ));}l->items[l->n++]=e;return lznil();}");
   puts("static LZ lz_listn(int n,...){LZ L=lzlist();va_list ap;va_start(ap,n);for(int i=0;i<n;i++)lz_push(L,va_arg(ap,LZ));va_end(ap);return L;}");
-  puts("static int lz_lenN(LZ v){if(v.t==4)return((LST*)v.p)->n;if(v.t==2)return v.s?(int)strlen(v.s):0;return 0;}");
-  puts("static LZ lz_index(LZ o,LZ i){int idx=(int)i.n;if(o.t==4){LST*l=(LST*)o.p;if(idx<0)idx+=l->n;if(idx<0||idx>=l->n)return lznil();return l->items[idx];}if(o.t==2){int n=(int)strlen(o.s);if(idx<0)idx+=n;if(idx<0||idx>=n)return lznil();char b[2]={o.s[idx],0};return lzstr(b);}return lznil();}");
-  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;return 0;}");
+  puts("typedef struct{char**keys;LZ*vals;int n,cap;}DCT;");
+  puts("static LZ lzdict(){DCT*d=(DCT*)calloc(1,sizeof(DCT));LZ v={5,0,0,d};return v;}");
+  puts("static int lz_dfind(LZ D,const char*k){DCT*d=(DCT*)D.p;for(int i=0;i<d->n;i++)if(!strcmp(d->keys[i],k))return i;return -1;}");
+  puts("static void lz_dput(LZ D,const char*k,LZ val){int j=lz_dfind(D,k);DCT*d=(DCT*)D.p;if(j>=0){d->vals[j]=val;return;}if(d->n>=d->cap){d->cap=d->cap?d->cap*2:8;d->keys=(char**)realloc(d->keys,d->cap*sizeof(char*));d->vals=(LZ*)realloc(d->vals,d->cap*sizeof(LZ));}d->keys[d->n]=strdup(k);d->vals[d->n++]=val;}");
+  puts("static int lz_lenN(LZ v){if(v.t==4)return((LST*)v.p)->n;if(v.t==5)return((DCT*)v.p)->n;if(v.t==2)return v.s?(int)strlen(v.s):0;return 0;}");
+  puts("static LZ lz_index(LZ o,LZ i){if(o.t==5){if(i.t==2){int j=lz_dfind(o,i.s);return j>=0?((DCT*)o.p)->vals[j]:lznil();}int idx=(int)i.n;DCT*d=(DCT*)o.p;if(idx<0||idx>=d->n)return lznil();return lzstr(d->keys[idx]);}int idx=(int)i.n;if(o.t==4){LST*l=(LST*)o.p;if(idx<0)idx+=l->n;if(idx<0||idx>=l->n)return lznil();return l->items[idx];}if(o.t==2){int n=(int)strlen(o.s);if(idx<0)idx+=n;if(idx<0||idx>=n)return lznil();char b[2]={o.s[idx],0};return lzstr(b);}return lznil();}");
+  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;return 0;}");
   puts("static char*lz_tostr(LZ v){");
   puts("  char b[64];");
   puts("  if(v.t==2)return v.s?v.s:(char*)\"\";");
@@ -1856,7 +1864,13 @@ static void emit_runtime(void){
   puts("  if(v.t==4){LST*l=(LST*)v.p;size_t cap=64,len=0;char*r=(char*)malloc(cap);r[len++]='[';");
   puts("    for(int i=0;i<l->n;i++){if(i){r[len++]=',';r[len++]=' ';}char*e=lz_tostr(l->items[i]);size_t el=strlen(e);while(len+el+4>cap){cap*=2;r=(char*)realloc(r,cap);}memcpy(r+len,e,el);len+=el;}");
   puts("    r[len++]=']';r[len]=0;return r;}");
+  puts("  if(v.t==5){DCT*d=(DCT*)v.p;size_t cap=64,len=0;char*r=(char*)malloc(cap);r[len++]='{';");
+  puts("    for(int i=0;i<d->n;i++){if(i){r[len++]=',';r[len++]=' ';}char*e=lz_tostr(d->vals[i]);size_t kl=strlen(d->keys[i]),el=strlen(e);while(len+kl+el+8>cap){cap*=2;r=(char*)realloc(r,cap);}memcpy(r+len,d->keys[i],kl);len+=kl;r[len++]=':';r[len++]=' ';memcpy(r+len,e,el);len+=el;}");
+  puts("    r[len++]='}';r[len]=0;return r;}");
   puts("  return strdup(\"nil\");}");
+  puts("static LZ lz_dictn(int n,...){LZ D=lzdict();va_list ap;va_start(ap,n);for(int i=0;i<n;i++){LZ k=va_arg(ap,LZ),val=va_arg(ap,LZ);lz_dput(D,lz_tostr(k),val);}va_end(ap);return D;}");
+  puts("static LZ lz_keys(LZ D){LZ r=lzlist();if(D.t==5){DCT*d=(DCT*)D.p;for(int i=0;i<d->n;i++)lz_push(r,lzstr(d->keys[i]));}return r;}");
+  puts("static LZ lz_setindex(LZ o,LZ k,LZ v){if(o.t==5)lz_dput(o,lz_tostr(k),v);else if(o.t==4){LST*l=(LST*)o.p;int idx=(int)k.n;if(idx<0)idx+=l->n;if(idx>=0&&idx<l->n)l->items[idx]=v;}return lznil();}");
   puts("static LZ lz_add(LZ a,LZ b){if(a.t==2||b.t==2){char*x=lz_tostr(a),*y=lz_tostr(b);char*r=malloc(strlen(x)+strlen(y)+1);strcpy(r,x);strcat(r,y);LZ v={2,0,r};return v;}return lznum(a.n+b.n);}");
   puts("static LZ lz_sub(LZ a,LZ b){return lznum(a.n-b.n);}");
   puts("static LZ lz_mul(LZ a,LZ b){return lznum(a.n*b.n);}");
@@ -1867,6 +1881,22 @@ static void emit_runtime(void){
   puts("static LZ lz_and(LZ a,LZ b){return lztruthy(a)?b:a;}");
   puts("static LZ lz_or(LZ a,LZ b){return lztruthy(a)?a:b;}");
   puts("static LZ lz_cmp(LZ a,LZ b,int op){double c;int eq;if(a.t==2&&b.t==2){int r=strcmp(a.s?a.s:\"\",b.s?b.s:\"\");c=r;eq=(r==0);}else{c=a.n-b.n;eq=(a.n==b.n);}int res=0;switch(op){case 0:res=eq;break;case 1:res=!eq;break;case 2:res=c<0;break;case 3:res=c>0;break;case 4:res=c<=0;break;case 5:res=c>=0;break;}return lzbool(res);}");
+  puts("static LZ lz_method(LZ o,const char*m,int n,...){");
+  puts("  va_list ap;va_start(ap,n);LZ A[4];for(int i=0;i<n&&i<4;i++)A[i]=va_arg(ap,LZ);va_end(ap);");
+  puts("  if(o.t==4&&!strcmp(m,\"push\"))return lz_push(o,A[0]);");
+  puts("  if(o.t==5){if(!strcmp(m,\"get\")){int j=lz_dfind(o,lz_tostr(A[0]));return j>=0?((DCT*)o.p)->vals[j]:(n>=2?A[1]:lznil());}if(!strcmp(m,\"has\"))return lzbool(lz_dfind(o,lz_tostr(A[0]))>=0);}");
+  puts("  if(o.t!=2)return lznil();");
+  puts("  char*s=o.s?o.s:(char*)\"\";int L=(int)strlen(s);");
+  puts("  if(!strcmp(m,\"upper\")){char*r=strdup(s);for(char*p=r;*p;p++)if(*p>='a'&&*p<='z')*p-=32;LZ v={2,0,r,0};return v;}");
+  puts("  if(!strcmp(m,\"lower\")){char*r=strdup(s);for(char*p=r;*p;p++)if(*p>='A'&&*p<='Z')*p+=32;LZ v={2,0,r,0};return v;}");
+  puts("  if(!strcmp(m,\"strip\")){int a=0,b=L;while(a<b&&(s[a]==' '||s[a]=='\\t'||s[a]=='\\n'||s[a]=='\\r'))a++;while(b>a&&(s[b-1]==' '||s[b-1]=='\\t'||s[b-1]=='\\n'||s[b-1]=='\\r'))b--;char*r=(char*)malloc(b-a+1);memcpy(r,s+a,b-a);r[b-a]=0;LZ v={2,0,r,0};return v;}");
+  puts("  if(!strcmp(m,\"contains\"))return lzbool(A[0].s&&strstr(s,A[0].s)!=0);");
+  puts("  if(!strcmp(m,\"starts_with\"))return lzbool(A[0].s&&strncmp(s,A[0].s,strlen(A[0].s))==0);");
+  puts("  if(!strcmp(m,\"ends_with\")){int al=A[0].s?(int)strlen(A[0].s):0;return lzbool(al<=L&&strcmp(s+L-al,A[0].s)==0);}");
+  puts("  if(!strcmp(m,\"split\")){LZ r=lzlist();const char*sep=A[0].s;int sl=(int)strlen(sep);const char*p=s;if(sl==0){lz_push(r,lzstr(s));return r;}for(;;){const char*q=strstr(p,sep);if(!q){lz_push(r,lzstr(p));break;}char*pt=(char*)malloc(q-p+1);memcpy(pt,p,q-p);pt[q-p]=0;LZ pv={2,0,pt,0};lz_push(r,pv);p=q+sl;}return r;}");
+  puts("  if(!strcmp(m,\"replace\")){const char*a=A[0].s,*b=A[1].s;int al=(int)strlen(a),bl=(int)strlen(b);size_t cap=L+1,len=0;char*r=(char*)malloc(cap);const char*p=s;while(*p){if(al&&!strncmp(p,a,al)){while(len+bl+1>cap){cap*=2;r=(char*)realloc(r,cap);}memcpy(r+len,b,bl);len+=bl;p+=al;}else{if(len+2>cap){cap*=2;r=(char*)realloc(r,cap);}r[len++]=*p++;}}r[len]=0;LZ v={2,0,r,0};return v;}");
+  puts("  if(!strcmp(m,\"ljust\")){int w=(int)A[0].n;if(w<=L)return lzstr(s);char*r=(char*)malloc(w+1);memcpy(r,s,L);for(int i=L;i<w;i++)r[i]=' ';r[w]=0;LZ v={2,0,r,0};return v;}");
+  puts("  return lznil();}");
   puts("static void lz_p1(LZ v){char*s=lz_tostr(v);fputs(s,stdout);}");
   puts("static LZ lz_print(int n,...){va_list ap;va_start(ap,n);for(int i=0;i<n;i++){if(i)fputc(' ',stdout);lz_p1(va_arg(ap,LZ));}va_end(ap);fputc('\\n',stdout);return lznil();}");
   puts("static LZ lz_len(LZ v){return lznum((double)lz_lenN(v));}");

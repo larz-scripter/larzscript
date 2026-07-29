@@ -1,4 +1,4 @@
 sq(9) = 81
-sum 1..100 = 5050
-squared: [100, 400, 900] len: 3 first: 100
-ternary: yes
+squared: [100, 400, 900] first: 100 len: 3
+counts: {a: 3, b: 2, c: 1} keys: [a, b, c]
+upper: LARZ yes/no: y
