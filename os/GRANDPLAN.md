@@ -53,7 +53,7 @@ Make multitasking *useful* by running two Larzscript programs concurrently.
   (wallet, services, tasks) rendered graphically.
 - Verify: boots to a graphical screen in QEMU/VirtualBox.
 
-## Phase 6 — The language endgame (`larzc`)   ⏳ future (very large)
+## Phase 6 — The language endgame (`larzc`)   ✅ subset compiler done (--emit-c, ~130x); full coverage future
 - A **Larzscript → native code** compiler (emit C first, then direct codegen),
   so kernel-level code can be written in Larzscript and the C seed shrinks toward
   zero — the TempleOS-style "all one language" endgame.

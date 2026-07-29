@@ -76,6 +76,8 @@ Available packages:
 They compose — e.g. `json.parse(http.get(url))`, or CSV → list-of-dicts → JSON.
 Add yours by PR-ing a line to [`packages/registry.txt`](packages/registry.txt).
 
+**Larzscript compiles to native code.** `larzscript --emit-c program.lz` emits C; `tools/larzc program.lz` gcc's it into a native binary that runs ~130x faster than the interpreter (a general-purpose subset today). This is the path toward the LarzOS kernel being written in Larzscript itself.
+
 ## LarzOS — an OS written in Larzscript
 
 There's an operating system taking shape in [`os/`](os/): its init, shell
