@@ -88,6 +88,7 @@ isr_common:
     cld
     movq %rsp, %rdi
     call interrupt_dispatch
+    movq %rax, %rsp          /* switch to the scheduled task's stack */
     popq %r15
     popq %r14
     popq %r13

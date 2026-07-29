@@ -15,6 +15,7 @@ int larz_main(int argc, char **argv);
 void kernel_main(void){
     console_init();
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */
+    sched_init();                  /* preemptive scheduler + background tasks */
     vfs_init();                    /* mount the writable filesystem */
     printf("\n");
     net_selftest();                /* detect the NIC + ping the gateway */

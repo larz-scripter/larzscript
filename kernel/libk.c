@@ -134,16 +134,51 @@ static void idt_set(int n, void *h){
     g_idt[n].lo=a&0xFFFF; g_idt[n].sel=0x08; g_idt[n].ist=0; g_idt[n].flags=0x8E;
     g_idt[n].mid=(a>>16)&0xFFFF; g_idt[n].hi=(a>>32)&0xFFFFFFFF; g_idt[n].zero=0;
 }
-void interrupt_dispatch(struct iframe *f){                /* called from isr_common */
+/* ---- preemptive scheduler: round-robin tasks switched on the timer tick ---- */
+#define NTASK 4
+#define TSTK  65536
+struct task { uint64_t rsp; int used; };
+static struct task g_tasks[NTASK];
+static int g_ntask=0, g_cur=0;
+static unsigned char g_tstack[NTASK][TSTK] __attribute__((aligned(16)));
+volatile unsigned long long g_ca=0, g_cb=0;               /* demo task counters */
+
+static uint64_t schedule(uint64_t rsp){
+    if(g_ntask<2) return rsp;
+    g_tasks[g_cur].rsp = rsp;
+    do { g_cur=(g_cur+1)%g_ntask; } while(!g_tasks[g_cur].used);
+    return g_tasks[g_cur].rsp;
+}
+static void task_create(void (*fn)(void)){
+    if(g_ntask>=NTASK) return;
+    int i=g_ntask++;
+    g_tasks[i].used=1;
+    uint64_t top=((uint64_t)(g_tstack[i]+TSTK)) & ~15ULL;
+    struct iframe *f=(struct iframe*)(top - sizeof(struct iframe));
+    for(unsigned k=0;k<sizeof(struct iframe)/8;k++) ((uint64_t*)f)[k]=0;
+    f->rip=(uint64_t)fn; f->cs=0x08; f->rflags=0x202; f->rsp=top-8; f->ss=0; f->int_no=32;
+    g_tasks[i].rsp=(uint64_t)f;
+}
+static void task_a(void){ for(;;){ g_ca++; for(volatile int i=0;i<80000;i++){} } }
+static void task_b(void){ for(;;){ g_cb++; for(volatile int i=0;i<200000;i++){} } }
+void sched_init(void){                                    /* task 0 = the main/interpreter context */
+    g_tasks[0].used=1; g_ntask=1; g_cur=0;
+    task_create(task_a);
+    task_create(task_b);
+}
+
+uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_common; returns new rsp */
+    struct iframe *f=(struct iframe*)rsp;
     unsigned n=(unsigned)f->int_no;
     if(n<32){                                             /* CPU exception: report + halt */
         printf("\n[CPU exception %u  err=%x  RIP=%lx]  halting.\n", n, (unsigned)f->err, (unsigned long)f->rip);
         for(;;) __asm__ volatile("cli; hlt");
     }
-    if(n==32) g_ticks++;                                  /* timer */
+    if(n==32){ g_ticks++; rsp=schedule(rsp); }            /* timer: tick + switch task */
     else if(n==33){ unsigned char sc=inb(0x60); int c=kbd_translate(sc); if(c>0) kbring_push((char)c); }
     if(n>=40) outb(0xA0,0x20);                            /* EOI to slave */
     outb(0x20,0x20);                                      /* EOI to master */
+    return rsp;
 }
 static void pic_remap(void){
     outb(0x20,0x11); outb(0xA0,0x11);
@@ -722,6 +757,8 @@ static char *proc_content(const char *path){
         snprintf(c,256,"filesystem: LarzFS\nmount:      /home (persistent)\nused:       %u bytes\n", g_home?vn_total(g_home):0);
     else if(strcmp(path,"/proc/uptime")==0)
         snprintf(c,256,"ticks: %llu\nseconds: %llu  (timer IRQ @ 100 Hz)\n", g_ticks, g_ticks/100);
+    else if(strcmp(path,"/proc/tasks")==0)
+        snprintf(c,256,"scheduler: preemptive, round-robin\ntask0: shell/interpreter\ntask1: %llu ticks (bg)\ntask2: %llu ticks (bg)\n", g_ca, g_cb);
     else snprintf(c,256,"no such /proc file\n");
     return c;
 }

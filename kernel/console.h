@@ -3,6 +3,7 @@
 #define _LARZOS_CONSOLE_H
 void console_init(void);
 void ints_init(void);            /* IDT + PIC + timer/keyboard IRQs */
+void sched_init(void);           /* preemptive scheduler + demo background tasks */
 void vfs_init(void);             /* build the writable filesystem from the initramfs */
 void serial_putc(char c);
 char serial_getc(void);
