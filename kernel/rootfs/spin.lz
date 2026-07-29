@@ -1,0 +1,6 @@
+# spin - loop forever, to demonstrate the kernel gas limiter killing runaways.
+fn run(args) {
+  print("spinning forever - the OS gas limiter should kill this...")
+  let n = 0
+  while true { n = n + 1 }
+}

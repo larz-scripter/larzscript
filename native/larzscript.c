@@ -782,6 +782,7 @@ static void gc_collect(Interp *ip){
   g_gc_threshold = g_gc_count*2 + 200000;
 }
 static void maybe_gc(Interp *ip){ if(g_gc_count > g_gc_threshold) gc_collect(ip); }
+volatile int larz_gas_kill = 0;   /* set by the host OS (LarzOS) when a command exceeds its gas budget */
 
 static void define_builtins(Env *e);   /* forward: used by import */
 
@@ -1151,6 +1152,7 @@ static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
 
 static void exec(Interp *ip, Node *n, Env *env){
   maybe_gc(ip);                 /* safe point: between statements, nothing half-built is unrooted */
+  if(larz_gas_kill){ larz_gas_kill=0; runtime_error(ip,"GasError","command exceeded its compute gas budget"); }
   if(n->line) ip->curline=n->line;
   switch(n->kind){
     case N_LET: env_define(env, n->name, eval(ip,n->a,env)); return;

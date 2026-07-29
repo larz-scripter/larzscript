@@ -191,17 +191,24 @@ fn run_command(argv, state) {
   # Any other word is a command: a Larzscript package (built in, or installed via
   # `pkg`) that defines `fn run(args)`, imported and executed in-process. Metered
   # - each run costs 1 cent of compute and fails closed (the money-native OS).
-  if not bank.spend(1) {
+  if bank.balance() < 1 {
     print("larzsh: out of compute credit - run 'earn 100' to top up")
     return state
   }
+  write_file("/dev/gas", "300")           # budget: 300 interpreter ticks; the kernel kills runaways
   try {
     import cmd as _mod
     _mod.run(rest)
   } catch e {
     if e["type"] == "ImportError" { print("larzsh: " + cmd + ": command not found  (try 'pkg list')") }
+    else if e["type"] == "GasError" { print("larzsh: " + cmd + ": KILLED by the gas limiter (ran too long)") }
     else { print("larzsh: " + cmd + ": " + str(e["message"])) }
   }
+  let gline = read_file("/proc/gas").split("\n")[0]     # "gas_used: N ticks"
+  write_file("/dev/gas", "0")
+  let gp = gline.split(" ")
+  let ticks = len(gp) > 1 ? int(gp[1]) : 0
+  bank.spend(1 + ticks // 10)              # bill: 1c + 1c per 10 ticks of CPU used
   return state
 }
 

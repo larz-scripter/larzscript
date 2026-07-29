@@ -129,6 +129,9 @@ struct idtptr { u16 limit; uint64_t base; } __attribute__((packed));
 static struct idtent g_idt[256];
 extern void *isr_stub_table[];
 static volatile unsigned long long g_ticks=0;
+/* per-command gas: the kernel bills + kills the interpreter (task 0) by CPU ticks */
+extern volatile int larz_gas_kill;
+static volatile unsigned g_gas_budget=0, g_gas_used=0; static volatile int g_gas_on=0;
 static void idt_set(int n, void *h){
     uint64_t a=(uint64_t)h;
     g_idt[n].lo=a&0xFFFF; g_idt[n].sel=0x08; g_idt[n].ist=0; g_idt[n].flags=0x8E;
@@ -174,7 +177,11 @@ uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_com
         printf("\n[CPU exception %u  err=%x  RIP=%lx]  halting.\n", n, (unsigned)f->err, (unsigned long)f->rip);
         for(;;) __asm__ volatile("cli; hlt");
     }
-    if(n==32){ g_ticks++; rsp=schedule(rsp); }            /* timer: tick + switch task */
+    if(n==32){                                            /* timer: tick, gas, switch task */
+        g_ticks++;
+        if(g_gas_on && g_cur==0){ g_gas_used++; if(g_gas_used > g_gas_budget){ larz_gas_kill=1; g_gas_on=0; } }
+        rsp=schedule(rsp);
+    }
     else if(n==33){ unsigned char sc=inb(0x60); int c=kbd_translate(sc); if(c>0) kbring_push((char)c); }
     if(n>=40) outb(0xA0,0x20);                            /* EOI to slave */
     outb(0x20,0x20);                                      /* EOI to master */
@@ -759,6 +766,8 @@ static char *proc_content(const char *path){
         snprintf(c,256,"ticks: %llu\nseconds: %llu  (timer IRQ @ 100 Hz)\n", g_ticks, g_ticks/100);
     else if(strcmp(path,"/proc/tasks")==0)
         snprintf(c,256,"scheduler: preemptive, round-robin\ntask0: shell/interpreter\ntask1: %llu ticks (bg)\ntask2: %llu ticks (bg)\n", g_ca, g_cb);
+    else if(strcmp(path,"/proc/gas")==0)
+        snprintf(c,256,"gas_used: %u ticks\ngas_budget: %u\nmetering: %s\n", g_gas_used, g_gas_budget, g_gas_on?"on":"off");
     else snprintf(c,256,"no such /proc file\n");
     return c;
 }
@@ -776,11 +785,11 @@ static int perm_ok(const char *path){
 
 FILE *fopen(const char *path, const char *mode){
     int reading = !mode || mode[0]=='r';
-    if(!reading && strcmp(path,"/dev/user")==0){          /* set the current user */
-        VNode *e=vn_new("u",0); if(!e) return 0;
+    if(!reading && (strcmp(path,"/dev/user")==0 || strcmp(path,"/dev/gas")==0)){  /* control writes */
+        VNode *e=vn_new("d",0); if(!e) return 0;
         FILE *f=malloc(sizeof(FILE)); if(!f){ free(e); return 0; }
         f->kind=3; f->vn=e; f->pos=0; f->writing=1; f->ephemeral=1;
-        strncpy(f->netpath,"/dev/user",sizeof(f->netpath)-1); f->netpath[sizeof(f->netpath)-1]=0;
+        strncpy(f->netpath,path,sizeof(f->netpath)-1); f->netpath[sizeof(f->netpath)-1]=0;
         return f;
     }
     if(reading && strncmp(path,"/proc/",6)==0) return ephemeral_file(proc_content(path));
@@ -831,6 +840,10 @@ int fclose(FILE *f){
             int k=0; unsigned char *d=f->vn->data;
             while(k<63 && d && d[k] && d[k]!='\n' && d[k]!='\r'){ g_user[k]=(char)d[k]; k++; }
             g_user[k]=0;
+        } else if(strcmp(f->netpath,"/dev/gas")==0){      /* start/stop CPU-gas metering */
+            unsigned n=0; unsigned char *d=f->vn->data;
+            for(int k=0; d && d[k]>='0' && d[k]<='9'; k++) n=n*10+(d[k]-'0');
+            g_gas_used=0; g_gas_budget=n; g_gas_on=(n>0); larz_gas_kill=0;
         } else net_vfile_write(f->netpath, (char*)(f->vn->data?f->vn->data:(unsigned char*)""), (int)f->vn->size);
     }
     if(eph){ if(f->vn){ if(f->vn->data) free(f->vn->data); free(f->vn); } }
