@@ -106,21 +106,16 @@ static int kbring_pop(void){ if(kbtail==kbhead) return -1; char c=kbring[kbtail]
 int g_irq_on=0;
 
 /* Block for a char from the serial line OR the PS/2 keyboard.
- * The keyboard is read by POLLING the 8042 output buffer directly - the SOLE
- * reader of port 0x60, so no double-read. This is exactly the logic proven to
- * capture scancodes on real VirtualBox (see kbd_diag). IRQ1 stays masked and
- * the timer does NOT touch the keyboard, so nothing races this poll. For the
- * poll to catch every keystroke the interpreter task must run continuously -
- * that's why the background demo tasks are not spawned (see sched_init). */
+ * Keys are captured into kbring by kbd_drain(), called from BOTH the keyboard
+ * IRQ (immediate, no dropped bursts) and the 100 Hz timer tick (a backup for
+ * hosts that don't deliver IRQ1). Both are dup-free (status-checked + reading
+ * clears the byte + ISRs don't nest), so this works alongside the preemptive
+ * scheduler. serial_can_read() is UART-absent-safe (see above) so we never spin
+ * on a phantom serial port instead of polling the keyboard. */
 char console_getc(void){
     for(;;){
         if(serial_can_read()) return (char)inb(COM1);
-        unsigned char st=inb(0x64);
-        if(st&1){                                          /* output buffer full */
-            unsigned char sc=inb(0x60);                    /* read clears it */
-            if(st&0x20) continue;                          /* bit5 = mouse (aux) byte -> ignore */
-            int c=kbd_translate(sc); if(c>0) return (char)c;
-        }
+        int k=kbring_pop(); if(k>=0) return (char)k;
     }
 }
 
@@ -202,11 +197,8 @@ static void task_a(void){ for(;;){ g_ca++; for(volatile int i=0;i<80000;i++){} }
 static void task_b(void){ for(;;){ g_cb++; for(volatile int i=0;i<200000;i++){} } }
 void sched_init(void){                                    /* task 0 = the main/interpreter context */
     g_tasks[0].used=1; g_ntask=1; g_cur=0;
-    /* Background demo tasks are intentionally NOT spawned: the interpreter
-     * (task 0) must run continuously so console_getc can tight-poll the PS/2
-     * keyboard without missing keystrokes. The scheduler stays in place (for
-     * future real tasks); with one task it simply never switches. */
-    (void)task_a; (void)task_b;
+    task_create(task_a);                                  /* preemptive multitasking demo (keyboard is IRQ-captured) */
+    task_create(task_b);
 }
 
 /* Drain the 8042 output buffer into the key ring. Called from BOTH the keyboard
@@ -233,14 +225,13 @@ uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_com
         printf("\n[CPU exception %u  err=%x  RIP=%lx]  halting.\n", n, (unsigned)f->err, (unsigned long)f->rip);
         for(;;) __asm__ volatile("cli; hlt");
     }
-    if(n==32){                                            /* timer: tick, gas, switch task */
+    if(n==32){                                            /* timer: tick, poll kbd (backup), gas, switch task */
         g_ticks++;
+        kbd_drain();
         if(g_gas_on && g_cur==0){ g_gas_used++; if(g_gas_used > g_gas_budget){ larz_gas_kill=1; g_gas_on=0; } }
         rsp=schedule(rsp);
     }
-    /* keyboard is polled directly in console_getc (proven on VirtualBox); IRQ1
-     * stays masked so it can't race that poll. kbd_drain kept for reference. */
-    (void)kbd_drain;
+    else if(n==33){ kbd_drain(); }                        /* keyboard IRQ: immediate capture */
     if(n>=40) outb(0xA0,0x20);                            /* EOI to slave */
     outb(0x20,0x20);                                      /* EOI to master */
     return rsp;
@@ -250,7 +241,7 @@ static void pic_remap(void){
     outb(0x21,0x20); outb(0xA1,0x28);                     /* master->32, slave->40 */
     outb(0x21,0x04); outb(0xA1,0x02);
     outb(0x21,0x01); outb(0xA1,0x01);
-    outb(0x21,0xFD); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) only; keyboard is polled by console_getc */
+    outb(0x21,0xFC); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) + IRQ1 (keyboard) */
 }
 
 /* We deliberately do NOT reprogram the 8042 controller. The firmware/BIOS has
