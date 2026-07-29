@@ -77,10 +77,15 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
 - Also ✅: **multi-user login** — `init → login → shell`, hashed + masked
   passwords, `useradd`/`passwd`/`su`/`users`, session-aware prompt; accounts
   persist and wrong passwords are rejected.
-- Next: a multi-connection / keep-alive web server; interrupt-driven I/O;
-  auto-starting enabled services at boot; per-user `/home/<user>` + permissions;
-  and more money-native OS features (per-process gas accounting, kernel HTTP 402
-  paywalls). Userland stays 100% Larzscript.
+- Also ✅: a **Unix filesystem layout** (`/etc`, `/var/log`, per-user
+  `/home/<user>`), **`/proc`** (`free`/`df`), systemd-style **boot targets**
+  (`multi-user` login or `web` = auto-start the web server headless), and admin
+  tools (`uname`/`ps`/`motd`/`reboot`/`shutdown`). Boots straight into serving
+  when `target web` is set.
+- Next: a multi-connection / keep-alive web server; interrupt-driven I/O; file
+  ownership/permissions; and more money-native OS features (per-process gas
+  accounting, kernel HTTP 402 paywalls that move real wallet money). Userland
+  stays 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most

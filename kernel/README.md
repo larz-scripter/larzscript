@@ -109,9 +109,17 @@ persisting across reboots.
 **Multi-user login.** The boot sequence is `init → login → shell`. On first boot
 `login` creates `root` (password `larz`); accounts are djb2-hashed in
 `/home/.larzos/users` and passwords are masked at the prompt. `useradd`,
-`passwd`, `su`, `users`, `whoami`, and `id` manage accounts, and the shell prompt
-shows the logged-in user (`root@larz-prod:/ ($99.93)$`). Accounts persist across
-reboots and wrong passwords are rejected.
+`passwd`, `su`, `users`, `whoami`, and `id` manage accounts, each user gets a
+`/home/<user>` (the shell starts there, shown as `~`), and the prompt shows the
+logged-in user. Accounts persist and wrong passwords are rejected.
+
+**Unix layout, `/proc`, and boot targets.** `init` builds an FHS-ish layout
+(`/etc`, `/var/log`, `/bin`, `/root`, `/home`) with `/etc/os-release` and
+`/etc/motd`. Virtual `/proc/meminfo` and `/proc/diskinfo` back **`free`** and
+**`df`**; `uname`, `ps`, `motd`, `reboot`, and `shutdown` round out the tools.
+Like systemd, LarzOS has **boot targets**: `target multi-user` (login, the
+default) or `target web` — which, on the next boot, **auto-starts the web service
+headless** (no login), so LarzOS boots straight into serving.
 
 ### Clock & networking
 
