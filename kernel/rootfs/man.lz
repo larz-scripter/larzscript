@@ -1,0 +1,15 @@
+# man - show the manual (leading comments) for a command
+fn run(args) {
+  if len(args) == 0 { print("usage: man <command>"); return }
+  let paths = ["/" + args[0] + ".lz", "/home/.larzpkg/" + args[0] + "/main.lz", "/repo/" + args[0] + "/main.lz"]
+  for p in paths {
+    if file_exists(p) {
+      for l in read_file(p).split("\n") {
+        if l.starts_with("#") { print(l[1:].strip()) }
+        else if l.strip() != "" { break }
+      }
+      return
+    }
+  }
+  print("no manual entry for " + args[0])
+}

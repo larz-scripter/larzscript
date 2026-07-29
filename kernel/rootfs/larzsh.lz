@@ -87,7 +87,7 @@ fn cmd_help() {
   print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
   print("  <name> ARGS     run an installed package (e.g. banner, todo, figlet)")
-  print("  text:           cat | grep | head | wc | write | echo")
+  print("  text:           cat | edit | grep | head | wc | write | echo | man")
   print("  server:         top | service | target | logs | uname | free | df | ps | hostname")
   print("  users:          whoami | id | users | useradd | passwd | su | logout")
   print("  net/time:       netstat | ping | date | uptime | reboot | shutdown")

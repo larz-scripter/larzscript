@@ -1,0 +1,34 @@
+# edit - a simple line editor (ed-style).  usage: edit <file>
+#   a = append lines (end with a lone '.')   p = print   d N = delete line N
+#   w = write (save)   q = quit
+fn run(args) {
+  if len(args) == 0 { print("usage: edit <file>"); return }
+  let path = args[0]
+  let lines = []
+  if file_exists(path) {
+    for l in read_file(path).split("\n") { lines.push(l) }
+    if len(lines) > 0 and lines[len(lines) - 1] == "" { lines = lines[0:len(lines) - 1] }
+  }
+  print("edit " + path + " (" + str(len(lines)) + " lines).  a=append p=print d N=del w=write q=quit")
+  while true {
+    let cmd = input(": ")
+    if cmd == nil { break }
+    cmd = cmd.strip()
+    if cmd == "q" { break }
+    else if cmd == "p" { let i = 1; for l in lines { print(str(i) + "  " + l); i = i + 1 } }
+    else if cmd == "a" {
+      print("(type lines; a lone '.' ends input)")
+      while true { let ln = input(""); if ln == nil or ln == "." { break } lines.push(ln) }
+    }
+    else if cmd.starts_with("d ") {
+      let n = int(cmd[2:])
+      if n >= 1 and n <= len(lines) {
+        let out = []; let i = 1
+        for l in lines { if i != n { out.push(l) } i = i + 1 }
+        lines = out; print("deleted line " + str(n))
+      } else { print("no such line") }
+    }
+    else if cmd == "w" { write_file(path, join(lines, "\n") + "\n"); print("wrote " + str(len(lines)) + " lines to " + path) }
+    else { print("commands: a p d N w q") }
+  }
+}
