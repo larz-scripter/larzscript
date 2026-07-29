@@ -56,7 +56,32 @@ larzos:/ $ todo list
 ```
 
 After a reboot (with a disk attached), `todo` is still installed and its list is
-intact. New packages drop into `/repo` (baked) — or, later, a network repo.
+intact.
+
+### A money-native App Store (unique to LarzOS)
+
+The thing no other OS has: because Larzscript is money-native, so is LarzOS's
+**App Store**. `pkg store` browses a **remote** repo over the network; apps have
+**prices**, and `pkg get` **pays from the OS wallet** — and *fails closed* with
+no funds, the same guarantee the language gives `pay`/`require`. Every purchase
+is written to a persistent **`ledger`**, and installs survive reboots.
+
+```
+larzos:/ $ pkg store
+LarzOS App Store  @  10.0.2.2:28000     (wallet: $99.98)
+  cowsay      free     an ascii cow says your message
+  pro         $1.00    Pro power tools (premium)
+larzos:/ $ pkg get pro
+paid $1.00 for pro  (wallet: $98.95)
+larzos:/ $ ledger
+- $1.00  app: pro
+larzos:/ $ pkg get enterprise
+insufficient funds: enterprise costs $99999.00, wallet has $98.90
+```
+
+The whole thing — the store client, the wallet/ledger (`bank`), the apps — is
+Larzscript; the kernel just provides an outbound TCP/HTTP client through the
+virtual file `/net/get/<host>/<path>`.
 
 ### Clock & networking
 

@@ -64,10 +64,16 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   (`net.c`) handles the handshake and hands requests to `webserver.lz` via
   `/net/http/*` files; verified with `curl` from the host returning money-native
   pages over TCP. A real, if minimal, server on bare metal — no Linux.
-- Next: outbound TCP so `pkg` fetches from a **remote repo** (apt over the
-  network); a multi-connection / keep-alive server; interrupt-driven I/O; a
-  bigger on-disk filesystem; and `init.lz` supervising long-running services
-  (e.g. the web server). Userland stays 100% Larzscript.
+- Also ✅: **outbound TCP + a money-native App Store** — `pkg store`/`pkg get`
+  fetch from a remote repo over the network, apps have **prices**, buying **pays
+  from the OS wallet and fails closed** without funds, purchases hit a persistent
+  **`ledger`**, and installs survive reboots. This is the unique thing: money is
+  a first-class OS primitive, so the app store is money-native. Verified over
+  QEMU.
+- Next: a multi-connection / keep-alive web server; interrupt-driven I/O; a
+  bigger on-disk filesystem; `init.lz` supervising services; and more money-
+  native OS features (per-process gas accounting, HTTP 402 paywalls served by
+  the kernel). Userland stays 100% Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most
