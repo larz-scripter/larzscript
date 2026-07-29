@@ -160,16 +160,19 @@ curl http://localhost:8080/
 Build it with `EXTRA=-DLARZ_SERVER` (boots straight into the server), or just run
 `webserver` inside `larzsh`.
 
-**HTTP 402 paywalls** — the money-native angle, applied to the web. Premium
-articles are paywalled: an unpaid request gets a real **`HTTP/1.0 402 Payment
-Required`**; `GET /buy?item=…` settles the price from the OS wallet
-(`bank.debit`, **fails closed** with no funds) and marks it paid; then `GET
-/read?item=…` returns `200` with the content. Purchases persist across reboots.
+**A money-native web service** — the unique angle, applied to the web. Visitors
+**register/log in over HTTP** (cookie sessions), each gets **their own wallet**
+(a `$10` signup bonus), and premium articles are paywalled per-user: an unpaid
+request gets a real **`HTTP/1.0 402 Payment Required`**; `GET /buy?item=…` charges
+**that user's** wallet (**fails closed**), and ownership is per-account. Accounts,
+balances, and purchases persist across reboots (sessions are in-memory).
 
 ```
-$ curl -i .../read?item=deepdive   → HTTP/1.0 402 Payment Required
-$ curl    .../buy?item=deepdive     → Paid $2.00
-$ curl -i .../read?item=deepdive   → HTTP/1.0 200 OK   (and it stays 200 after reboot)
+$ curl -c jar -b jar  .../register?user=alice&pw=secret   → $10 signup bonus
+$ curl -c jar -b jar -i .../read?item=deepdive            → HTTP/1.0 402 Payment Required
+$ curl -c jar -b jar    .../buy?item=deepdive             → paid $2.00; balance $8.00
+$ curl -c jar -b jar -i .../read?item=deepdive            → HTTP/1.0 200 OK
+# a different account (bob) still gets 402 for that article — ownership is per-user
 ```
 
 Build variants: default runs `/boot.lz` then halts (deterministic, for

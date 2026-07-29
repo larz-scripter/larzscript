@@ -82,12 +82,14 @@ on a real 64-bit laptop (give it ≥ 128 MiB RAM).
   (`multi-user` login or `web` = auto-start the web server headless), and admin
   tools (`uname`/`ps`/`motd`/`reboot`/`shutdown`). Boots straight into serving
   when `target web` is set.
-- Also ✅: **money-native HTTP 402 paywalls** — the web server returns real `402
-  Payment Required` for premium content and settles the price from the OS wallet
-  (fails closed); purchases persist across reboots. The unique angle, on the web.
+- Also ✅: a **money-native web SERVICE** — HTTP accounts (register/login, cookie
+  sessions), a **per-user wallet** with a signup bonus, and per-user HTTP 402
+  paywalls that charge that user's balance (fails closed). Accounts, balances and
+  purchases persist across reboots. A real monetized SaaS on bare metal.
 - Next: a multi-connection / keep-alive web server; interrupt-driven I/O; file
-  ownership/permissions; per-process gas accounting enforced by the kernel; and a
-  per-visitor wallet model for the paywall. Userland stays 100% Larzscript.
+  ownership/permissions; per-process gas accounting enforced by the kernel; and
+  withdrawing/settling the web treasury to the OS wallet. Userland stays 100%
+  Larzscript.
 
 ### Stage 2 — Larzscript native compiler (`larzc`)
 Give Larzscript a **native-code backend** (Larzscript → x86_64/aarch64, most
