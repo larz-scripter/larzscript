@@ -38,6 +38,7 @@ windows: larzscript.c
 # surfacing as a bogus "out of memory" rather than a clean stack-overflow
 # trap. 8MB matches a typical native thread stack and leaves headroom.
 wasm-node: larzscript.c
+	@mkdir -p wasm
 	emcc $(CFLAGS) -o wasm/larzscript-node.js larzscript.c \
 		-s ENVIRONMENT=node -s ALLOW_MEMORY_GROWTH=1 -s NODERAWFS=1 -s STACK_SIZE=8388608
 
@@ -49,6 +50,7 @@ wasm-node: larzscript.c
 # browser needed to verify the dom/callback-bridge mechanics, only to eyeball
 # the actual demo page.
 wasm-web: larzscript.c
+	@mkdir -p wasm
 	emcc $(CFLAGS) -o wasm/larzscript-web.js larzscript.c \
 		-s MODULARIZE=1 -s EXPORT_NAME=Larzscript \
 		-s ALLOW_MEMORY_GROWTH=1 -s STACK_SIZE=8388608 \
