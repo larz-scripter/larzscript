@@ -20,7 +20,10 @@ chmod +x larzscript-linux-x86_64
 ./larzscript-linux-x86_64 program.lz
 ```
 
-It has zero dependencies — copy it anywhere and run it.
+It has zero dependencies — copy it anywhere and run it. On Windows, grab
+`larzscript-windows-x86_64.exe` (or run `install.ps1` from the repo root to
+also add it to your PATH) — it's statically linked too, so it only touches
+`kernel32.dll`/`msvcrt.dll`, present on every Windows install.
 
 ## Or build it yourself
 
@@ -32,13 +35,14 @@ cc -O2 -o larzscript native/larzscript.c        # or: make -C native
 ./larzscript repl                               # interactive REPL
 ./larzscript fmt program.lz                     # canonical auto-formatter (idempotent)
 sudo make -C native install                     # -> /usr/local/bin/larzscript
+make -C native windows                          # cross-compile larzscript.exe (needs mingw-w64)
 ```
 
 The **formatter** (`larzscript fmt`) reprints a program in canonical style
 (consistent indentation and spacing). It's idempotent like `gofmt` — running it
 twice changes nothing, and formatted code behaves identically.
 
-One source file, ~850 lines, libc only. Runs on aarch64 and x86_64.
+One source file, ~2400 lines, libc only. Runs on Linux (aarch64, x86_64) and Windows (x86_64).
 
 ## Example
 

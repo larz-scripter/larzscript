@@ -20,6 +20,13 @@ pip). You write `.lz` files and run them — just like any other language.
 curl -fsSL https://raw.githubusercontent.com/larz-scripter/larzscript/main/install.sh | sh
 ```
 
+**Windows** (PowerShell) — installs `larzscript.exe` and adds it to your PATH,
+so `larzscript` works in any new cmd/PowerShell window, just like Python:
+
+```powershell
+irm https://raw.githubusercontent.com/larz-scripter/larzscript/main/install.ps1 | iex
+```
+
 Or grab a binary from [Releases](https://github.com/larz-scripter/larzscript/releases),
 or build it — one C file, no dependencies:
 
