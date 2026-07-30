@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.18.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.19.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -2443,6 +2443,22 @@ static char *update_self_path(void){
 #endif
 }
 
+/* curl on Linux (matches install.sh); PowerShell's Invoke-WebRequest on
+ * Windows, NOT curl - install.ps1 already uses Invoke-WebRequest (verified
+ * working), and a plain `curl` isn't guaranteed present (confirmed absent
+ * under Wine while testing this; even on real Windows 10/11, System32's
+ * curl.exe is a relatively recent addition (1803+) that some locked-down or
+ * Server Core images strip - PowerShell itself is the safer universal bet). */
+static int update_fetch(const char *url, const char *outpath){
+  char cmd[8448];
+#ifdef _WIN32
+  snprintf(cmd,sizeof cmd,"powershell -NoProfile -Command \"Invoke-WebRequest -UseBasicParsing -Uri '%s' -OutFile '%s'\"",url,outpath);
+#else
+  snprintf(cmd,sizeof cmd,"curl -fsSL \"%s\" -o \"%s\"",url,outpath);
+#endif
+  return system(cmd);
+}
+
 static int cmd_update(void){
   if(!sha256_selftest()){ fprintf(stderr,"larzscript update: internal SHA-256 self-test failed - aborting, nothing touched\n"); return 1; }
 
@@ -2466,11 +2482,9 @@ static int cmd_update(void){
    * stray .old is wasted disk space, not a correctness issue. */
   { char oldpath[4160]; snprintf(oldpath,sizeof oldpath,"%s.old",self); remove(oldpath); }
 
-  char sumsurl[256]; snprintf(sumsurl,sizeof sumsurl,
-    "https://github.com/larz-scripter/larzscript/releases/latest/download/SHA256SUMS");
+  const char *sumsurl = "https://github.com/larz-scripter/larzscript/releases/latest/download/SHA256SUMS";
   char sumstmp[4096]; snprintf(sumstmp,sizeof sumstmp,"%s/.larzscript_SHA256SUMS",selfdir);
-  char cmd[8448]; snprintf(cmd,sizeof cmd,"curl -fsSL \"%s\" -o \"%s\"",sumsurl,sumstmp);
-  if(system(cmd)!=0){ fprintf(stderr,"larzscript update: could not reach GitHub to check for updates\n"); free(self); return 1; }
+  if(update_fetch(sumsurl,sumstmp)!=0){ fprintf(stderr,"larzscript update: could not reach GitHub to check for updates\n"); free(self); return 1; }
   size_t sumslen; char *sums=update_read_file(sumstmp,&sumslen);
   remove(sumstmp);
   if(!sums){ fprintf(stderr,"larzscript update: could not read the downloaded SHA256SUMS\n"); free(self); return 1; }
@@ -2495,9 +2509,8 @@ static int cmd_update(void){
   char url[512]; snprintf(url,sizeof url,
     "https://github.com/larz-scripter/larzscript/releases/latest/download/%s", asset);
   char tmp[4160]; snprintf(tmp,sizeof tmp,"%s.new",self);   /* same directory => the later rename is atomic */
-  snprintf(cmd,sizeof cmd,"curl -fsSL \"%s\" -o \"%s\"",url,tmp);
   printf("downloading update...\n");
-  if(system(cmd)!=0){ fprintf(stderr,"larzscript update: download failed\n"); remove(tmp); free(self); return 1; }
+  if(update_fetch(url,tmp)!=0){ fprintf(stderr,"larzscript update: download failed\n"); remove(tmp); free(self); return 1; }
 
   size_t newlen; char *newbuf=update_read_file(tmp,&newlen);
   if(!newbuf){ fprintf(stderr,"larzscript update: could not read the downloaded file\n"); remove(tmp); free(self); return 1; }
