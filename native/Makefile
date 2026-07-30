@@ -54,7 +54,7 @@ wasm-web: larzscript.c
 		-s ALLOW_MEMORY_GROWTH=1 -s STACK_SIZE=8388608 \
 		-s ENVIRONMENT=web,node \
 		-s EXPORTED_RUNTIME_METHODS=ccall,cwrap \
-		-s EXPORTED_FUNCTIONS=_larz_eval_source,_larz_invoke_callback,_malloc,_free \
+		-s EXPORTED_FUNCTIONS=_larz_eval_source,_larz_invoke_callback,_larz_invoke_fetch_callback,_malloc,_free \
 		-s INVOKE_RUN=0
 
 .PHONY: install clean windows wasm-node wasm-web

@@ -1782,6 +1782,24 @@ EM_JS(void, ui_js_on, (const char *sel, const char *event, int cb_id), {
     el.addEventListener(ev, function(){ Module.ccall('larz_invoke_callback', null, ['number'], [cb_id]); });
   });
 });
+/* ui.fetch(url, fn) - fn(status, body) is called once the request settles.
+ * A network error (no response at all, e.g. offline/CORS) calls fn(0, message)
+ * rather than dropping the callback silently - fn always fires exactly once. */
+EM_JS(void, ui_js_fetch, (const char *url, int cb_id), {
+  var u = UTF8ToString(url);
+  fetch(u).then(function(resp){
+    return resp.text().then(function(body){ return [resp.status, body]; });
+  }).catch(function(err){
+    return [0, String(err)];
+  }).then(function(pair){
+    var body = pair[1];
+    var len = lengthBytesUTF8(body) + 1;
+    var ptr = _malloc(len);
+    stringToUTF8(body, ptr, len);
+    Module.ccall('larz_invoke_fetch_callback', null, ['number','number','number'], [cb_id, pair[0], ptr]);
+    _free(ptr);
+  });
+});
 
 static Value bi_ui_set_text(Interp *ip, Value *a, int n){
   if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.set_text() expects (selector, text)");
@@ -1820,11 +1838,20 @@ static Value bi_ui_on(Interp *ip, Value *a, int n){
   ui_js_on(a[0].str, a[1].str, id);
   return V_nil();
 }
+static Value bi_ui_fetch(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||(a[1].t!=V_FUNC&&a[1].t!=V_BUILTIN))
+    runtime_error(ip,"LarzTypeError","ui.fetch() expects (url, function) - function is called as fn(status, body)");
+  if(g_ui_ncb==g_ui_cbcap){ g_ui_cbcap=g_ui_cbcap?g_ui_cbcap*2:16; g_ui_callbacks=realloc(g_ui_callbacks,g_ui_cbcap*sizeof(Value)); }
+  int id=g_ui_ncb++;
+  g_ui_callbacks[id]=a[1];
+  ui_js_fetch(a[0].str, id);
+  return V_nil();
+}
 
 static Builtin UB_set_text={"set_text",bi_ui_set_text}, UB_get_text={"get_text",bi_ui_get_text},
   UB_get_value={"get_value",bi_ui_get_value}, UB_set_value={"set_value",bi_ui_set_value},
   UB_set_html={"set_html",bi_ui_set_html}, UB_add_class={"add_class",bi_ui_add_class},
-  UB_remove_class={"remove_class",bi_ui_remove_class}, UB_on={"on",bi_ui_on};
+  UB_remove_class={"remove_class",bi_ui_remove_class}, UB_on={"on",bi_ui_on}, UB_fetch={"fetch",bi_ui_fetch};
 
 static void register_ui_module(Env *g){
   Env *e=env_new(NULL);
@@ -1836,6 +1863,7 @@ static void register_ui_module(Env *g){
   env_define(e,"add_class",V_builtin(&UB_add_class));
   env_define(e,"remove_class",V_builtin(&UB_remove_class));
   env_define(e,"on",V_builtin(&UB_on));
+  env_define(e,"fetch",V_builtin(&UB_fetch));
   env_define(g,"ui",V_module(e,xstrdup("ui")));
 }
 
@@ -1871,6 +1899,20 @@ void larz_invoke_callback(int id){
   if(setjmp(g_web_ip.jb)){ fprintf(stderr,"%s: %s\n", g_web_ip.errname, g_web_ip.errmsg); return; }
   g_web_ip.returning=0; g_web_ip.loopflow=0;
   call_value(&g_web_ip, g_ui_callbacks[id], NULL, 0);
+}
+
+/* ui.fetch()'s callback: fn(status, body). status is a plain number (0 on a
+ * network-level failure, never a real HTTP status - fetch() itself resolves
+ * even for 4xx/5xx responses); body is copied into a proper GC string by
+ * V_string before this returns, so the transient wasm-heap buffer JS passed
+ * in (freed by the caller right after this call returns) is never retained. */
+EMSCRIPTEN_KEEPALIVE
+void larz_invoke_fetch_callback(int id, int status, const char *body){
+  if(!g_web_ip_ready || id<0 || id>=g_ui_ncb) return;
+  if(setjmp(g_web_ip.jb)){ fprintf(stderr,"%s: %s\n", g_web_ip.errname, g_web_ip.errmsg); return; }
+  g_web_ip.returning=0; g_web_ip.loopflow=0;
+  Value args[2]; args[0]=V_number((double)status); args[1]=V_string(body);
+  call_value(&g_web_ip, g_ui_callbacks[id], args, 2);
 }
 #endif /* __EMSCRIPTEN__ */
 
