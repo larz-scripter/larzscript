@@ -1,19 +1,24 @@
 # larzpkg - the Larzscript package manager, written in Larzscript itself.
 #
-# Installs packages from a registry into ~/.larzscript/lib, where `import "name"`
-# finds them. A registry is a plain text file of `name  git-url` lines; packages
-# are git repos with a main.lz (or <name>.lz) at their root.
+# Installs packages from the registry into ~/.larzscript/lib, where
+# `import "name"` finds them. All packages live in one repo
+# (larzscript-packages, packages/<name>/main.lz each); the registry just maps
+# a short name to its path there. Add a package by opening a PR against
+# larzscript-packages, then append a line to packages/registry.txt.
 #
 #   larzscript larzpkg.lz install <name>
+#   larzscript larzpkg.lz update [name]
 #   larzscript larzpkg.lz list
 #   larzscript larzpkg.lz remove <name>
 #   larzscript larzpkg.lz search <term>
 
 let HOME = env("HOME", ".")
 let LIB = HOME + "/.larzscript/lib"
+let PACKAGES_REPO_URL = "https://github.com/larz-scripter/larzscript-packages"
+let PACKAGES_REPO = HOME + "/.larzscript/packages-repo"
 let REGISTRY_URL = "https://raw.githubusercontent.com/larz-scripter/larzscript/main/packages/registry.txt"
 
-# Fetch the registry and parse it into a {name: url} dict.
+# Fetch the registry and parse it into a {name: path-in-packages-repo} dict.
 fn load_registry() {
   let tmp = "/tmp/larzpkg_registry.txt"
   run("curl -fsSL " + REGISTRY_URL + " -o " + tmp + " 2>/dev/null")
@@ -31,6 +36,33 @@ fn load_registry() {
   return reg
 }
 
+# Clone the shared packages repo once, or pull it up to date. A shallow clone
+# combined with --ff-only can fail if upstream history is ever rewritten;
+# self-heal by re-cloning fresh rather than trying to recover a shallow repo.
+fn ensure_packages_repo() {
+  run("mkdir -p " + HOME + "/.larzscript")
+  if file_exists(PACKAGES_REPO) {
+    let rc = run("git -C " + PACKAGES_REPO + " pull --ff-only --quiet 2>/dev/null")
+    if rc != 0 {
+      print("packages repo out of sync, re-cloning fresh...")
+      run("rm -rf " + PACKAGES_REPO)
+      run("git clone --depth 1 --quiet " + PACKAGES_REPO_URL + " " + PACKAGES_REPO)
+    }
+  } else {
+    run("git clone --depth 1 --quiet " + PACKAGES_REPO_URL + " " + PACKAGES_REPO)
+  }
+}
+
+# Copy packages-repo/<relpath> -> ~/.larzscript/lib/<name>, replacing whatever
+# was there. Shared by both install and update - the only difference between
+# them is which message makes sense to print first.
+fn sync_package(name, relpath) {
+  run("mkdir -p " + LIB)
+  let dest = LIB + "/" + name
+  run("rm -rf " + dest)
+  return run("cp -r " + PACKAGES_REPO + "/" + relpath + " " + dest) == 0
+}
+
 fn install(name) {
   let reg = load_registry()
   if not reg.has(name) {
@@ -38,17 +70,28 @@ fn install(name) {
     print("run 'larzpkg search' to see what's available")
     return
   }
-  let url = reg[name]
-  run("mkdir -p " + LIB)
   let dest = LIB + "/" + name
-  run("rm -rf " + dest)
-  print("installing " + name + " from " + url + " ...")
-  let rc = run("git clone --depth 1 --quiet " + url + " " + dest)
-  if rc == 0 {
-    print("installed " + name + "  ->  " + dest)
+  let verb = file_exists(dest) ? "updating" : "installing"
+  print(verb + " " + name + " ...")
+  ensure_packages_repo()
+  if sync_package(name, reg[name]) {
+    print(name + " is up to date  ->  " + dest)
     print("use it with:  import \"" + name + "\"")
   } else {
-    print("failed to install " + name + " (is git installed and the repo public?)")
+    print("failed to sync " + name + " (is git installed and the packages repo reachable?)")
+  }
+}
+
+fn update(name) { install(name) }
+
+fn update_all() {
+  if not file_exists(LIB) { print("(no packages installed)"); return }
+  let names = listdir(LIB)
+  if len(names) == 0 { print("(no packages installed)"); return }
+  let reg = load_registry()
+  for name in sorted(names) {
+    if reg.has(name) { install(name) }
+    else { print("skipping " + name + " (no longer in the registry)") }
   }
 }
 
@@ -78,7 +121,7 @@ fn search(term) {
   let hits = 0
   for name in sorted(keys(reg)) {
     if term == "" or name.contains(term) {
-      print("  " + name.ljust(20) + reg[name])
+      print("  " + name)
       hits = hits + 1
     }
   }
@@ -90,6 +133,7 @@ fn usage() {
   print("larzpkg - the Larzscript package manager")
   print("usage:")
   print("  larzscript larzpkg.lz install <name>")
+  print("  larzscript larzpkg.lz update [name]   (all installed packages if name omitted)")
   print("  larzscript larzpkg.lz remove <name>")
   print("  larzscript larzpkg.lz list")
   print("  larzscript larzpkg.lz search [term]")
@@ -100,6 +144,7 @@ if len(args) == 0 {
 } else {
   let cmd = args[0]
   if cmd == "install" and len(args) >= 2 { install(args[1]) }
+  else if cmd == "update" { if len(args) >= 2 { update(args[1]) } else { update_all() } }
   else if cmd == "remove" and len(args) >= 2 { remove_pkg(args[1]) }
   else if cmd == "list" { list_installed() }
   else if cmd == "search" { search(len(args) >= 2 ? args[1] : "") }

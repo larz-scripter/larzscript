@@ -1,20 +1,21 @@
-# Larzscript package registry - `name  git-url` per line.
+# Larzscript package registry - `name  path-in-larzscript-packages` per line.
+# All packages live in one repo: https://github.com/larz-scripter/larzscript-packages
 # Install with:  larzscript tools/larzpkg.lz install <name>
-# Add your package by opening a PR that appends a line here.
-mathx   https://github.com/larz-scripter/lz-mathx
-greet   https://github.com/larz-scripter/lz-greet
-json    https://github.com/larz-scripter/lz-json
-http    https://github.com/larz-scripter/lz-http
-test    https://github.com/larz-scripter/lz-test
-color   https://github.com/larz-scripter/lz-color
-csv     https://github.com/larz-scripter/lz-csv
-args    https://github.com/larz-scripter/lz-args
-time    https://github.com/larz-scripter/lz-time
-string  https://github.com/larz-scripter/lz-string
-random  https://github.com/larz-scripter/lz-random
-fs      https://github.com/larz-scripter/lz-fs
-base64  https://github.com/larz-scripter/lz-base64
-table   https://github.com/larz-scripter/lz-table
-log     https://github.com/larz-scripter/lz-log
-cli     https://github.com/larz-scripter/lz-cli
-html    https://github.com/larz-scripter/lz-html
+# Add your package by opening a PR there, then append a line here.
+mathx   packages/mathx
+greet   packages/greet
+json    packages/json
+http    packages/http
+test    packages/test
+color   packages/color
+csv     packages/csv
+args    packages/args
+time    packages/time
+string  packages/string
+random  packages/random
+fs      packages/fs
+base64  packages/base64
+table   packages/table
+log     packages/log
+cli     packages/cli
+html    packages/html
