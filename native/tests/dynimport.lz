@@ -1,0 +1,7 @@
+fn dispatch(cmd, arg) {
+  import cmd as m
+  m.run(arg)
+}
+let base = "dynmodlib/cmd_"
+dispatch(base + "hello", "world")
+dispatch(base + "bye", "world")

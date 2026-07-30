@@ -890,9 +890,8 @@ static int _lz_indir(const char *dir, const char *path, int has_ext, char *out, 
 }
 static int resolve_import(const char *path, const char *basedir, char *out, size_t outsz){
   int has_ext = strstr(path,".lz")!=NULL;
-  char cand[4096];
   if(path[0]=='/'){ if(_lz_try(path,out,outsz)) return 1; }
-  else { snprintf(cand,sizeof cand,"%s/%s", basedir?basedir:".", path); if(_lz_try(cand,out,outsz)) return 1; }
+  else { if(_lz_indir(basedir?basedir:".", path, has_ext, out, outsz)) return 1; }
   const char *lp=getenv("LARZSCRIPT_PATH");
   if(lp && *lp){ char buf[8192]; snprintf(buf,sizeof buf,"%s",lp); char *save=NULL; for(char *d=strtok_r(buf,":",&save); d; d=strtok_r(NULL,":",&save)) if(_lz_indir(d,path,has_ext,out,outsz)) return 1; }
   const char *home=getenv("HOME");
@@ -1515,7 +1514,7 @@ static int bracket_depth(const char *s){
 static void repl(Interp *ip){
   char line[8192];
   static char buf[1<<16]; buf[0]=0;
-  printf("Larzscript native REPL (v1.13.0) - type statements; Ctrl-D to exit.\n"
+  printf("Larzscript native REPL (v1.14.0) - type statements; Ctrl-D to exit.\n"
          "Definitions can span multiple lines; the '..... ' prompt means more is expected.\n");
   for(;;){
     printf(buf[0] ? "..... " : "larz> "); fflush(stdout);
@@ -1965,6 +1964,9 @@ static void ec_stmt(Node *n, int d){
       }
       ec_stmt(n->b,d+1); ec_ind(d); printf("}\n"); break;
     }
+    case N_IMPORT:
+      if(!n->name){ fprintf(stderr,"larzc: dynamic import requires an explicit 'as alias' (line %d)\n", n->line); exit(1); }
+      ec_ind(d); printf("LZ %s = lz_dynimport(", n->name); ec_expr(n->a); printf(");\n"); break;
     default: fprintf(stderr,"larzc: unsupported statement (node %d)\n", n->kind); exit(1);
   }
 }
@@ -1999,10 +2001,16 @@ static void emit_runtime(void){
   puts("static void lz_dput(LZ D,const char*k,LZ val){int j=lz_dfind(D,k);DCT*d=(DCT*)D.p;if(j>=0){d->vals[j]=val;return;}if(d->n>=d->cap){d->cap=d->cap?d->cap*2:8;d->keys=(char**)realloc(d->keys,d->cap*sizeof(char*));d->vals=(LZ*)realloc(d->vals,d->cap*sizeof(LZ));}d->keys[d->n]=strdup(k);d->vals[d->n++]=val;}");
   puts("static int lz_lenN(LZ v){if(v.t==4)return((LST*)v.p)->n;if(v.t==5)return((DCT*)v.p)->n;if(v.t==2)return v.s?(int)strlen(v.s):0;return 0;}");
   puts("static LZ lz_index(LZ o,LZ i){if(o.t==5){if(i.t==2){int j=lz_dfind(o,i.s);return j>=0?((DCT*)o.p)->vals[j]:lznil();}int idx=(int)i.n;DCT*d=(DCT*)o.p;if(idx<0||idx>=d->n)return lznil();return lzstr(d->keys[idx]);}int idx=(int)i.n;if(o.t==4){LST*l=(LST*)o.p;if(idx<0)idx+=l->n;if(idx<0||idx>=l->n)return lznil();return l->items[idx];}if(o.t==2){int n=(int)strlen(o.s);if(idx<0)idx+=n;if(idx<0||idx>=n)return lznil();char b[2]={o.s[idx],0};return lzstr(b);}return lznil();}");
-  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7||v.t==8||v.t==9)return 1;return 0;}");
+  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7||v.t==8||v.t==9||v.t==10)return 1;return 0;}");
   /* closures (t=9): fn pointer + by-value captured environment; map/filter/reduce use lz_call */
   puts("typedef struct{LZ(*fn)(LZ*,LZ*);LZ*cap;char*name;}CLO;");
   puts("static LZ lzclosure(LZ(*fn)(LZ*,LZ*),int arity,const char*name,int ncap,...){(void)arity;CLO*c=(CLO*)malloc(sizeof(CLO));c->fn=fn;c->name=strdup(name);c->cap=ncap?(LZ*)malloc(ncap*sizeof(LZ)):0;va_list ap;va_start(ap,ncap);for(int i=0;i<ncap;i++)c->cap[i]=va_arg(ap,LZ);va_end(ap);LZ v={9,0,0,c};return v;}");
+  /* dynamic-module handle (t=10): DEXP/DMOD types + the registry they'll be backed by
+   * (defined later in emit_c() once the discovered modules are known; forward-declared
+   * here since lz_tostr/lz_dynimport/lz_method all reference them). */
+  puts("typedef struct{const char*name;LZ(*fn)(LZ*,LZ*);}DEXP;");
+  puts("typedef struct{const char*name;DEXP*exports;int nexports;}DMOD;");
+  puts("extern DMOD g_dynmods[]; extern int g_ndynmods;");
   puts("static LZ lz_call(LZ f,int argc,LZ*args){(void)argc;if(f.t==9){CLO*c=(CLO*)f.p;return c->fn(c->cap,args);}fputs(\"LarzTypeError: value is not a function\\n\",stderr);exit(1);}");
   puts("static LZ lz_map(LZ f,LZ L){LZ r=lzlist();LST*l=(LST*)L.p;for(int i=0;i<l->n;i++){LZ a[1]={l->items[i]};lz_push(r,lz_call(f,1,a));}return r;}");
   puts("static LZ lz_filter(LZ f,LZ L){LZ r=lzlist();LST*l=(LST*)L.p;for(int i=0;i<l->n;i++){LZ a[1]={l->items[i]};if(lztruthy(lz_call(f,1,a)))lz_push(r,l->items[i]);}return r;}");
@@ -2021,7 +2029,13 @@ static void emit_runtime(void){
   puts("  if(v.t==6){long long c=(long long)v.n,ac=c<0?-c:c;sprintf(b,\"%s$%lld.%02lld\",c<0?\"-\":\"\",ac/100,ac%100);return strdup(b);}");
   puts("  if(v.t==8){PW*p=(PW*)v.p;long long c=p->price<0?-p->price:p->price;char*r=(char*)malloc(strlen(p->name)+strlen(p->period)+48);sprintf(r,\"<paywall %s: $%lld.%02lld/%s>\",p->name,c/100,c%100,p->period);return r;}");
   puts("  if(v.t==9){CLO*c=(CLO*)v.p;char*r=(char*)malloc(strlen(c->name)+8);sprintf(r,\"<fn %s>\",c->name);return r;}");
+  puts("  if(v.t==10){DMOD*m=(DMOD*)v.p;char*r=(char*)malloc(strlen(m->name)+16);sprintf(r,\"<module %s>\",m->name);return r;}");
   puts("  return strdup(\"nil\");}");
+  /* dynamic import (t=10): a runtime name -> module handle, backed by a compile-time
+   * closed-world registry (every .lz file the module search path can see when larzc
+   * itself runs). g_dynmods/g_ndynmods are generated later in emit_c() once the set of
+   * discovered modules is known. */
+  puts("static LZ lz_dynimport(LZ namev){const char*want=lz_tostr(namev);for(int i=0;i<g_ndynmods;i++)if(!strcmp(g_dynmods[i].name,want)){LZ v={10,0,0,(void*)&g_dynmods[i]};return v;}fprintf(stderr,\"ImportError: cannot find module '%s' (not visible to larzc at compile time)\\n\",want);exit(1);}");
   /* file I/O + math/utility builtins (a compiled program runs on a hosted OS) */
   puts("static LZ lz_read_file(LZ p){FILE*f=fopen(lz_tostr(p),\"rb\");if(!f){fprintf(stderr,\"IOError: cannot read file '%s'\\n\",lz_tostr(p));exit(1);}size_t cap=65536,len=0;char*b=(char*)malloc(cap);size_t r;while((r=fread(b+len,1,cap-len,f))>0){len+=r;if(len==cap){cap*=2;b=(char*)realloc(b,cap);}}b[len]=0;fclose(f);LZ v={2,0,b,0};return v;}");
   puts("static LZ lz_write_file(LZ p,LZ c){FILE*f=fopen(lz_tostr(p),\"wb\");if(!f){fprintf(stderr,\"IOError: cannot write file '%s'\\n\",lz_tostr(p));exit(1);}fputs(lz_tostr(c),f);fclose(f);return lznil();}");
@@ -2059,6 +2073,7 @@ static void emit_runtime(void){
   puts("  va_list ap;va_start(ap,n);LZ A[4];for(int i=0;i<n&&i<4;i++)A[i]=va_arg(ap,LZ);va_end(ap);");
   puts("  if(o.t==4&&!strcmp(m,\"push\"))return lz_push(o,A[0]);");
   puts("  if(o.t==5){if(!strcmp(m,\"get\")){int j=lz_dfind(o,lz_tostr(A[0]));return j>=0?((DCT*)o.p)->vals[j]:(n>=2?A[1]:lznil());}if(!strcmp(m,\"has\"))return lzbool(lz_dfind(o,lz_tostr(A[0]))>=0);}");
+  puts("  if(o.t==10){DMOD*dm=(DMOD*)o.p;for(int i=0;i<dm->nexports;i++)if(!strcmp(dm->exports[i].name,m))return dm->exports[i].fn(0,A);fprintf(stderr,\"LarzNameError: module '%s' has no member '%s'\\n\",dm->name,m);exit(1);}");
   puts("  if(o.t!=2)return lznil();");
   puts("  char*s=o.s?o.s:(char*)\"\";int L=(int)strlen(s);");
   puts("  if(!strcmp(m,\"upper\")){char*r=strdup(s);for(char*p=r;*p;p++)if(*p>='a'&&*p<='z')*p-=32;LZ v={2,0,r,0};return v;}");
@@ -2080,8 +2095,9 @@ static void emit_runtime(void){
 /* ---- larzc static import: parse a module, mangle its symbols, inline it ----
  * `import "m" as alias` is resolved + parsed at compile time; the module's
  * top-level symbols are prefixed (__m_alias_) and inlined into the output, and
- * alias.member references rewire to the prefixed name. (Dynamic imports and
- * nested module imports are rejected with a clear error.) */
+ * alias.member references rewire to the prefixed name. (Nested module imports
+ * are rejected with a clear error. Dynamic imports - `import <expr> as alias`
+ * where the path isn't a literal string - are handled separately below.) */
 static char g_srcdir[4096]="";
 
 static void rename_syms(Node *n, SSet *syms, const char *prefix){
@@ -2126,14 +2142,120 @@ static void load_module(Node *imp, Node ***T, int *nT){
   for(int i=0;i<mp->nkids;i++){ *T=(Node**)realloc(*T,(*nT+1)*sizeof(Node*)); (*T)[(*nT)++]=mp->kids[i]; }
   g_imp=(Import*)realloc(g_imp,(g_nimp+1)*sizeof(Import)); g_imp[g_nimp++]=im;
 }
+
+/* ---- larzc dynamic import: `import <expr> as alias` where <expr> isn't a
+ * literal string. The alias is only known at RUNTIME, so this can't inline a
+ * single fixed module the way load_module() does. Instead larzc compiles a
+ * CLOSED WORLD: every .lz file visible on the module search path (the same
+ * directories the interpreter's resolve_import searches) AT COMPILE TIME is
+ * parsed + inlined (like a static import, own symbol prefix `__d_<name>_`)
+ * and registered by its basename in a runtime name->module-handle table
+ * (DMOD/g_dynmods, declared in emit_runtime()). `import cmd as m` then
+ * compiles to a runtime table lookup (lz_dynimport), and `m.fn(args)` already
+ * falls through to the generic lz_method() dispatcher (see N_METHOD in
+ * ec_expr) which was taught to search a module handle's export table.
+ * LIMITATION: a module dropped into the search path AFTER compiling (e.g. by
+ * an on-device package manager) is invisible to the compiled binary - it only
+ * sees what larzc could see. Modules with a nested `import` of their own are
+ * rejected, same as static imports. */
+typedef struct { char *name, *prefix; SSet fns; } DynMod;
+static DynMod *g_dynmod=0; static int g_ndynmod=0;
+
+/* true if `n` contains an N_IMPORT that ISN'T a literal-path top-level import
+ * of `prog` (i.e. one load_module() already/will handle) - covers both a
+ * dynamic-path import and any import nested inside a fn/if/while/for body. */
+static int has_extra_import(Node *n, Node *prog){
+  if(!n) return 0;
+  if(n->kind==N_IMPORT){
+    int top_literal=0;
+    if(n->a->kind==N_STR) for(int i=0;i<prog->nkids;i++) if(prog->kids[i]==n){ top_literal=1; break; }
+    if(!top_literal) return 1;
+  }
+  if(has_extra_import(n->a,prog)||has_extra_import(n->b,prog)||has_extra_import(n->c,prog)) return 1;
+  for(int i=0;i<n->nkids;i++) if(has_extra_import(n->kids[i],prog)) return 1;
+  return 0;
+}
+static int needs_dynamic_registry(Node *prog){
+  for(int i=0;i<prog->nkids;i++) if(has_extra_import(prog->kids[i],prog)) return 1;
+  return 0;
+}
+static char *basename_noext(const char *path){
+  const char *base=strrchr(path,'/'); base=base?base+1:path;
+  char *r=strdup(base); char *dot=strrchr(r,'.'); if(dot && !strcmp(dot,".lz")) *dot=0;
+  return r;
+}
+static void add_uniq_lz_file(char ***names, int *nn, const char *path){
+  const char *base=strrchr(path,'/'); base=base?base+1:path;
+  for(int i=0;i<*nn;i++){ const char*b2=strrchr((*names)[i],'/'); b2=b2?b2+1:(*names)[i]; if(!strcmp(b2,base)) return; }
+  *names=(char**)realloc(*names,(*nn+1)*sizeof(char*)); (*names)[(*nn)++]=strdup(path);
+}
+static void scan_dir_for_lz(const char *dir, char ***names, int *nn, const char *skip_path){
+  DIR *d=opendir(dir); if(!d) return;
+  struct dirent *e;
+  while((e=readdir(d))){
+    size_t l=strlen(e->d_name);
+    if(l<=3 || strcmp(e->d_name+l-3,".lz")!=0) continue;
+    char path[4096]; snprintf(path,sizeof path,"%s/%s",dir,e->d_name);
+    if(skip_path){ const char*b1=strrchr(path,'/'); b1=b1?b1+1:path; const char*b2=strrchr(skip_path,'/'); b2=b2?b2+1:skip_path; if(!strcmp(b1,b2)) continue; }
+    add_uniq_lz_file(names,nn,path);
+  }
+  closedir(d);
+}
+/* enumerate every .lz file the runtime's resolve_import() could ever find -
+ * source dir, $LARZSCRIPT_PATH, ~/.larzscript/lib, ./lz_modules - excluding
+ * the entry program itself (compile-time equivalent of the interpreter's
+ * search order; deliberately no strtok, see commit eb92ec2). */
+static char **discover_dynamic_modules(int *outn, const char *main_path){
+  char **names=0; int nn=0;
+  scan_dir_for_lz(g_srcdir[0]?g_srcdir:".", &names,&nn, main_path);
+  const char *lp=getenv("LARZSCRIPT_PATH");
+  if(lp){ const char *s=lp; while(*s){ const char *e2=s; while(*e2 && *e2!=':') e2++; int len=(int)(e2-s); if(len>0 && len<4000){ char dir[4096]; memcpy(dir,s,(size_t)len); dir[len]=0; scan_dir_for_lz(dir,&names,&nn,main_path); } s = *e2 ? e2+1 : e2; } }
+  const char *home=getenv("HOME");
+  if(home){ char dir[4096]; snprintf(dir,sizeof dir,"%s/.larzscript/lib",home); scan_dir_for_lz(dir,&names,&nn,main_path); }
+  scan_dir_for_lz("lz_modules",&names,&nn,main_path);
+  *outn=nn; return names;
+}
+/* parse+prefix+inline one discovered module file, same shape as load_module()
+ * but recorded into g_dynmod (keyed by runtime name) instead of g_imp (which
+ * is keyed by a compile-time-known surface alias, not applicable here). */
+static void inline_dynamic_module(const char *file, const char *modname, Node ***T, int *nT){
+  Node *mp=parse_program(lex(read_all(file)));
+  char pfx[256]; snprintf(pfx,sizeof pfx,"__d_%s_",modname);
+  SSet syms={0,0,0}, fns={0,0,0};
+  /* Discovery is speculative (every .lz the search path can see, whether or not this
+   * program actually dynamic-imports it by that name) - so a discovered module may
+   * NOT have loose top-level statements. Unlike a static `import "x" as y` (an
+   * explicit, one-time request to run x's body), unconditionally inlining and
+   * running an unrelated bystander script's side effects into every other compiled
+   * program would be silently wrong. Require modules on the search path to be pure
+   * fn/let/price/wallet/paywall declarations; reject anything else with a clear error
+   * rather than guess when (if ever) it's safe to run. */
+  for(int i=0;i<mp->nkids;i++){ Node*k=mp->kids[i];
+    if(k->kind==N_IMPORT){ fprintf(stderr,"larzc: nested import in dynamic module '%s' is unsupported\n", modname); exit(1); }
+    if(k->kind==N_FN && k->name){ ss_add(&syms,k->name); ss_add(&fns,k->name); }
+    else if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL)&&k->name){ ss_add(&syms,k->name); }
+    else { fprintf(stderr,"larzc: '%s' (found on the module search path) has top-level code that isn't a fn/let/price/wallet/paywall declaration, so larzc can't safely treat it as a dynamic-import target (it would run as a side effect of ANY program that dynamically imports anything); move it out of the search path if it's not meant to be imported\n", file); exit(1); }
+  }
+  rename_syms(mp, &syms, pfx);
+  for(int i=0;i<mp->nkids;i++){ *T=(Node**)realloc(*T,(*nT+1)*sizeof(Node*)); (*T)[(*nT)++]=mp->kids[i]; }
+  g_dynmod=(DynMod*)realloc(g_dynmod,(g_ndynmod+1)*sizeof(DynMod));
+  g_dynmod[g_ndynmod].name=strdup(modname); g_dynmod[g_ndynmod].prefix=strdup(pfx); g_dynmod[g_ndynmod].fns=fns;
+  g_ndynmod++;
+}
 static void emit_topfn_sig(Node *k){ printf("LZ %s(", k->name); for(int j=0;j<k->nparams;j++){ if(j)printf(","); printf("LZ %s", k->params[j]); } if(k->nparams==0) printf("void"); printf(")"); }
-static void emit_c(Node *prog){
+static void emit_c(Node *prog, const char *main_path){
   emit_runtime();
   /* Build the combined top-level: inlined module nodes (in import order) then the
    * main program's non-import nodes. Everything downstream treats this uniformly. */
   Node **T=0; int nT=0;
-  for(int i=0;i<prog->nkids;i++) if(prog->kids[i]->kind==N_IMPORT) load_module(prog->kids[i], &T, &nT);
-  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_IMPORT) continue; T=(Node**)realloc(T,(nT+1)*sizeof(Node*)); T[nT++]=k; }
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_IMPORT && k->a->kind==N_STR) load_module(k, &T, &nT); }
+  /* dynamic import: if any import (top-level or nested) needs a runtime lookup,
+   * compile the whole closed world of discoverable modules and register them. */
+  if(needs_dynamic_registry(prog)){
+    int nfiles=0; char **files=discover_dynamic_modules(&nfiles, main_path);
+    for(int i=0;i<nfiles;i++){ char *modname=basename_noext(files[i]); inline_dynamic_module(files[i], modname, &T, &nT); free(modname); }
+  }
+  for(int i=0;i<prog->nkids;i++){ Node*k=prog->kids[i]; if(k->kind==N_IMPORT && k->a->kind==N_STR) continue; T=(Node**)realloc(T,(nT+1)*sizeof(Node*)); T[nT++]=k; }
 
   /* gather top-level globals + functions */
   for(int i=0;i<nT;i++){ Node*k=T[i];
@@ -2148,6 +2270,20 @@ static void emit_c(Node *prog){
   /* forward declarations: top-level fns + their value-adapters + hoisted lambdas */
   for(int i=0;i<g_ntopfn;i++){ emit_topfn_sig(g_topfn[i]); printf(";\n"); printf("LZ __adapt_%s(LZ*,LZ*);\n", g_topfn[i]->name); }
   for(int i=0;i<g_nlams;i++) printf("LZ __lam%d(LZ*,LZ*);\n", g_lams[i]->lam_id);
+  /* dynamic-import registry: one DEXP[] per discovered module (name -> its
+   * value-adapter, already generated above like any other top-level fn),
+   * then the DMOD[] table lz_dynimport()/lz_method() search by runtime name. */
+  for(int i=0;i<g_ndynmod;i++){
+    DynMod *dm=&g_dynmod[i];
+    printf("DEXP __dexp_%s[] = {", dm->name);
+    for(int j=0;j<dm->fns.n;j++){ if(j) printf(","); printf("{\"%s\",__adapt_%s%s}", dm->fns.v[j], dm->prefix, dm->fns.v[j]); }
+    if(dm->fns.n==0) printf("{0,0}");
+    printf("};\n");
+  }
+  printf("DMOD g_dynmods[] = {");
+  for(int i=0;i<g_ndynmod;i++){ if(i) printf(","); printf("{\"%s\",__dexp_%s,%d}", g_dynmod[i].name, g_dynmod[i].name, g_dynmod[i].fns.n); }
+  if(g_ndynmod==0) printf("{0,0,0}");
+  printf("};\nint g_ndynmods = %d;\n", g_ndynmod);
   /* top-level fn definitions */
   for(int i=0;i<g_ntopfn;i++){ Node*k=g_topfn[i]; emit_topfn_sig(k); printf("{\n"); ec_stmt(k->b,1); printf("  return lznil();\n}\n"); }
   /* value-adapters: wrap a named fn under the uniform closure calling convention */
@@ -2179,7 +2315,7 @@ int main(int argc, char **argv){
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.13.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.14.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
@@ -2215,7 +2351,7 @@ int main(int argc, char **argv){
     { const char*sl=strrchr(path,'/'); if(sl){ size_t d=(size_t)(sl-path); if(d<sizeof g_srcdir){ memcpy(g_srcdir,path,d); g_srcdir[d]=0; } } }  /* module base dir */
     char *src=read_all(path);
     if(setjmp(g_err)){ fprintf(stderr,"%s: SyntaxError: %s\n", path, g_errmsg); return 1; }
-    emit_c(parse_program(lex(src)));
+    emit_c(parse_program(lex(src)), path);
     return 0;
   }
 
