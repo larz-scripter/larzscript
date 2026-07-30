@@ -183,6 +183,70 @@ Build variants: default runs `/boot.lz` then halts (deterministic, for
 `EXTRA=-DLARZ_DEMO_REPL` = demo then a raw `larz>` REPL; `EXTRA=-DLARZ_REPL` =
 REPL only.
 
+### Two independently-booted instances, trading real money
+
+The clearest demonstration of "money is a kernel primitive, not a bolted-on
+feature": two **separate** `qemu-system-x86_64` processes, each running its
+own instance of this kernel with its own wallet, negotiate a real purchase
+over a real (virtual) network - with no shared memory between them at all.
+[`rootfs/demo_server.lz`](rootfs/demo_server.lz) serves one paywalled
+article (simpler than `webserver.lz` above - no login/cookies, since the
+outbound HTTP client can't send custom headers yet);
+[`rootfs/demo_client.lz`](rootfs/demo_client.lz) fetches it, gets told to
+pay, pays from its **own local wallet**, and re-fetches to prove it's now
+unlocked. Money never crosses the wire - only HTTP does, exactly like real
+payment rails - each side settles independently in response to the protocol.
+
+```bash
+# terminal 1 (the server) - a real host port forwarded into this VM's :80
+qemu-system-x86_64 -m 128 -cdrom larzos.iso \
+  -netdev user,id=n0,hostfwd=tcp::28080-:80 -device rtl8139,netdev=n0 \
+  -display none -serial stdio -monitor none -no-reboot
+# at the larzsh prompt: demo_server
+
+# terminal 2 (the client) - its own independent instance, own SLIRP network.
+# 10.0.2.2 is each VM's own gateway-to-host alias, which is how it reaches
+# the OTHER vm's hostfwd'd port above - a real router hop, done by the host.
+qemu-system-x86_64 -m 128 -cdrom larzos.iso \
+  -netdev user,id=n1 -device rtl8139,netdev=n1 \
+  -display none -serial stdio -monitor none -no-reboot
+# at the larzsh prompt: demo_client 10.0.2.2:28080
+```
+
+Server transcript:
+```
+root@larzos:~ ($100.00)$ demo_server
+demo server up. earnings starts at $0.00
+served 402 /article  (earnings=$0.00)
+served 200 /buy  (earnings=$2.00)
+served 200 /article  (earnings=$2.00)
+```
+
+Client transcript (a genuinely separate kernel instance, separate wallet):
+```
+root@larzos:~ ($100.00)$ demo_client 10.0.2.2:28080
+client (buyer) wallet before: $10.00
+--- first fetch ---
+payment required: $2.00 - GET /buy to pay
+payment required - paying $2.00 from the buyer's own wallet
+--- buy response (from the server) ---
+paid - seller balance is now $2.00
+--- second fetch ---
+premium content unlocked - thanks for paying
+client (buyer) wallet after: $8.00
+client (spent) wallet after: $2.00
+```
+
+⚠ Both sides call `write_file("/dev/gas", "0")` as their first action -
+`larzsh` gives every command a 300-tick budget meant for short interactive
+commands, but a server is meant to run indefinitely and an outbound fetch's
+busy-poll can plausibly exceed it too; `/dev/gas` resets the counter
+immediately, so this disables metering before either script's real work
+starts. ⚠ `/net/get/` strips HTTP headers (status line included) before
+handing the response to Larzscript, so a client can only branch on **body
+text**, not a numeric status code - `demo_client.lz` checks for the string
+"payment required", not "402".
+
 ## How it works
 
 - **Multiboot1 ELF64**, loaded by GRUB at 1 MiB.

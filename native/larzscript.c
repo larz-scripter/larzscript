@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.21.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.22.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -2226,16 +2226,21 @@ static void emit_runtime(void){
  * where the path isn't a literal string - are handled separately below.) */
 static char g_srcdir[4096]="";
 
+/* sprintf isn't declared in the LarzOS kernel's freestanding libc (only
+ * snprintf is) - this is the exact size needed, so functionally identical. */
+static char *prefixed(const char *prefix, const char *name){
+  size_t n=strlen(prefix)+strlen(name)+1; char *x=(char*)malloc(n); snprintf(x,n,"%s%s",prefix,name); return x;
+}
 static void rename_syms(Node *n, SSet *syms, const char *prefix){
   if(!n) return;
   switch(n->kind){
     case N_NAME: case N_FN: case N_LET: case N_ASSIGN: case N_PRICE: case N_WALLET: case N_PAYWALL:
-      if(n->name && ss_has(syms,n->name)){ char*x=(char*)malloc(strlen(prefix)+strlen(n->name)+1); sprintf(x,"%s%s",prefix,n->name); n->name=x; } break;
+      if(n->name && ss_has(syms,n->name)){ n->name=prefixed(prefix,n->name); } break;
     default: break;
   }
   if(n->kind==N_PAY||n->kind==N_SUBSCRIBE){
-    if(n->src && ss_has(syms,n->src)){ char*x=(char*)malloc(strlen(prefix)+strlen(n->src)+1); sprintf(x,"%s%s",prefix,n->src); n->src=x; }
-    if(n->dst && ss_has(syms,n->dst)){ char*x=(char*)malloc(strlen(prefix)+strlen(n->dst)+1); sprintf(x,"%s%s",prefix,n->dst); n->dst=x; }
+    if(n->src && ss_has(syms,n->src)) n->src=prefixed(prefix,n->src);
+    if(n->dst && ss_has(syms,n->dst)) n->dst=prefixed(prefix,n->dst);
   }
   rename_syms(n->a,syms,prefix); rename_syms(n->b,syms,prefix); rename_syms(n->c,syms,prefix);
   for(int i=0;i<n->nkids;i++) rename_syms(n->kids[i],syms,prefix);
@@ -2453,7 +2458,20 @@ static void emit_c(Node *prog, const char *main_path){
  * that header has no replacement in the LarzOS kernel's freestanding libc
  * and this file is compiled into the kernel too - matches how the rest of
  * this file already avoids fixed-width types everywhere else.
+ *
+ * The whole feature (this hash included, not just the OS-specific fetch/
+ * replace logic below) is hosted-OS-only: readlink, system(), chmod and
+ * friends have no meaning (and often no declaration at all) in the LarzOS
+ * kernel's freestanding libk.c, and even the hash would be dead code there
+ * (unused-function warnings under -Wall). __STDC_HOSTED__ is the portable,
+ * standard way to detect that (0 under -ffreestanding) - checked ahead of
+ * any OS-specific #ifdef, since the freestanding kernel build is still done
+ * with a normal Linux-targeted gcc and so still defines __linux__ etc.,
+ * which would wrongly select the hosted-Linux branch if checked first. A
+ * broken build here was caught by actually building the kernel, not just
+ * the three hosted platforms native.yml already covers.
  * ==================================================================== */
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
 typedef struct { unsigned int state[8]; unsigned long long bitlen; unsigned char data[64]; unsigned datalen; } SHA256_CTX;
 
 static const unsigned int sha256_k[64] = {
@@ -2664,6 +2682,13 @@ static int cmd_update(void){
   return 0;
 }
 
+#else /* !__STDC_HOSTED__ (the LarzOS kernel build) - self-update needs a hosted OS */
+static int cmd_update(void){
+  fprintf(stderr,"larzscript update: not available on this build\n");
+  return 1;
+}
+#endif /* __STDC_HOSTED__ */
+
 int main(int argc, char **argv){
   if(getenv("LZ_GC_STRESS")) g_gc_threshold=0;   /* collect on every statement (test mode) */
   const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0, want_emit_c=0;
@@ -2687,8 +2712,13 @@ int main(int argc, char **argv){
 
   /* Bare `larzscript` at an interactive terminal behaves like bare `python`:
    * drop into the REPL. Piped/redirected stdin (no tty) keeps the older
-   * behavior of reading a whole program from stdin and running it. */
+   * behavior of reading a whole program from stdin and running it.
+   * isatty/fileno aren't declared in the LarzOS kernel's freestanding libc
+   * (there's no real terminal-vs-pipe distinction there anyway - the kernel
+   * always calls larz_main with a fixed argv, never bare). */
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
   if(!path && !eval_code && !want_fmt && !want_check && !want_emit_c && !want_repl && isatty(fileno(stdin))) want_repl=1;
+#endif
 
   if(want_fmt){
     if(!path){ fprintf(stderr,"larzscript fmt: needs a file\n"); return 1; }

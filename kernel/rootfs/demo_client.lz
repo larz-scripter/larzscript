@@ -1,0 +1,35 @@
+# demo_client.lz - the buyer side of the two-machine money demo. Fetches a
+# paywalled article from a SEPARATE, independently-booted LarzOS instance
+# over a real (virtual) network, pays for it from its OWN local wallet when
+# told 402, then re-fetches to prove it now unlocks - real settlement
+# coordinated by the HTTP round trip between two separate kernels, exactly
+# how real payment rails work (no shared memory between the two sides).
+fn run(args) {
+  # each outbound /net/get/ round trip busy-polls waiting for the reply
+  # (net_http_get's own loop bound) - three of them plus network latency can
+  # plausibly exceed larzsh's 300-tick default command budget, so disable
+  # metering the same way the server does.
+  write_file("/dev/gas", "0")
+  wallet buyer = $10.00
+  wallet spent = $0.00
+  let host = len(args) >= 1 ? args[0] : "10.0.2.2:28080"
+  print("client (buyer) wallet before: " + str(buyer.balance))
+  let r1 = read_file("/net/get/" + host + "/article")
+  print("--- first fetch ---")
+  print(r1)
+  # /net/get/ strips HTTP headers (status line included) and returns only the
+  # body, so the paywall state has to be read from the body text itself, not
+  # a numeric status code the client never actually sees.
+  if r1.contains("payment required") {
+    print("payment required - paying $2.00 from the buyer's own wallet")
+    pay $2.00 from buyer to spent
+    let rbuy = read_file("/net/get/" + host + "/buy")
+    print("--- buy response (from the server) ---")
+    print(rbuy)
+    let r2 = read_file("/net/get/" + host + "/article")
+    print("--- second fetch ---")
+    print(r2)
+  }
+  print("client (buyer) wallet after: " + str(buyer.balance))
+  print("client (spent) wallet after: " + str(spent.balance))
+}

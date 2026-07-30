@@ -1,0 +1,37 @@
+# demo_server.lz - the two-machine money demo's SERVER: a paywalled article
+# served over a real TCP connection, settled against this kernel's own
+# wallet. Deliberately simpler than webserver.lz (no login/cookies) since
+# the outbound HTTP client (net_http_get) can't send custom headers yet.
+fn run(args) {
+  # larzsh gives every command a 300-tick gas budget by default, meant for
+  # short interactive commands; a server is meant to run indefinitely, so
+  # disable metering for it, same as how a service is expected to run -
+  # /dev/gas resets immediately (g_gas_used=0), so this takes effect before
+  # the polling loop below ever starts burning ticks.
+  write_file("/dev/gas", "0")
+  wallet earnings = $0.00
+  print("demo server up. earnings starts at " + str(earnings.balance))
+  while true {
+    let req = read_file("/net/http/accept")
+    let pq = "/"
+    let parts = req.split("\n")[0].split(" ")
+    if len(parts) > 1 { pq = parts[1] }
+    let path = pq
+    if pq.contains("?") { path = pq.split("?")[0] }
+    let code = 404
+    let body = "not found"
+    if path == "/" { code = 200; body = "LarzOS money-native demo server. earnings=" + str(earnings.balance) }
+    else if path == "/article" {
+      if file_exists("/home/.paid") { code = 200; body = "premium content unlocked - thanks for paying" }
+      else { code = 402; body = "payment required: $2.00 - GET /buy to pay" }
+    }
+    else if path == "/buy" {
+      write_file("/home/.paid", "yes")
+      earnings.credit($2.00)
+      code = 200; body = "paid - seller balance is now " + str(earnings.balance)
+    }
+    let resp = "HTTP/1.0 " + str(code) + " X\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+    write_file("/net/http/reply", resp)
+    print("served " + str(code) + " " + path + "  (earnings=" + str(earnings.balance) + ")")
+  }
+}
