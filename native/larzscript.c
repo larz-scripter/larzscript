@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.20.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.21.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -299,7 +299,7 @@ typedef enum {
   N_NUM, N_MONEY, N_STR, N_BOOL, N_NIL, N_NAME, N_BIN, N_UN, N_CALL, N_GET, N_METHOD,
   N_ARRAY, N_INDEX, N_DICT, N_SETINDEX, N_BREAK, N_CONTINUE, N_FOR,
   N_SLICE, N_TRY, N_THROW, N_FSTR, N_IMPORT, N_TERNARY, N_LISTCOMP, N_DICTCOMP,
-  N_CAPABILITY, N_GRANT, N_REVOKE
+  N_CAPABILITY, N_GRANT, N_REVOKE, N_SPLIT
 } NodeKind;
 
 typedef struct Node {
@@ -336,7 +336,7 @@ static const char *KEYWORDS[] = {
   "price","wallet","pay","from","to","require","gas",
   "paywall","subscribe","has","for","in","break","continue",
   "try","catch","throw","import","as",
-  "capability","grant","revoke","requires", NULL
+  "capability","grant","revoke","requires","split", NULL
 };
 static int is_keyword(const char *s, int n){
   for(int i=0; KEYWORDS[i]; i++)
@@ -668,6 +668,27 @@ static Node *statement(Parser *p){
   if(is_kw(t,"revoke")){ padv(p); Node *n=node(N_REVOKE); n->name=padv(p)->text; return n; }
   if(is_kw(t,"pay")){ padv(p); Node *n=node(N_PAY); n->a=expression(p); expect_kw(p,"from"); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text;
       if(is_kw(pk(p),"requires")){ padv(p); n->str=padv(p)->text; } return n; }
+  if(is_kw(t,"split")){
+      padv(p); Node *n=node(N_SPLIT); n->a=expression(p); expect_kw(p,"from"); n->src=padv(p)->text;
+      expect(p,T_LB,"'{'");
+      double total_pct=0;
+      while(pk(p)->type!=T_RB && pk(p)->type!=T_EOF){
+        if(pk(p)->type!=T_IDENT) fail("expected a wallet name in split on line %d",pk(p)->line);
+        Node *leg=node(N_SPLIT);   /* a plain data holder (dst+num), never itself dispatched */
+        leg->dst=padv(p)->text;
+        if(pk(p)->type!=T_NUM) fail("expected a percentage in split on line %d",pk(p)->line);
+        leg->num=padv(p)->num;
+        if(!is_op(pk(p),"%")) fail("expected '%%' after the percentage on line %d",pk(p)->line);
+        padv(p);
+        total_pct += leg->num;
+        push_kid(n,leg);
+        if(pk(p)->type==T_COMMA) padv(p);
+      }
+      expect(p,T_RB,"'}'");
+      { double diff=total_pct-100.0; if(diff<0)diff=-diff;
+        if(diff>0.01) fail("split percentages must sum to exactly 100 (got %g) on line %d", total_pct, n->line); }
+      return n;
+  }
   if(is_kw(t,"require")){ padv(p); Node *n=node(N_REQUIRE); n->a=expression(p);
       if(pk(p)->type==T_COMMA){ padv(p); if(pk(p)->type!=T_STR) fail("expected a message string on line %d",pk(p)->line); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"fn")){ return parse_fn(p, 1); }
@@ -1221,6 +1242,27 @@ static void exec(Interp *ip, Node *n, Env *env){
       append_txn(ip, n->src, n->dst, amt.cents);
       return;
     }
+    case N_SPLIT: {
+      Value amt=eval(ip,n->a,env);
+      if(amt.t!=V_MONEY) runtime_error(ip,"LarzTypeError","you can only split money");
+      Value *sv=env_find(env,n->src);
+      if(!sv||sv->t!=V_WALLET) runtime_error(ip,"LarzTypeError","split requires a source wallet");
+      if(amt.cents>sv->wal->cents) runtime_error(ip,"MoneyError","wallet '%s' has insufficient funds", sv->wal->name);
+      long long remaining=amt.cents;
+      for(int i=0;i<n->nkids;i++){
+        Node *leg=n->kids[i];
+        Value *dv=env_find(env,leg->dst);
+        if(!dv||dv->t!=V_WALLET) runtime_error(ip,"LarzTypeError","split recipient '%s' is not a wallet", leg->dst);
+        /* the last recipient gets the exact remainder, so the split always
+         * sums to the original amount with no cent lost or duplicated to
+         * rounding - the standard split-rounding convention. */
+        long long cut = (i==n->nkids-1) ? remaining : money_round((double)amt.cents*leg->num/100.0);
+        remaining -= cut;
+        sv->wal->cents -= cut; dv->wal->cents += cut;
+        append_txn(ip, n->src, leg->dst, cut);
+      }
+      return;
+    }
     case N_PAYWALL: {
       Value v=eval(ip,n->a,env);
       if(v.t!=V_MONEY) runtime_error(ip,"LarzTypeError","a paywall price must be money");
@@ -1754,6 +1796,9 @@ static void fmt_stmt_core(Node *n, int indent){
     case N_GRANT: printf("grant %s", n->name); break;
     case N_REVOKE: printf("revoke %s", n->name); break;
     case N_PAY: printf("pay "); fmt_expr(n->a,1); printf(" from %s to %s", n->src, n->dst); if(n->str) printf(" requires %s", n->str); break;
+    case N_SPLIT: printf("split "); fmt_expr(n->a,1); printf(" from %s {\n", n->src);
+      for(int i=0;i<n->nkids;i++){ fmt_indent(indent+1); printf("%s %g%%\n", n->kids[i]->dst, n->kids[i]->num); }
+      fmt_indent(indent); putchar('}'); break;
     case N_PAYWALL: printf("paywall %s = ", n->name); fmt_expr(n->a,10); printf(" / %s to %s", n->period, n->dst); break;
     case N_SUBSCRIBE: printf("subscribe %s to %s", n->src, n->dst); if(n->str) printf(" requires %s", n->str); break;
     case N_REQUIRE: printf("require "); fmt_expr(n->a,1); if(n->str){ printf(", "); fmt_str_lit(n->str); } break;
@@ -1997,6 +2042,20 @@ static void ec_stmt(Node *n, int d){
       if(n->str){ ec_ind(d); printf("if(!%s.n){fputs(\"CapabilityError: capability '%s' is not granted\\n\",stderr);exit(1);}\n", n->str, n->str); }
       ec_ind(d); printf("lz_pay(%s, %s, ", n->src, n->dst); ec_expr(n->a); printf(");\n");
       break;
+    /* the amount expr is evaluated exactly once (into __splitamt) even though
+     * it may be referenced by every leg - matters if it has side effects.
+     * Each split gets its own { } block, so __splitamt/__splitrem/__cut can
+     * be reused verbatim across multiple split statements with no collision. */
+    case N_SPLIT: {
+      ec_ind(d); printf("{ LZ __splitamt = "); ec_expr(n->a); printf("; long long __splitrem = (long long)__splitamt.n;\n");
+      for(int i=0;i<n->nkids;i++){
+        Node *leg=n->kids[i];
+        if(i==n->nkids-1){ ec_ind(d+1); printf("lz_pay(%s, %s, lzmoney((double)__splitrem));\n", n->src, leg->dst); }
+        else { ec_ind(d+1); printf("{ long long __cut = (long long)lz_mround(__splitamt.n * %.10g / 100.0); __splitrem -= __cut; lz_pay(%s, %s, lzmoney((double)__cut)); }\n", leg->num, n->src, leg->dst); }
+      }
+      ec_ind(d); printf("}\n");
+      break;
+    }
     case N_PAYWALL: ec_ind(d); printf("LZ %s = lzpaywall((", n->name); ec_expr(n->a); printf(").n, \""); ec_raw(n->period); printf("\", \""); ec_raw(n->name); printf("\", %s);\n", n->dst); break;
     case N_SUBSCRIBE:
       if(n->str){ ec_ind(d); printf("if(!%s.n){fputs(\"CapabilityError: capability '%s' is not granted\\n\",stderr);exit(1);}\n", n->str, n->str); }
