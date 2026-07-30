@@ -1,0 +1,8 @@
+{
+  "name": "larzscript-tests-web",
+  "private": true,
+  "description": "CI-only devDependency for the wasm dom/ui bridge tests (native/tests-web/*.test.js). Not part of any shipped artifact.",
+  "devDependencies": {
+    "jsdom": "^29.0.0"
+  }
+}

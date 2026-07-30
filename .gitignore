@@ -7,6 +7,7 @@ dist/
 .pytest_cache/
 native/larzscript
 native/wasm/
+native/tests-web/node_modules/
 *.o
 /tmp/_larzscript_test
 kernel/*.o

@@ -70,6 +70,9 @@
 #define WIN32_LEAN_AND_MEAN   /* GetModuleFileNameA only (larzscript update) - keep windows.h small */
 #include <windows.h>          /* no identifier collisions here: file has no min/max/ERROR/IN/OUT */
 #endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>       /* EM_JS/EM_ASM/EMSCRIPTEN_KEEPALIVE - the browser `ui` module + callback bridge */
+#endif
 
 /* ===================== small helpers ===================== */
 static void *xmalloc(size_t n){ void *p = malloc(n); if(!p){ fprintf(stderr,"out of memory\n"); exit(2);} return p; }
@@ -789,6 +792,17 @@ static void gc_root_pop(Interp *ip){ if(ip->nroots>0) ip->nroots--; }
 static void gc_temp_push(Interp *ip, Value v){ if(ip->ntemp==ip->tempcap){ ip->tempcap=ip->tempcap?ip->tempcap*2:64; ip->temproots=realloc(ip->temproots,ip->tempcap*sizeof(Value)); } ip->temproots[ip->ntemp++]=v; }
 static void gc_temp_pop(Interp *ip, int to){ ip->ntemp=to; }
 
+#ifdef __EMSCRIPTEN__
+/* Closures handed to ui.on()/ui.fetch() are invoked later, from a JS event
+ * callback - by then the Larzscript call frame that registered them is long
+ * gone, so they aren't reachable through the normal Env-chain/rootstack GC
+ * roots. Without this they'd be collected out from under a still-registered
+ * DOM listener the next time gc_collect() runs, and firing the event would
+ * call into freed memory. Rooted here exactly like ip->modcache already is
+ * (see gc_collect below). */
+static Value *g_ui_callbacks=0; static int g_ui_ncb=0, g_ui_cbcap=0;
+#endif
+
 static void gc_mark_env(Env *e);
 static void gc_mark_value(Value v){
   switch(v.t){
@@ -816,6 +830,9 @@ static void gc_collect(Interp *ip){
   for(int i=0;i<ip->ntemp;i++) gc_mark_value(ip->temproots[i]);
   gc_mark_value(ip->retval);
   for(int i=0;i<ip->nmod;i++) gc_mark_value(ip->modcache[i].val);
+#ifdef __EMSCRIPTEN__
+  for(int i=0;i<g_ui_ncb;i++) gc_mark_value(g_ui_callbacks[i]);
+#endif
   GCObj **pp=&g_gc_head;
   while(*pp){
     GCObj *o=*pp;
@@ -833,6 +850,9 @@ static void maybe_gc(Interp *ip){ if(g_gc_count > g_gc_threshold) gc_collect(ip)
 volatile int larz_gas_kill = 0;   /* set by the host OS (LarzOS) when a command exceeds its gas budget */
 
 static void define_builtins(Env *e);   /* forward: used by import */
+#ifdef __EMSCRIPTEN__
+static void register_ui_module(Env *g);   /* forward: used by define_builtins, defined after install_builtins */
+#endif
 
 static void runtime_error(Interp *ip, const char *name, const char *fmt, ...){
   ip->errname=name;
@@ -1705,6 +1725,9 @@ static void define_builtins(Env *g){
   env_define(g, "time",   V_builtin(&B_time));
   env_define(g, "clock",  V_builtin(&B_clock));
   env_define(g, "sleep",  V_builtin(&B_sleep));
+#ifdef __EMSCRIPTEN__
+  register_ui_module(g);
+#endif
 }
 
 static void install_builtins(Interp *ip){
@@ -1712,6 +1735,144 @@ static void install_builtins(Interp *ip){
   ip->has_gas = 0;                 /* unlimited by default */
   define_builtins(ip->globals);
 }
+
+#ifdef __EMSCRIPTEN__
+/* ===================== browser: `ui` module + callback bridge ===================== *
+ * Larzscript running client-side via WASM - see native/web/larzscript-web.js for
+ * the page-side bootstrap that loads this module and feeds it
+ * <script type="text/larzscript"> tags. `ui.*` are deliberately small,
+ * money-native-flavored primitives, not a DOM clone: element get/set + one
+ * genuinely new mechanism (ui.on's callback bridge). Anything higher-level -
+ * a "pay button", a live balance badge - is ordinary Larzscript composing
+ * these with wallet/pay/require; no UI framework is baked into C. */
+EM_JS(void, ui_js_set_text, (const char *sel, const char *text), {
+  document.querySelectorAll(UTF8ToString(sel)).forEach(function(el){ el.textContent = UTF8ToString(text); });
+});
+EM_JS(char*, ui_js_get_text, (const char *sel), {
+  var el = document.querySelector(UTF8ToString(sel));
+  var s = el ? el.textContent : "";
+  var len = lengthBytesUTF8(s) + 1;
+  var ptr = _malloc(len);
+  stringToUTF8(s, ptr, len);
+  return ptr;
+});
+EM_JS(char*, ui_js_get_value, (const char *sel), {
+  var el = document.querySelector(UTF8ToString(sel));
+  var s = (el && ('value' in el)) ? el.value : "";
+  var len = lengthBytesUTF8(s) + 1;
+  var ptr = _malloc(len);
+  stringToUTF8(s, ptr, len);
+  return ptr;
+});
+EM_JS(void, ui_js_set_value, (const char *sel, const char *v), {
+  document.querySelectorAll(UTF8ToString(sel)).forEach(function(el){ el.value = UTF8ToString(v); });
+});
+EM_JS(void, ui_js_set_html, (const char *sel, const char *html), {
+  document.querySelectorAll(UTF8ToString(sel)).forEach(function(el){ el.innerHTML = UTF8ToString(html); });
+});
+EM_JS(void, ui_js_add_class, (const char *sel, const char *cls), {
+  document.querySelectorAll(UTF8ToString(sel)).forEach(function(el){ el.classList.add(UTF8ToString(cls)); });
+});
+EM_JS(void, ui_js_remove_class, (const char *sel, const char *cls), {
+  document.querySelectorAll(UTF8ToString(sel)).forEach(function(el){ el.classList.remove(UTF8ToString(cls)); });
+});
+EM_JS(void, ui_js_on, (const char *sel, const char *event, int cb_id), {
+  var ev = UTF8ToString(event);
+  document.querySelectorAll(UTF8ToString(sel)).forEach(function(el){
+    el.addEventListener(ev, function(){ Module.ccall('larz_invoke_callback', null, ['number'], [cb_id]); });
+  });
+});
+
+static Value bi_ui_set_text(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.set_text() expects (selector, text)");
+  ui_js_set_text(a[0].str, a[1].str); return V_nil();
+}
+static Value bi_ui_get_text(Interp *ip, Value *a, int n){
+  if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.get_text() expects (selector)");
+  return V_take(ui_js_get_text(a[0].str));
+}
+static Value bi_ui_get_value(Interp *ip, Value *a, int n){
+  if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.get_value() expects (selector)");
+  return V_take(ui_js_get_value(a[0].str));
+}
+static Value bi_ui_set_value(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.set_value() expects (selector, value)");
+  ui_js_set_value(a[0].str, a[1].str); return V_nil();
+}
+static Value bi_ui_set_html(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.set_html() expects (selector, html)");
+  ui_js_set_html(a[0].str, a[1].str); return V_nil();
+}
+static Value bi_ui_add_class(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.add_class() expects (selector, class)");
+  ui_js_add_class(a[0].str, a[1].str); return V_nil();
+}
+static Value bi_ui_remove_class(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.remove_class() expects (selector, class)");
+  ui_js_remove_class(a[0].str, a[1].str); return V_nil();
+}
+static Value bi_ui_on(Interp *ip, Value *a, int n){
+  if(n!=3||a[0].t!=V_STR||a[1].t!=V_STR||(a[2].t!=V_FUNC&&a[2].t!=V_BUILTIN))
+    runtime_error(ip,"LarzTypeError","ui.on() expects (selector, event, function)");
+  if(g_ui_ncb==g_ui_cbcap){ g_ui_cbcap=g_ui_cbcap?g_ui_cbcap*2:16; g_ui_callbacks=realloc(g_ui_callbacks,g_ui_cbcap*sizeof(Value)); }
+  int id=g_ui_ncb++;
+  g_ui_callbacks[id]=a[2];
+  ui_js_on(a[0].str, a[1].str, id);
+  return V_nil();
+}
+
+static Builtin UB_set_text={"set_text",bi_ui_set_text}, UB_get_text={"get_text",bi_ui_get_text},
+  UB_get_value={"get_value",bi_ui_get_value}, UB_set_value={"set_value",bi_ui_set_value},
+  UB_set_html={"set_html",bi_ui_set_html}, UB_add_class={"add_class",bi_ui_add_class},
+  UB_remove_class={"remove_class",bi_ui_remove_class}, UB_on={"on",bi_ui_on};
+
+static void register_ui_module(Env *g){
+  Env *e=env_new(NULL);
+  env_define(e,"set_text",V_builtin(&UB_set_text));
+  env_define(e,"get_text",V_builtin(&UB_get_text));
+  env_define(e,"get_value",V_builtin(&UB_get_value));
+  env_define(e,"set_value",V_builtin(&UB_set_value));
+  env_define(e,"set_html",V_builtin(&UB_set_html));
+  env_define(e,"add_class",V_builtin(&UB_add_class));
+  env_define(e,"remove_class",V_builtin(&UB_remove_class));
+  env_define(e,"on",V_builtin(&UB_on));
+  env_define(g,"ui",V_module(e,xstrdup("ui")));
+}
+
+/* the persistent, page-lifetime interpreter every <script type="text/larzscript">
+ * tag runs into (one shared global scope, same as ordinary <script> tags do),
+ * and the interpreter every ui.on()-registered callback is invoked through
+ * later, from JS, possibly long after the tag that registered it finished. */
+static Interp g_web_ip; static int g_web_ip_ready=0;
+static void ensure_web_ip(void){
+  if(g_web_ip_ready) return;
+  memset(&g_web_ip,0,sizeof(g_web_ip));
+  install_builtins(&g_web_ip);
+  g_web_ip.basedir=xstrdup(".");
+  env_define(g_web_ip.globals,"args",V_list(list_new()));
+  g_web_ip_ready=1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int larz_eval_source(const char *src){
+  ensure_web_ip();
+  if(setjmp(g_err)){ fprintf(stderr,"SyntaxError: %s\n", g_errmsg); return 1; }
+  Token *toks=lex(xstrdup(src));           /* never freed - same lifetime as the AST it feeds, like main()'s read_all() */
+  Node *prog=parse_program(toks);
+  if(setjmp(g_web_ip.jb)){ fprintf(stderr,"%s: %s\n", g_web_ip.errname, g_web_ip.errmsg); return 1; }
+  g_web_ip.returning=0; g_web_ip.loopflow=0;
+  for(int i=0;i<prog->nkids;i++){ exec(&g_web_ip, prog->kids[i], g_web_ip.globals); if(g_web_ip.returning) break; }
+  return 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void larz_invoke_callback(int id){
+  if(!g_web_ip_ready || id<0 || id>=g_ui_ncb) return;
+  if(setjmp(g_web_ip.jb)){ fprintf(stderr,"%s: %s\n", g_web_ip.errname, g_web_ip.errmsg); return; }
+  g_web_ip.returning=0; g_web_ip.loopflow=0;
+  call_value(&g_web_ip, g_ui_callbacks[id], NULL, 0);
+}
+#endif /* __EMSCRIPTEN__ */
 
 /* ===================== formatter (larzscript fmt) ===================== */
 static void fmt_expr(Node *n, int minprec);

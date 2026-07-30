@@ -41,4 +41,20 @@ wasm-node: larzscript.c
 	emcc $(CFLAGS) -o wasm/larzscript-node.js larzscript.c \
 		-s ENVIRONMENT=node -s ALLOW_MEMORY_GROWTH=1 -s NODERAWFS=1 -s STACK_SIZE=8388608
 
-.PHONY: install clean windows wasm-node
+# The browser bundle: MODULARIZE (no auto-run, no CLI argv - see
+# web/larzscript-web.js for the page-side bootstrap), only larz_eval_source
+# and larz_invoke_callback exported (the two entry points JS ever calls into).
+# ENVIRONMENT=web,node (not just web) so the SAME bundle also loads under
+# plain Node for the test suite (native/tests-web/, via jsdom) - no real
+# browser needed to verify the dom/callback-bridge mechanics, only to eyeball
+# the actual demo page.
+wasm-web: larzscript.c
+	emcc $(CFLAGS) -o wasm/larzscript-web.js larzscript.c \
+		-s MODULARIZE=1 -s EXPORT_NAME=Larzscript \
+		-s ALLOW_MEMORY_GROWTH=1 -s STACK_SIZE=8388608 \
+		-s ENVIRONMENT=web,node \
+		-s EXPORTED_RUNTIME_METHODS=ccall,cwrap \
+		-s EXPORTED_FUNCTIONS=_larz_eval_source,_larz_invoke_callback,_malloc,_free \
+		-s INVOKE_RUN=0
+
+.PHONY: install clean windows wasm-node wasm-web
