@@ -1,0 +1,106 @@
+name: Native
+
+# Builds, tests, and releases the native C implementation (native/larzscript.c)
+# for all three shipped platforms, entirely on GitHub-hosted runners - no
+# dependency on any private server. This is separate from ci.yml/publish.yml,
+# which cover only the frozen legacy Python reference implementation.
+#
+# No `paths:` filter on the triggers below: path filters are evaluated
+# per-ref, and a tag push whose commit doesn't itself touch native/** can
+# silently fail to trigger the workflow at all - exactly the failure mode a
+# release pipeline can't afford. The three build+test jobs are cheap, so
+# running them on every push/PR is a fine tradeoff for that guarantee.
+
+on:
+  push:
+    branches: [main]
+    tags: ["native-v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: cd native && ./run_tests.sh
+      - name: Build release binary (static)
+        run: |
+          cc -O2 -std=c11 -Wall -static -o larzscript-linux-x86_64 native/larzscript.c
+          strip larzscript-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: larzscript-linux-x86_64
+          path: larzscript-linux-x86_64
+
+  linux-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross toolchain + qemu
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      - name: Build (static)
+        run: |
+          aarch64-linux-gnu-gcc -O2 -std=c11 -Wall -static -o larzscript-linux-aarch64 native/larzscript.c
+      - name: Test under qemu-user
+        run: |
+          cd native
+          BINARY=../larzscript-linux-aarch64 RUN_PREFIX=qemu-aarch64-static ./run_tests.sh
+      - name: Strip
+        run: aarch64-linux-gnu-strip larzscript-linux-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: larzscript-linux-aarch64
+          path: larzscript-linux-aarch64
+
+  windows-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw-w64 + wine
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine
+      - name: Build (static)
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -static -o larzscript-windows-x86_64.exe native/larzscript.c -lwinpthread
+      - name: Wine warm-up (creates the wine prefix + first-run noise once, outside the test loop)
+        # `wine --version` alone does NOT trigger the same wineboot/prefix
+        # initialization as running an actual PE binary - the "created the
+        # configuration directory" / wow64 noise still leaked into the first
+        # real test's captured output when this step only ran --version.
+        # Running the just-built exe once for real flushes that noise here.
+        run: WINEDEBUG=-all wine larzscript-windows-x86_64.exe --version || true
+      - name: Test under wine
+        run: |
+          cd native
+          BINARY=../larzscript-windows-x86_64.exe RUN_PREFIX=wine LZ_CRLF_NORMALIZE=1 WINEDEBUG=-all ./run_tests.sh
+      - name: Strip
+        run: x86_64-w64-mingw32-strip larzscript-windows-x86_64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: larzscript-windows-x86_64.exe
+          path: larzscript-windows-x86_64.exe
+
+  release:
+    needs: [linux-x86_64, linux-aarch64, windows-x86_64]
+    if: startsWith(github.ref, 'refs/tags/native-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # Asset names must exactly match what install.sh/install.ps1/larzscript
+      # update request from releases/latest/download/<asset> - do not rename.
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "larzscript native ${{ github.ref_name }}" \
+            --generate-notes
