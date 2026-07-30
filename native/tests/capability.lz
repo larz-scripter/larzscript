@@ -1,0 +1,37 @@
+wallet buyer = $100.00
+wallet seller = $0.00
+capability can_pay
+
+print(can_pay)
+
+try {
+  pay $10.00 from buyer to seller requires can_pay
+} catch e {
+  print("blocked:", e["type"])
+}
+print(buyer.balance, seller.balance)
+
+grant can_pay
+print(can_pay)
+pay $10.00 from buyer to seller requires can_pay
+print(buyer.balance, seller.balance)
+
+revoke can_pay
+try {
+  pay $5.00 from buyer to seller requires can_pay
+} catch e {
+  print("blocked again:", e["type"])
+}
+print(buyer.balance, seller.balance)
+
+paywall article = $2.00 / month to seller
+capability can_subscribe
+try {
+  subscribe buyer to article requires can_subscribe
+} catch e {
+  print("subscribe blocked:", e["type"])
+}
+grant can_subscribe
+subscribe buyer to article requires can_subscribe
+print(buyer.balance, seller.balance)
+print(buyer has article)

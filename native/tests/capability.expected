@@ -1,0 +1,10 @@
+<capability revoked>
+blocked: CapabilityError
+$100.00 $0.00
+<capability granted>
+$90.00 $10.00
+blocked again: CapabilityError
+$90.00 $10.00
+subscribe blocked: CapabilityError
+$88.00 $12.00
+true

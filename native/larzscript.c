@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.19.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.20.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,7 +93,7 @@ static long g_gc_count=0, g_gc_threshold=200000;
 static void gc_register(void *p, unsigned char kind){ GCObj *o=(GCObj*)p; o->gc_kind=kind; o->gc_marked=0; o->gc_next=g_gc_head; g_gc_head=o; g_gc_count++; }
 
 /* ===================== values ===================== */
-typedef enum { V_NIL, V_BOOL, V_NUM, V_MONEY, V_STR, V_WALLET, V_FUNC, V_BUILTIN, V_LIST, V_PAYWALL, V_DICT, V_MODULE, V_RANGE } VType;
+typedef enum { V_NIL, V_BOOL, V_NUM, V_MONEY, V_STR, V_WALLET, V_FUNC, V_BUILTIN, V_LIST, V_PAYWALL, V_DICT, V_MODULE, V_RANGE, V_CAPABILITY } VType;
 struct Node; struct Env; struct Interp; struct List; struct Paywall; struct Dict; struct Range;
 typedef struct Wallet { GCObj gc; char *name; long long cents; } Wallet;
 typedef struct Closure { GCObj gc; struct Node *decl; struct Env *env; const char *name; } Closure;
@@ -120,6 +120,11 @@ struct Value {
 
 static Value V_nil(void){ Value v; v.t=V_NIL; return v; }
 static Value V_bool(int b){ Value v; v.t=V_BOOL; v.b=b!=0; return v; }
+/* a capability: a named, revocable grant `pay`/`subscribe requires` can check
+ * before moving money - a plain scalar like V_BOOL (same .b storage), just a
+ * distinct tag so grant/revoke/requires can reject "that's not a capability"
+ * with a clear error instead of silently treating any boolean as one. */
+static Value V_capability(int granted){ Value v; v.t=V_CAPABILITY; v.b=granted!=0; return v; }
 static Value V_number(double d){ Value v; v.t=V_NUM; v.num=d; return v; }
 static Value V_money(long long c){ Value v; v.t=V_MONEY; v.cents=c; return v; }
 /* strings are GC-managed: copy into a Str object. V_string copies (source is
@@ -160,6 +165,7 @@ static int values_equal(Value a, Value b){
   switch(a.t){
     case V_NIL: return 1;
     case V_BOOL: return a.b==b.b;
+    case V_CAPABILITY: return a.b==b.b;
     case V_NUM: return a.num==b.num;
     case V_MONEY: return a.cents==b.cents;
     case V_STR: return strcmp(a.str,b.str)==0;
@@ -201,6 +207,7 @@ static int truthy(Value v){
   switch(v.t){
     case V_NIL: return 0;
     case V_BOOL: return v.b;
+    case V_CAPABILITY: return v.b;   /* truthy iff currently granted */
     case V_NUM: return v.num!=0;
     case V_MONEY: return v.cents!=0;
     case V_STR: return v.str[0]!=0;
@@ -220,6 +227,7 @@ static void print_value(Value v){
   switch(v.t){
     case V_NIL: printf("nil"); break;
     case V_BOOL: printf(v.b?"true":"false"); break;
+    case V_CAPABILITY: printf(v.b?"<capability granted>":"<capability revoked>"); break;
     case V_NUM: print_number(v.num); break;
     case V_MONEY: {
       long long c = v.cents<0?-v.cents:v.cents;
@@ -268,6 +276,7 @@ static void val_to_sb(SB *b, Value v){
   switch(v.t){
     case V_NIL: sb_puts(b,"nil"); break;
     case V_BOOL: sb_puts(b, v.b?"true":"false"); break;
+    case V_CAPABILITY: sb_puts(b, v.b?"<capability granted>":"<capability revoked>"); break;
     case V_NUM: if(v.num==(long long)v.num) sb_putf(b,"%lld",(long long)v.num); else sb_putf(b,"%g",v.num); break;
     case V_MONEY: { long long c=v.cents<0?-v.cents:v.cents; sb_putf(b,"%s$%lld.%02lld", v.cents<0?"-":"", c/100, c%100); break; }
     case V_STR: sb_puts(b, v.str); break;
@@ -289,7 +298,8 @@ typedef enum {
   N_IF, N_WHILE, N_BLOCK, N_EXPR, N_PAYWALL, N_SUBSCRIBE,
   N_NUM, N_MONEY, N_STR, N_BOOL, N_NIL, N_NAME, N_BIN, N_UN, N_CALL, N_GET, N_METHOD,
   N_ARRAY, N_INDEX, N_DICT, N_SETINDEX, N_BREAK, N_CONTINUE, N_FOR,
-  N_SLICE, N_TRY, N_THROW, N_FSTR, N_IMPORT, N_TERNARY, N_LISTCOMP, N_DICTCOMP
+  N_SLICE, N_TRY, N_THROW, N_FSTR, N_IMPORT, N_TERNARY, N_LISTCOMP, N_DICTCOMP,
+  N_CAPABILITY, N_GRANT, N_REVOKE
 } NodeKind;
 
 typedef struct Node {
@@ -325,7 +335,8 @@ static const char *KEYWORDS[] = {
   "let","fn","return","if","else","while","and","or","not","true","false","nil",
   "price","wallet","pay","from","to","require","gas",
   "paywall","subscribe","has","for","in","break","continue",
-  "try","catch","throw","import","as", NULL
+  "try","catch","throw","import","as",
+  "capability","grant","revoke","requires", NULL
 };
 static int is_keyword(const char *s, int n){
   for(int i=0; KEYWORDS[i]; i++)
@@ -652,7 +663,11 @@ static Node *statement(Parser *p){
   if(is_kw(t,"let")){ padv(p); Node *n=node(N_LET); n->name=padv(p)->text; if(!is_op(pk(p),"=")) fail("expected '=' on line %d",pk(p)->line); padv(p); n->a=expression(p); return n; }
   if(is_kw(t,"price")){ padv(p); Node *n=node(N_PRICE); n->name=padv(p)->text; if(!is_op(pk(p),"=")) fail("expected '=' on line %d",pk(p)->line); padv(p); n->a=expression(p); return n; }
   if(is_kw(t,"wallet")){ padv(p); Node *n=node(N_WALLET); n->name=padv(p)->text; if(is_op(pk(p),"=")){ padv(p); n->a=expression(p); } return n; }
-  if(is_kw(t,"pay")){ padv(p); Node *n=node(N_PAY); n->a=expression(p); expect_kw(p,"from"); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text; return n; }
+  if(is_kw(t,"capability")){ padv(p); Node *n=node(N_CAPABILITY); n->name=padv(p)->text; return n; }
+  if(is_kw(t,"grant")){ padv(p); Node *n=node(N_GRANT); n->name=padv(p)->text; return n; }
+  if(is_kw(t,"revoke")){ padv(p); Node *n=node(N_REVOKE); n->name=padv(p)->text; return n; }
+  if(is_kw(t,"pay")){ padv(p); Node *n=node(N_PAY); n->a=expression(p); expect_kw(p,"from"); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text;
+      if(is_kw(pk(p),"requires")){ padv(p); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"require")){ padv(p); Node *n=node(N_REQUIRE); n->a=expression(p);
       if(pk(p)->type==T_COMMA){ padv(p); if(pk(p)->type!=T_STR) fail("expected a message string on line %d",pk(p)->line); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"fn")){ return parse_fn(p, 1); }
@@ -673,7 +688,8 @@ static Node *statement(Parser *p){
       if(!is_op(pk(p),"/")){ fail("expected '/' before the period on line %d",pk(p)->line); }
       padv(p);
       n->period=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text; return n; }
-  if(is_kw(t,"subscribe")){ padv(p); Node *n=node(N_SUBSCRIBE); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text; return n; }
+  if(is_kw(t,"subscribe")){ padv(p); Node *n=node(N_SUBSCRIBE); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text;
+      if(is_kw(pk(p),"requires")){ padv(p); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"for")){
       padv(p); Node *n=node(N_FOR); n->name=padv(p)->text; expect_kw(p,"in");
       n->a=expression(p); n->b=block(p); return n;
@@ -1160,6 +1176,18 @@ static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
   return V_nil();
 }
 
+/* `pay ... requires NAME` / `subscribe ... requires NAME`: capname is NULL
+ * when no requires clause was written (the common case - no check at all).
+ * When present, money must not move unless NAME is a granted capability -
+ * checked before anything else in N_PAY/N_SUBSCRIBE, so a declined capability
+ * never leaves a partial transfer behind. */
+static void check_capability(Interp *ip, Env *env, const char *capname){
+  if(!capname) return;
+  Value *cv=env_find(env,capname);
+  if(!cv||cv->t!=V_CAPABILITY) runtime_error(ip,"LarzTypeError","'%s' is not a capability", capname);
+  if(!cv->b) runtime_error(ip,"CapabilityError","capability '%s' is not granted", capname);
+}
+
 static void exec(Interp *ip, Node *n, Env *env){
   maybe_gc(ip);                 /* safe point: between statements, nothing half-built is unrooted */
   if(larz_gas_kill){ larz_gas_kill=0; runtime_error(ip,"GasError","command exceeded its compute gas budget"); }
@@ -1174,7 +1202,15 @@ static void exec(Interp *ip, Node *n, Env *env){
       Wallet *w=xmalloc(sizeof(Wallet)); gc_register(w,GC_WALLET); w->name=xstrdup(n->name); w->cents=c;
       env_define(env,n->name, V_wallet(w)); return;
     }
+    case N_CAPABILITY: { env_define(env,n->name, V_capability(0)); return; }   /* starts revoked */
+    case N_GRANT: case N_REVOKE: {
+      Value *cv=env_find(env,n->name);
+      if(!cv||cv->t!=V_CAPABILITY) runtime_error(ip,"LarzTypeError","'%s' is not a capability", n->name);
+      cv->b = (n->kind==N_GRANT);
+      return;
+    }
     case N_PAY: {
+      check_capability(ip,env,n->str);
       Value amt=eval(ip,n->a,env);
       if(amt.t!=V_MONEY) runtime_error(ip,"LarzTypeError","you can only pay money");
       Value *sv=env_find(env,n->src), *dv=env_find(env,n->dst);
@@ -1194,6 +1230,7 @@ static void exec(Interp *ip, Node *n, Env *env){
       return;
     }
     case N_SUBSCRIBE: {
+      check_capability(ip,env,n->str);
       Value *wv=env_find(env,n->src), *pv=env_find(env,n->dst);
       if(!wv||wv->t!=V_WALLET) runtime_error(ip,"LarzTypeError","can only subscribe a wallet");
       if(!pv||pv->t!=V_PAYWALL) runtime_error(ip,"LarzTypeError","can only subscribe to a paywall");
@@ -1372,7 +1409,7 @@ static const char *type_name(Value v){
   switch(v.t){ case V_NIL:return "nil"; case V_BOOL:return "bool"; case V_NUM:return "number";
     case V_MONEY:return "money"; case V_STR:return "string"; case V_WALLET:return "wallet";
     case V_FUNC:return "function"; case V_BUILTIN:return "function"; case V_LIST:return "list";
-    case V_DICT:return "dict"; case V_PAYWALL:return "paywall"; case V_MODULE:return "module"; case V_RANGE:return "range"; default:return "value"; }
+    case V_DICT:return "dict"; case V_PAYWALL:return "paywall"; case V_MODULE:return "module"; case V_RANGE:return "range"; case V_CAPABILITY:return "capability"; default:return "value"; }
 }
 static Value bi_str(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","str() expects one argument"); return V_take(str_of(a[0])); }
 static Value bi_type(Interp *ip, Value *a, int n){ if(n!=1) runtime_error(ip,"LarzTypeError","type() expects one argument"); return V_string(type_name(a[0])); }
@@ -1713,9 +1750,12 @@ static void fmt_stmt_core(Node *n, int indent){
     case N_SETINDEX: fmt_expr(n->a,11); putchar('['); fmt_expr(n->b,1); putchar(']'); fmt_assign_rhs(n, n->c); break;
     case N_PRICE: printf("price %s = ", n->name); fmt_expr(n->a,1); break;
     case N_WALLET: printf("wallet %s", n->name); if(n->a){ printf(" = "); fmt_expr(n->a,1); } break;
-    case N_PAY: printf("pay "); fmt_expr(n->a,1); printf(" from %s to %s", n->src, n->dst); break;
+    case N_CAPABILITY: printf("capability %s", n->name); break;
+    case N_GRANT: printf("grant %s", n->name); break;
+    case N_REVOKE: printf("revoke %s", n->name); break;
+    case N_PAY: printf("pay "); fmt_expr(n->a,1); printf(" from %s to %s", n->src, n->dst); if(n->str) printf(" requires %s", n->str); break;
     case N_PAYWALL: printf("paywall %s = ", n->name); fmt_expr(n->a,10); printf(" / %s to %s", n->period, n->dst); break;
-    case N_SUBSCRIBE: printf("subscribe %s to %s", n->src, n->dst); break;
+    case N_SUBSCRIBE: printf("subscribe %s to %s", n->src, n->dst); if(n->str) printf(" requires %s", n->str); break;
     case N_REQUIRE: printf("require "); fmt_expr(n->a,1); if(n->str){ printf(", "); fmt_str_lit(n->str); } break;
     case N_RETURN: printf("return"); if(n->a){ putchar(' '); fmt_expr(n->a,1); } break;
     case N_THROW: printf("throw "); fmt_expr(n->a,1); break;
@@ -1945,9 +1985,23 @@ static void ec_stmt(Node *n, int d){
     case N_SETINDEX: ec_ind(d); printf("lz_setindex("); ec_expr(n->a); printf(","); ec_expr(n->b); printf(","); ec_expr(n->c); printf(");\n"); break;
     case N_PRICE: ec_ind(d); printf("LZ %s = ", n->name); ec_expr(n->a); printf(";\n"); break;
     case N_WALLET: ec_ind(d); printf("LZ %s = lzwallet(", n->name); if(n->a){ printf("("); ec_expr(n->a); printf(").n"); } else printf("0"); printf(");\n"); break;
-    case N_PAY: ec_ind(d); printf("lz_pay(%s, %s, ", n->src, n->dst); ec_expr(n->a); printf(");\n"); break;
+    /* only reached for a NON-top-level capability (top-level ones are hoisted
+     * to a global LZ and skipped here by emit_c's main()-loop, same as N_FN -
+     * declaring `LZ NAME={11,0,0,0};` again here would shadow that global
+     * instead of reusing it). A local capability is fully valid on its own
+     * terms though, same as a wallet declared inside a function. */
+    case N_CAPABILITY: ec_ind(d); printf("LZ %s = {11,0,0,0};\n", n->name); break;
+    case N_GRANT: ec_ind(d); printf("%s.n = 1;\n", n->name); break;
+    case N_REVOKE: ec_ind(d); printf("%s.n = 0;\n", n->name); break;
+    case N_PAY:
+      if(n->str){ ec_ind(d); printf("if(!%s.n){fputs(\"CapabilityError: capability '%s' is not granted\\n\",stderr);exit(1);}\n", n->str, n->str); }
+      ec_ind(d); printf("lz_pay(%s, %s, ", n->src, n->dst); ec_expr(n->a); printf(");\n");
+      break;
     case N_PAYWALL: ec_ind(d); printf("LZ %s = lzpaywall((", n->name); ec_expr(n->a); printf(").n, \""); ec_raw(n->period); printf("\", \""); ec_raw(n->name); printf("\", %s);\n", n->dst); break;
-    case N_SUBSCRIBE: ec_ind(d); printf("lz_subscribe(%s, %s);\n", n->src, n->dst); break;
+    case N_SUBSCRIBE:
+      if(n->str){ ec_ind(d); printf("if(!%s.n){fputs(\"CapabilityError: capability '%s' is not granted\\n\",stderr);exit(1);}\n", n->str, n->str); }
+      ec_ind(d); printf("lz_subscribe(%s, %s);\n", n->src, n->dst);
+      break;
     case N_FN: { SSet cap={0,0,0}; lam_captures(n,&cap); ec_ind(d); printf("LZ %s = lzclosure(__lam%d, %d, \"%s\", %d", n->name, n->lam_id, n->nparams, n->name?n->name:"?", cap.n); for(int i=0;i<cap.n;i++) printf(", %s", cap.v[i]); printf(");\n"); free(cap.v); break; }
     case N_REQUIRE: ec_ind(d); printf("if(!lztruthy("); ec_expr(n->a); printf(")){fputs(\"RequireError: "); ec_raw(n->str?n->str:"requirement not met"); printf("\\n\",stderr);exit(1);}\n"); break;
     case N_EXPR: ec_ind(d); ec_expr(n->a); printf(";\n"); break;
@@ -2013,7 +2067,7 @@ static void emit_runtime(void){
   puts("static void lz_dput(LZ D,const char*k,LZ val){int j=lz_dfind(D,k);DCT*d=(DCT*)D.p;if(j>=0){d->vals[j]=val;return;}if(d->n>=d->cap){d->cap=d->cap?d->cap*2:8;d->keys=(char**)realloc(d->keys,d->cap*sizeof(char*));d->vals=(LZ*)realloc(d->vals,d->cap*sizeof(LZ));}d->keys[d->n]=strdup(k);d->vals[d->n++]=val;}");
   puts("static int lz_lenN(LZ v){if(v.t==4)return((LST*)v.p)->n;if(v.t==5)return((DCT*)v.p)->n;if(v.t==2)return v.s?(int)strlen(v.s):0;return 0;}");
   puts("static LZ lz_index(LZ o,LZ i){if(o.t==5){if(i.t==2){int j=lz_dfind(o,i.s);return j>=0?((DCT*)o.p)->vals[j]:lznil();}int idx=(int)i.n;DCT*d=(DCT*)o.p;if(idx<0||idx>=d->n)return lznil();return lzstr(d->keys[idx]);}int idx=(int)i.n;if(o.t==4){LST*l=(LST*)o.p;if(idx<0)idx+=l->n;if(idx<0||idx>=l->n)return lznil();return l->items[idx];}if(o.t==2){int n=(int)strlen(o.s);if(idx<0)idx+=n;if(idx<0||idx>=n)return lznil();char b[2]={o.s[idx],0};return lzstr(b);}return lznil();}");
-  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7||v.t==8||v.t==9||v.t==10)return 1;return 0;}");
+  puts("static int lztruthy(LZ v){if(v.t==1||v.t==3||v.t==11)return v.n!=0;if(v.t==2)return v.s&&v.s[0];if(v.t==4)return((LST*)v.p)->n>0;if(v.t==5)return((DCT*)v.p)->n>0;if(v.t==6)return v.n!=0;if(v.t==7||v.t==8||v.t==9||v.t==10)return 1;return 0;}");
   /* closures (t=9): fn pointer + by-value captured environment; map/filter/reduce use lz_call */
   puts("typedef struct{LZ(*fn)(LZ*,LZ*);LZ*cap;char*name;}CLO;");
   puts("static LZ lzclosure(LZ(*fn)(LZ*,LZ*),int arity,const char*name,int ncap,...){(void)arity;CLO*c=(CLO*)malloc(sizeof(CLO));c->fn=fn;c->name=strdup(name);c->cap=ncap?(LZ*)malloc(ncap*sizeof(LZ)):0;va_list ap;va_start(ap,ncap);for(int i=0;i<ncap;i++)c->cap[i]=va_arg(ap,LZ);va_end(ap);LZ v={9,0,0,c};return v;}");
@@ -2042,6 +2096,7 @@ static void emit_runtime(void){
   puts("  if(v.t==8){PW*p=(PW*)v.p;long long c=p->price<0?-p->price:p->price;char*r=(char*)malloc(strlen(p->name)+strlen(p->period)+48);sprintf(r,\"<paywall %s: $%lld.%02lld/%s>\",p->name,c/100,c%100,p->period);return r;}");
   puts("  if(v.t==9){CLO*c=(CLO*)v.p;char*r=(char*)malloc(strlen(c->name)+8);sprintf(r,\"<fn %s>\",c->name);return r;}");
   puts("  if(v.t==10){DMOD*m=(DMOD*)v.p;char*r=(char*)malloc(strlen(m->name)+16);sprintf(r,\"<module %s>\",m->name);return r;}");
+  puts("  if(v.t==11)return strdup(v.n!=0?\"<capability granted>\":\"<capability revoked>\");");
   puts("  return strdup(\"nil\");}");
   /* dynamic import (t=10): a runtime name -> module handle, backed by a compile-time
    * closed-world registry (every .lz file the module search path can see when larzc
@@ -2271,7 +2326,7 @@ static void emit_c(Node *prog, const char *main_path){
 
   /* gather top-level globals + functions */
   for(int i=0;i<nT;i++){ Node*k=T[i];
-    if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) && k->name) ss_add(&g_globals, k->name);
+    if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL||k->kind==N_CAPABILITY) && k->name) ss_add(&g_globals, k->name);
     if(k->kind==N_FN && k->name){ ss_add(&g_globals, k->name); g_topfn=(Node**)realloc(g_topfn,(g_ntopfn+1)*sizeof(Node*)); g_topfn[g_ntopfn++]=k; }
   }
   /* give every nested lambda / nested named fn a hoist id */
@@ -2279,6 +2334,15 @@ static void emit_c(Node *prog, const char *main_path){
 
   /* top-level let/price/wallet/paywall become C globals so functions can reference them */
   for(int i=0;i<nT;i++){ Node*k=T[i]; if((k->kind==N_LET||k->kind==N_PRICE||k->kind==N_WALLET||k->kind==N_PAYWALL) && k->name) printf("LZ %s;\n", k->name); }
+  /* top-level capabilities become LZ-typed C globals too (t=11, .n=0/1 for
+   * revoked/granted) - NOT a plain int: every other value in this codegen is
+   * a uniform LZ struct (print/expressions/function args all assume it), so
+   * a raw int here would corrupt any variadic call it's passed through (this
+   * broke print(capability) with a real segfault before being caught).
+   * A braced struct literal is a valid *constant* initializer (no function
+   * call), so - unlike wallet/paywall, whose balance may be a runtime
+   * expression - this needs no separate init step in main() either. */
+  for(int i=0;i<nT;i++){ Node*k=T[i]; if(k->kind==N_CAPABILITY && k->name) printf("LZ %s = {11,0,0,0};\n", k->name); }
   /* forward declarations: top-level fns + their value-adapters + hoisted lambdas */
   for(int i=0;i<g_ntopfn;i++){ emit_topfn_sig(g_topfn[i]); printf(";\n"); printf("LZ __adapt_%s(LZ*,LZ*);\n", g_topfn[i]->name); }
   for(int i=0;i<g_nlams;i++) printf("LZ __lam%d(LZ*,LZ*);\n", g_lams[i]->lam_id);
@@ -2313,6 +2377,7 @@ static void emit_c(Node *prog, const char *main_path){
   printf("int main(void){\n");
   for(int i=0;i<nT;i++){ Node*k=T[i];
     if(k->kind==N_FN) continue;
+    if(k->kind==N_CAPABILITY) continue;   /* already declared+initialized as a global above */
     if(k->kind==N_LET||k->kind==N_PRICE){ ec_ind(1); printf("%s = ", k->name); ec_expr(k->a); printf(";\n"); }
     else if(k->kind==N_WALLET){ ec_ind(1); printf("%s = lzwallet(", k->name); if(k->a){ printf("("); ec_expr(k->a); printf(").n"); } else printf("0"); printf(");\n"); }
     else if(k->kind==N_PAYWALL){ ec_ind(1); printf("%s = lzpaywall((", k->name); ec_expr(k->a); printf(").n, \""); ec_raw(k->period); printf("\", \""); ec_raw(k->name); printf("\", %s);\n", k->dst); }
