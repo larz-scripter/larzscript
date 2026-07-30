@@ -1521,7 +1521,7 @@ static int bracket_depth(const char *s){
 static void repl(Interp *ip){
   char line[8192];
   static char buf[1<<16]; buf[0]=0;
-  printf("Larzscript native REPL (v1.14.0) - type statements; Ctrl-D to exit.\n"
+  printf("Larzscript native REPL (v1.15.0) - type statements; Ctrl-D to exit.\n"
          "Definitions can span multiple lines; the '..... ' prompt means more is expected.\n");
   for(;;){
     printf(buf[0] ? "..... " : "larz> "); fflush(stdout);
@@ -2323,7 +2323,7 @@ int main(int argc, char **argv){
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
-    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.14.0\n"); return 0; }
+    if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) 1.15.0\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
@@ -2336,6 +2336,11 @@ int main(int argc, char **argv){
   /* remaining argv[i..] are the program's own arguments */
   List *prog_args=list_new();
   for(; i<argc; i++) list_push(prog_args, V_string(argv[i]));
+
+  /* Bare `larzscript` at an interactive terminal behaves like bare `python`:
+   * drop into the REPL. Piped/redirected stdin (no tty) keeps the older
+   * behavior of reading a whole program from stdin and running it. */
+  if(!path && !eval_code && !want_fmt && !want_check && !want_emit_c && !want_repl && isatty(fileno(stdin))) want_repl=1;
 
   if(want_fmt){
     if(!path){ fprintf(stderr,"larzscript fmt: needs a file\n"); return 1; }
