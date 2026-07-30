@@ -67,6 +67,8 @@
  * same "NULL dest = malloc a buffer" calling convention). */
 #define mkdir(path,mode) mkdir(path)
 #define realpath(path,resolved) _fullpath(resolved,path,4096)
+#define WIN32_LEAN_AND_MEAN   /* GetModuleFileNameA only (larzscript update) - keep windows.h small */
+#include <windows.h>          /* no identifier collisions here: file has no min/max/ERROR/IN/OUT */
 #endif
 
 /* ===================== small helpers ===================== */
@@ -1747,6 +1749,7 @@ static const char *USAGE =
   "  larzscript --check <file.lz>   syntax-check a file (for editors / CI)\n"
   "  larzscript --emit-c <file.lz>  compile to C (larzc: gcc it for a native binary)\n"
   "  larzscript [--ledger] <file>   also print the money ledger afterwards\n"
+  "  larzscript update              check for and install the latest release\n"
   "  larzscript --version | --help\n";
 
 /* ======================================================================
@@ -2318,6 +2321,212 @@ static void emit_c(Node *prog, const char *main_path){
   printf("  return 0;\n}\n");
 }
 
+/* ======================================================================
+ * larzscript update: self-update, verified via a from-scratch SHA-256.
+ * Single-shot (hash a whole in-memory buffer at once) - update() only ever
+ * hashes short-lived files, no streaming API needed. No new #include: uses
+ * plain `unsigned int`/`unsigned long long` instead of <stdint.h>, since
+ * that header has no replacement in the LarzOS kernel's freestanding libc
+ * and this file is compiled into the kernel too - matches how the rest of
+ * this file already avoids fixed-width types everywhere else.
+ * ==================================================================== */
+typedef struct { unsigned int state[8]; unsigned long long bitlen; unsigned char data[64]; unsigned datalen; } SHA256_CTX;
+
+static const unsigned int sha256_k[64] = {
+  0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+  0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+  0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+  0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+  0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+  0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+  0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+  0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u
+};
+#define SHA256_ROTR(x,n) (((x)>>(n))|((x)<<(32-(n))))
+static void sha256_transform(SHA256_CTX *ctx, const unsigned char data[]){
+  unsigned int a,b,c,d,e,f,g,h,t1,t2,m[64]; int i,j;
+  for(i=0,j=0;i<16;i++,j+=4) m[i]=((unsigned)data[j]<<24)|((unsigned)data[j+1]<<16)|((unsigned)data[j+2]<<8)|(unsigned)data[j+3];
+  for(;i<64;i++){
+    unsigned int s0=SHA256_ROTR(m[i-15],7)^SHA256_ROTR(m[i-15],18)^(m[i-15]>>3);
+    unsigned int s1=SHA256_ROTR(m[i-2],17)^SHA256_ROTR(m[i-2],19)^(m[i-2]>>10);
+    m[i]=m[i-16]+s0+m[i-7]+s1;
+  }
+  a=ctx->state[0];b=ctx->state[1];c=ctx->state[2];d=ctx->state[3];
+  e=ctx->state[4];f=ctx->state[5];g=ctx->state[6];h=ctx->state[7];
+  for(i=0;i<64;i++){
+    unsigned int S1=SHA256_ROTR(e,6)^SHA256_ROTR(e,11)^SHA256_ROTR(e,25);
+    unsigned int ch=(e&f)^((~e)&g);
+    t1=h+S1+ch+sha256_k[i]+m[i];
+    unsigned int S0=SHA256_ROTR(a,2)^SHA256_ROTR(a,13)^SHA256_ROTR(a,22);
+    unsigned int maj=(a&b)^(a&c)^(b&c);
+    t2=S0+maj;
+    h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;
+  }
+  ctx->state[0]+=a;ctx->state[1]+=b;ctx->state[2]+=c;ctx->state[3]+=d;
+  ctx->state[4]+=e;ctx->state[5]+=f;ctx->state[6]+=g;ctx->state[7]+=h;
+}
+static void sha256_init(SHA256_CTX *ctx){
+  ctx->datalen=0; ctx->bitlen=0;
+  ctx->state[0]=0x6a09e667u;ctx->state[1]=0xbb67ae85u;ctx->state[2]=0x3c6ef372u;ctx->state[3]=0xa54ff53au;
+  ctx->state[4]=0x510e527fu;ctx->state[5]=0x9b05688cu;ctx->state[6]=0x1f83d9abu;ctx->state[7]=0x5be0cd19u;
+}
+static void sha256_update(SHA256_CTX *ctx, const unsigned char *data, size_t len){
+  for(size_t i=0;i<len;i++){
+    ctx->data[ctx->datalen]=data[i]; ctx->datalen++;
+    if(ctx->datalen==64){ sha256_transform(ctx,ctx->data); ctx->bitlen+=512; ctx->datalen=0; }
+  }
+}
+static void sha256_final(SHA256_CTX *ctx, unsigned char hash[32]){
+  unsigned i=ctx->datalen;
+  if(ctx->datalen<56){ ctx->data[i++]=0x80; while(i<56) ctx->data[i++]=0; }
+  else { ctx->data[i++]=0x80; while(i<64) ctx->data[i++]=0; sha256_transform(ctx,ctx->data); memset(ctx->data,0,56); }
+  ctx->bitlen += (unsigned long long)ctx->datalen*8;
+  for(i=0;i<8;i++) ctx->data[63-i]=(unsigned char)(ctx->bitlen>>(i*8));
+  sha256_transform(ctx,ctx->data);
+  for(i=0;i<4;i++) for(int s=0;s<8;s++) hash[s*4+i]=(unsigned char)((ctx->state[s]>>(24-i*8))&0xffu);
+}
+static void sha256_hex(const unsigned char *data, size_t len, char out[65]){
+  SHA256_CTX ctx; unsigned char hash[32];
+  sha256_init(&ctx); sha256_update(&ctx,data,len); sha256_final(&ctx,hash);
+  for(int i=0;i<32;i++) sprintf(out+i*2,"%02x",hash[i]);
+  out[64]=0;
+}
+/* NIST test vectors - run every time cmd_update() is invoked, before trusting
+ * any comparison; a broken hash routine would otherwise silently defeat the
+ * one safety property this whole feature exists for. */
+static int sha256_selftest(void){
+  char out[65];
+  sha256_hex((const unsigned char*)"", 0, out);
+  if(strcmp(out,"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")!=0) return 0;
+  sha256_hex((const unsigned char*)"abc", 3, out);
+  if(strcmp(out,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")!=0) return 0;
+  return 1;
+}
+
+/* platform asset name - must exactly match what native.yml's release job
+ * produces and what install.sh/install.ps1 already request. */
+static const char *update_asset_name(void){
+#if defined(_WIN32)
+  return "larzscript-windows-x86_64.exe";
+#elif defined(__aarch64__)
+  return "larzscript-linux-aarch64";
+#elif defined(__x86_64__)
+  return "larzscript-linux-x86_64";
+#else
+  return NULL;
+#endif
+}
+
+static char *update_read_file(const char *path, size_t *outlen){
+  FILE *f=fopen(path,"rb"); if(!f) return NULL;
+  size_t cap=1<<20,len=0; char *b=xmalloc(cap); size_t r;
+  while((r=fread(b+len,1,cap-len,f))>0){ len+=r; if(len==cap){ cap*=2; b=realloc(b,cap); } }
+  fclose(f); if(outlen) *outlen=len; return b;
+}
+
+/* the currently running binary's own path - argv[0] can be relative,
+ * PATH-resolved, or otherwise unreliable, and acting on the wrong path here
+ * is the one mistake in this whole feature that isn't cheaply reversible. */
+static char *update_self_path(void){
+#if defined(_WIN32)
+  char buf[4096];
+  DWORD n = GetModuleFileNameA(NULL, buf, sizeof buf);
+  if(n==0 || n>=sizeof buf) return NULL;
+  return xstrdup(buf);
+#elif defined(__linux__)
+  char buf[4096];
+  ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+  if(n<=0) return NULL;
+  buf[n]=0; return xstrdup(buf);
+#else
+  return NULL;
+#endif
+}
+
+static int cmd_update(void){
+  if(!sha256_selftest()){ fprintf(stderr,"larzscript update: internal SHA-256 self-test failed - aborting, nothing touched\n"); return 1; }
+
+  const char *asset = update_asset_name();
+  if(!asset){ fprintf(stderr,"larzscript update: self-update isn't available for this platform yet; rebuild from source\n"); return 1; }
+
+  char *self = update_self_path();
+  if(!self){ fprintf(stderr,"larzscript update: could not determine this program's own path\n"); return 1; }
+
+  char selfdir[4096]; snprintf(selfdir,sizeof selfdir,"%s",self);
+  { char *sl=strrchr(selfdir,'/'); if(!sl) sl=strrchr(selfdir,'\\'); if(sl) *sl=0; else snprintf(selfdir,sizeof selfdir,"."); }
+
+  /* fail fast: can we even write here, before any network round-trip? */
+  char probe[4096]; snprintf(probe,sizeof probe,"%s/.larzscript_update_probe",selfdir);
+  FILE *pf=fopen(probe,"wb");
+  if(!pf){ fprintf(stderr,"larzscript update: cannot write to '%s' - reinstall to a user-writable location\n", selfdir); free(self); return 1; }
+  fclose(pf); remove(probe);
+
+  /* clean up a leftover Windows *.old from a previous update (see the atomic-
+   * replace step below) - only checked here, not on every launch, since a
+   * stray .old is wasted disk space, not a correctness issue. */
+  { char oldpath[4160]; snprintf(oldpath,sizeof oldpath,"%s.old",self); remove(oldpath); }
+
+  char sumsurl[256]; snprintf(sumsurl,sizeof sumsurl,
+    "https://github.com/larz-scripter/larzscript/releases/latest/download/SHA256SUMS");
+  char sumstmp[4096]; snprintf(sumstmp,sizeof sumstmp,"%s/.larzscript_SHA256SUMS",selfdir);
+  char cmd[8448]; snprintf(cmd,sizeof cmd,"curl -fsSL \"%s\" -o \"%s\"",sumsurl,sumstmp);
+  if(system(cmd)!=0){ fprintf(stderr,"larzscript update: could not reach GitHub to check for updates\n"); free(self); return 1; }
+  size_t sumslen; char *sums=update_read_file(sumstmp,&sumslen);
+  remove(sumstmp);
+  if(!sums){ fprintf(stderr,"larzscript update: could not read the downloaded SHA256SUMS\n"); free(self); return 1; }
+
+  char expected[65]="";
+  { char *p=sums;
+    while(p && *p){
+      char *nl=strchr(p,'\n'); size_t linelen = nl ? (size_t)(nl-p) : strlen(p);
+      if(linelen>66 && strstr(p,asset)==p+66){ memcpy(expected,p,64); expected[64]=0; break; }
+      p = nl ? nl+1 : NULL;
+    }
+  }
+  free(sums);
+  if(!expected[0]){ fprintf(stderr,"larzscript update: no entry for '%s' in the release's SHA256SUMS (release incomplete?)\n", asset); free(self); return 1; }
+
+  size_t selflen; char *selfbuf=update_read_file(self,&selflen);
+  if(!selfbuf){ fprintf(stderr,"larzscript update: could not read the running binary at '%s'\n", self); free(self); return 1; }
+  char selfhash[65]; sha256_hex((unsigned char*)selfbuf,selflen,selfhash);
+  free(selfbuf);
+  if(strcmp(selfhash,expected)==0){ printf("larzscript is already up to date (%s)\n", LARZSCRIPT_VERSION); free(self); return 0; }
+
+  char url[512]; snprintf(url,sizeof url,
+    "https://github.com/larz-scripter/larzscript/releases/latest/download/%s", asset);
+  char tmp[4160]; snprintf(tmp,sizeof tmp,"%s.new",self);   /* same directory => the later rename is atomic */
+  snprintf(cmd,sizeof cmd,"curl -fsSL \"%s\" -o \"%s\"",url,tmp);
+  printf("downloading update...\n");
+  if(system(cmd)!=0){ fprintf(stderr,"larzscript update: download failed\n"); remove(tmp); free(self); return 1; }
+
+  size_t newlen; char *newbuf=update_read_file(tmp,&newlen);
+  if(!newbuf){ fprintf(stderr,"larzscript update: could not read the downloaded file\n"); remove(tmp); free(self); return 1; }
+  char newhash[65]; sha256_hex((unsigned char*)newbuf,newlen,newhash);
+  free(newbuf);
+  if(strcmp(newhash,expected)!=0){
+    fprintf(stderr,"larzscript update: downloaded file failed checksum verification, aborting - no changes made\n");
+    remove(tmp); free(self); return 1;
+  }
+
+#ifndef _WIN32
+  chmod(tmp,0755);
+#endif
+
+#ifdef _WIN32
+  char oldpath[4160]; snprintf(oldpath,sizeof oldpath,"%s.old",self);
+  remove(oldpath);                 /* best-effort; fine if nothing's there */
+  if(rename(self,oldpath)!=0){ fprintf(stderr,"larzscript update: could not move the running binary aside\n"); remove(tmp); free(self); return 1; }
+  if(rename(tmp,self)!=0){ fprintf(stderr,"larzscript update: could not place the new binary - restoring the original\n"); rename(oldpath,self); free(self); return 1; }
+  remove(oldpath);                 /* normally fails while still running - that's fine, cleaned up next update */
+#else
+  if(rename(tmp,self)!=0){ fprintf(stderr,"larzscript update: could not replace the running binary\n"); remove(tmp); free(self); return 1; }
+#endif
+
+  printf("updated larzscript -> %s\n", self);
+  free(self);
+  return 0;
+}
+
 int main(int argc, char **argv){
   if(getenv("LZ_GC_STRESS")) g_gc_threshold=0;   /* collect on every statement (test mode) */
   const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0, want_emit_c=0;
@@ -2326,6 +2535,7 @@ int main(int argc, char **argv){
     const char *a=argv[i];
     if(strcmp(a,"--version")==0 || strcmp(a,"-v")==0){ printf("larzscript (native) " LARZSCRIPT_VERSION "\n"); return 0; }
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
+    if(strcmp(a,"update")==0){ return cmd_update(); }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
     if(strcmp(a,"--check")==0 || strcmp(a,"check")==0){ want_check=1; continue; }
