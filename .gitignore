@@ -6,6 +6,7 @@ dist/
 .venv/
 .pytest_cache/
 native/larzscript
+native/wasm/
 *.o
 /tmp/_larzscript_test
 kernel/*.o

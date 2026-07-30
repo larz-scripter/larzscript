@@ -21,4 +21,24 @@ clean:
 windows: larzscript.c
 	x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -static -o larzscript.exe larzscript.c -lwinpthread
 
-.PHONY: install clean windows
+# WebAssembly via Emscripten (emsdk: https://emscripten.org/docs/getting_started/downloads.html).
+# Two separate outputs, not one build, because they serve different jobs:
+#  - wasm-node: a plain CLI build (argv flows straight from process.argv, same
+#    as the native binary) used ONLY to run native/run_tests.sh's existing
+#    suite under Node, proving the wasm build isn't silently behind native.
+#    NODERAWFS=1 gives it real filesystem access so test fixtures resolve the
+#    same way they do natively.
+#  - wasm-web: the browser bundle (MODULARIZE, no CLI argv, no filesystem) -
+#    added alongside the dom/callback-bridge work.
+# STACK_SIZE is bumped well past Emscripten's 64KB default: this is a
+# recursive tree-walking interpreter (exec/eval call each other, and eval's
+# call path keeps a `Value args[64]` on the stack per frame) - the default
+# stack overflows silently under wasm on nothing more exotic than a function
+# that does a dynamic `import <expr> as x` twice, corrupting the heap and
+# surfacing as a bogus "out of memory" rather than a clean stack-overflow
+# trap. 8MB matches a typical native thread stack and leaves headroom.
+wasm-node: larzscript.c
+	emcc $(CFLAGS) -o wasm/larzscript-node.js larzscript.c \
+		-s ENVIRONMENT=node -s ALLOW_MEMORY_GROWTH=1 -s NODERAWFS=1 -s STACK_SIZE=8388608
+
+.PHONY: install clean windows wasm-node
