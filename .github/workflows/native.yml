@@ -48,7 +48,7 @@ jobs:
           cd native
           BINARY=../larzscript-linux-aarch64 RUN_PREFIX=qemu-aarch64-static ./run_tests.sh
       - name: Strip
-        run: strip larzscript-linux-aarch64
+        run: aarch64-linux-gnu-strip larzscript-linux-aarch64
       - uses: actions/upload-artifact@v4
         with:
           name: larzscript-linux-aarch64
@@ -63,14 +63,19 @@ jobs:
       - name: Build (static)
         run: |
           x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -static -o larzscript-windows-x86_64.exe native/larzscript.c -lwinpthread
-      - name: Wine warm-up (creates the wine prefix once, outside the test loop)
-        run: WINEDEBUG=-all wine --version || true
+      - name: Wine warm-up (creates the wine prefix + first-run noise once, outside the test loop)
+        # `wine --version` alone does NOT trigger the same wineboot/prefix
+        # initialization as running an actual PE binary - the "created the
+        # configuration directory" / wow64 noise still leaked into the first
+        # real test's captured output when this step only ran --version.
+        # Running the just-built exe once for real flushes that noise here.
+        run: WINEDEBUG=-all wine larzscript-windows-x86_64.exe --version || true
       - name: Test under wine
         run: |
           cd native
           BINARY=../larzscript-windows-x86_64.exe RUN_PREFIX=wine LZ_CRLF_NORMALIZE=1 WINEDEBUG=-all ./run_tests.sh
       - name: Strip
-        run: strip larzscript-windows-x86_64.exe
+        run: x86_64-w64-mingw32-strip larzscript-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: larzscript-windows-x86_64.exe
