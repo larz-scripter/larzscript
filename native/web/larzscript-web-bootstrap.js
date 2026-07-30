@@ -1,4 +1,5 @@
-// larzscript-web.js - page-side bootstrap for running Larzscript client-side.
+// larzscript-web-bootstrap.js - page-side bootstrap for running Larzscript
+// client-side.
 //
 // Drop this next to larzscript-web.js (the Emscripten glue, `make wasm-web`)
 // and larzscript-web.wasm, then include both on a page:

@@ -81,8 +81,46 @@ jobs:
           name: larzscript-windows-x86_64.exe
           path: larzscript-windows-x86_64.exe
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache emsdk
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          # bump this key if the `./emsdk install` version below changes
+          key: emsdk-latest-v1
+      - name: Install Emscripten
+        run: |
+          if [ ! -d emsdk ]; then git clone --depth 1 https://github.com/emscripten-core/emsdk.git; fi
+          cd emsdk && ./emsdk install latest && ./emsdk activate latest
+      - name: Build wasm-node (CLI regression build) + wasm-web (browser bundle)
+        run: |
+          source emsdk/emsdk_env.sh
+          cd native && make wasm-node wasm-web
+      - name: Test under Node - the same suite every other platform runs
+        run: |
+          cd native
+          BINARY="$PWD/wasm/larzscript-node.js" RUN_PREFIX=node ./run_tests.sh
+      - name: dom/ui bridge tests (Node+jsdom, no real browser needed)
+        run: |
+          cd native/tests-web
+          npm install
+          node ui_bridge.test.js
+          node ui_fetch.test.js
+      - name: Package the browser bundle
+        run: |
+          mkdir -p dist-web
+          cp native/wasm/larzscript-web.js native/wasm/larzscript-web.wasm native/web/larzscript-web-bootstrap.js dist-web/
+          cd dist-web && zip -r ../larzscript-web.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: larzscript-web
+          path: larzscript-web.zip
+
   release:
-    needs: [linux-x86_64, linux-aarch64, windows-x86_64]
+    needs: [linux-x86_64, linux-aarch64, windows-x86_64, web]
     if: startsWith(github.ref, 'refs/tags/native-v')
     runs-on: ubuntu-latest
     permissions:

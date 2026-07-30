@@ -42,7 +42,7 @@ wasm-node: larzscript.c
 		-s ENVIRONMENT=node -s ALLOW_MEMORY_GROWTH=1 -s NODERAWFS=1 -s STACK_SIZE=8388608
 
 # The browser bundle: MODULARIZE (no auto-run, no CLI argv - see
-# web/larzscript-web.js for the page-side bootstrap), only larz_eval_source
+# web/larzscript-web-bootstrap.js for the page-side bootstrap), only larz_eval_source
 # and larz_invoke_callback exported (the two entry points JS ever calls into).
 # ENVIRONMENT=web,node (not just web) so the SAME bundle also loads under
 # plain Node for the test suite (native/tests-web/, via jsdom) - no real
