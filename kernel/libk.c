@@ -333,9 +333,16 @@ static void mouse_byte(unsigned char b){
         int resizeIdx = gfx_window_resize_hit_test(cx, cy);   /* stage 6: bottom-right grip */
         if(tbw>=0){ gfx_window_focus(tbw); }
         else if(closeIdx>=0){
-            task_exit(gfx_window_owner_task(closeIdx));   /* the task keeps running one more tick
-                                                            * at most (see task_exit()) - harmless */
+            /* close THEN exit, not the other way round - if the clicked window happens to be
+             * owned by whichever task this very interrupt handler preempted, task_exit()'ing it
+             * first could let the NEXT timer tick skip straight past it before gfx_window_close()
+             * ever runs (schedule() permanently skips unused slots), leaving the window never
+             * actually closed. Closing first, while the owning task is still guaranteed alive to
+             * finish this call either way, avoids that race - see ui.close() (native/larzscript.c)
+             * for the same fix, found there via a real, reproduced "window won't close" bug. */
+            int owner = gfx_window_owner_task(closeIdx);
             gfx_window_close(closeIdx);
+            task_exit(owner);
         }
         else if(resizeIdx>=0){
             gfx_window_focus(resizeIdx);

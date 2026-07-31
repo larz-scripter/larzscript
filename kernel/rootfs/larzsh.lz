@@ -95,6 +95,9 @@ fn cmd_help() {
   print("  earn N          credit N cents of compute (demo)")
   print("  ledger          show the money ledger (earns, payments, purchases)")
   print("  pay U AMOUNT    send money to another user (per-user wallets)")
+  print("  windows         list open desktop windows")
+  print("  launch NAME     open an app (terminal|clock|about|files)")
+  print("  close N|NAME    close a window by index or title")
   print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
   print("  <name> ARGS     run an installed package (e.g. banner, todo, figlet)")
@@ -152,6 +155,42 @@ fn cmd_env(rest) {
   return 0
 }
 
+# ---- desktop control: drive the GUI from the terminal, not just the mouse ----
+
+fn cmd_windows() {
+  for w in ui.windows() {
+    print(str(w["index"]) + (w["focused"] ? " * " : "   ") + w["title"])
+  }
+  return 0
+}
+
+let LAUNCHABLE = {"terminal": "/larzsh.lz", "clock": "/clock.lz", "about": "/about.lz", "files": "/files.lz"}
+fn cmd_launch(rest) {
+  if len(rest) == 0 { print("usage: launch <name>  (terminal|clock|about|files)"); return 1 }
+  let name = rest[0].lower()
+  if not LAUNCHABLE.has(name) { print("launch: unknown app: " + name); return 1 }
+  if not ui.launch(LAUNCHABLE[name]) { print("launch: no free app slot - close a window first"); return 1 }
+  return 0
+}
+
+fn cmd_close(rest) {
+  if len(rest) == 0 { print("usage: close <index|name>"); return 1 }
+  let target = rest[0]
+  for w in ui.windows() {
+    if str(w["index"]) == target or w["title"].lower().contains(target.lower()) {
+      let is_self = (w["index"] == MY_WINDOW)
+      if is_self { print("goodbye.") }        # print BEFORE closing - ui.close() below tears
+      ui.close(w["index"])                    # down this task's own terminal widget, same real
+      if is_self {                            # path (task_exit+gfx_window_close) any other
+        while true { sleep(1) }               # window's close-X already uses. Can't return to
+      }                                       # the normal read-eval loop afterward - there's no
+      return 0                                # window/input left to read from - just idle like
+    }                                         # any other app (task_exit() already parked this
+  }                                            # task; the next scheduler tick stops resuming it).
+  print("close: no such window: " + target)
+  return 1
+}
+
 # ---- the dispatcher ----
 
 fn run_command(argv, state) {
@@ -201,6 +240,9 @@ fn run_command(argv, state) {
     print(l == "" ? "(ledger empty)" : l)
     return state
   }
+  if cmd == "windows" { cmd_windows(); return state }
+  if cmd == "launch" { cmd_launch(rest); return state }
+  if cmd == "close" { cmd_close(rest); return state }
   # Any other word is a command: a Larzscript package (built in, or installed via
   # `pkg`) that defines `fn run(args)`, imported and executed in-process. Metered
   # - each run costs 1 cent of compute and fails closed (the money-native OS).

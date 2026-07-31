@@ -2106,18 +2106,26 @@ static Value bi_ui_windows(Interp *ip, Value *a, int n){
   return V_list(r);
 }
 
-/* ui.close(index) - closes a window by index, mirroring exactly what the
- * mouse-driven close-X does (kernel/libk.c's mouse_byte()): read the
- * owning task BEFORE closing (closing clears it), task_exit() that task,
- * then gfx_window_close() the window itself. */
+/* ui.close(index) - closes a window by index: read the owning task BEFORE
+ * closing (closing clears it), gfx_window_close() the window itself, THEN
+ * task_exit() that task - in that order, not task_exit() first. A script
+ * can close its OWN window this way (owner == the calling task), and
+ * task_exit() on your own currently-running task marks its slot unused
+ * immediately, not "after this function returns" - if a timer tick landed
+ * between task_exit() and gfx_window_close(), this task could be preempted
+ * and never resumed (schedule() permanently skips unused slots), leaving
+ * the window never actually closed. Closing the window FIRST, while the
+ * task is still guaranteed alive to finish this call, avoids that race
+ * entirely; task_exit() being called after doesn't need to "finish"
+ * anything else afterward either way. */
 static Value bi_ui_close(Interp *ip, Value *a, int n){
   if(n!=1 || !is_num(a[0])) runtime_error(ip,"LarzTypeError","ui.close() expects a window index");
   ensure_kernel_gfx();
   int idx=(int)a[0].num;
   int owner = gfx_window_owner_task(idx);
   if(owner < 0) runtime_error(ip,"LarzRuntimeError","ui.close(): no such window %d", idx);
-  task_exit(owner);
   gfx_window_close(idx);
+  task_exit(owner);
   return V_nil();
 }
 
