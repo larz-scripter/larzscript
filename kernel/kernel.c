@@ -78,6 +78,14 @@ void kernel_main(void){
     printf("  starting the LarzOS web server (/webserver.lz) ...\n\n");
     char *srv_argv[] = { "larzscript", "/webserver.lz", 0 };
     larz_main(2, srv_argv);
+#elif defined(LARZ_GUI)
+    /* boot straight into the GUI - real VGA graphics + keyboard-driven
+     * widgets, no serial/text console involved once /gui.lz calls ui.run().
+     * See kernel/README.md for the money-native story and how to verify it
+     * headlessly via QEMU's monitor screendump/sendkey. */
+    printf("  starting the LarzOS GUI (/gui.lz) ...\n\n");
+    char *gui_argv[] = { "larzscript", "/gui.lz", 0 };
+    larz_main(2, gui_argv);
 #elif defined(LARZ_SHELL)
     /* run the boot demo, then launch the LarzOS shell (larzsh) - self-hosting */
     printf("  Loading /boot.lz from the RAM filesystem...\n");

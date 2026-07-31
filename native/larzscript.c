@@ -73,6 +73,9 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>       /* EM_JS/EM_ASM/EMSCRIPTEN_KEEPALIVE - the browser `ui` module + callback bridge */
 #endif
+#if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
+#include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
+#endif
 
 /* ===================== small helpers ===================== */
 static void *xmalloc(size_t n){ void *p = malloc(n); if(!p){ fprintf(stderr,"out of memory\n"); exit(2);} return p; }
@@ -803,6 +806,14 @@ static void gc_temp_pop(Interp *ip, int to){ ip->ntemp=to; }
 static Value *g_ui_callbacks=0; static int g_ui_ncb=0, g_ui_cbcap=0;
 #endif
 
+#if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
+/* Same rooting concern as the browser's g_ui_callbacks above, for the
+ * kernel-native `ui` module's click handlers (see register_ui_module
+ * further down). Fixed-size (bounded by GFX_MAX_WIDGETS, gfx.h) and
+ * statically zero-initialized, so every slot starts as V_NIL (V_NIL==0). */
+static Value g_kernel_ui_callbacks[GFX_MAX_WIDGETS];
+#endif
+
 static void gc_mark_env(Env *e);
 static void gc_mark_value(Value v){
   switch(v.t){
@@ -833,6 +844,9 @@ static void gc_collect(Interp *ip){
 #ifdef __EMSCRIPTEN__
   for(int i=0;i<g_ui_ncb;i++) gc_mark_value(g_ui_callbacks[i]);
 #endif
+#if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
+  for(int i=0;i<GFX_MAX_WIDGETS;i++) gc_mark_value(g_kernel_ui_callbacks[i]);
+#endif
   GCObj **pp=&g_gc_head;
   while(*pp){
     GCObj *o=*pp;
@@ -852,6 +866,9 @@ volatile int larz_gas_kill = 0;   /* set by the host OS (LarzOS) when a command 
 static void define_builtins(Env *e);   /* forward: used by import */
 #ifdef __EMSCRIPTEN__
 static void register_ui_module(Env *g);   /* forward: used by define_builtins, defined after install_builtins */
+#endif
+#if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
+static void register_ui_module(Env *g);   /* forward: used by define_builtins, defined after install_builtins (kernel-native ui, VGA Mode 13h backend) */
 #endif
 
 static void runtime_error(Interp *ip, const char *name, const char *fmt, ...){
@@ -1728,6 +1745,9 @@ static void define_builtins(Env *g){
 #ifdef __EMSCRIPTEN__
   register_ui_module(g);
 #endif
+#if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
+  register_ui_module(g);
+#endif
 }
 
 static void install_builtins(Interp *ip){
@@ -1915,6 +1935,95 @@ void larz_invoke_fetch_callback(int id, int status, const char *body){
   call_value(&g_web_ip, g_ui_callbacks[id], args, 2);
 }
 #endif /* __EMSCRIPTEN__ */
+
+#if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
+/* ===================== bare-metal LarzOS: kernel-native `ui` module ===================== *
+ * Same `ui` module name and call shape as the browser build (native/WEB.md):
+ * ui.set_text/ui.on, plus two creation primitives the browser didn't need
+ * (ui.label/ui.button) - the kernel has no pre-existing markup to select
+ * into the way the browser's ui module queries a real DOM, so widgets are
+ * created via API calls. Backed by kernel/gfx.c's VGA Mode 13h framebuffer
+ * and keyboard-driven widget model instead of EM_JS/DOM calls - a different
+ * renderer behind the identical Larzscript-level vocabulary, exactly what
+ * that module was designed for.
+ *
+ * Simpler than the browser's callback bridge: there's no foreign runtime
+ * calling back in from outside the interpreter's own call stack. Per
+ * kernel/kernel.c's boot dispatch, larz_main() runs one .lz program to
+ * completion per boot stage - one Interp, no concurrency - so ui.run() is
+ * an ordinary builtin call that already has `ip` in scope and can invoke a
+ * stored closure through it directly, no separate persistent-interpreter
+ * singleton needed the way the browser's g_web_ip is. Still needs the same
+ * GC-rooting instinct that caught the browser's use-after-free -
+ * g_kernel_ui_callbacks is marked in gc_collect() above, next to
+ * ip->modcache's own rooting. */
+
+static int g_kernel_gfx_ready = 0;
+static void ensure_kernel_gfx(void){ if(!g_kernel_gfx_ready){ gfx_init(); g_kernel_gfx_ready=1; } }
+
+static Value bi_ui_label(Interp *ip, Value *a, int n){
+  if(n!=4 || a[0].t!=V_STR || !is_num(a[1]) || !is_num(a[2]) || a[3].t!=V_STR)
+    runtime_error(ip,"LarzTypeError","ui.label() expects (id, x, y, text)");
+  ensure_kernel_gfx();
+  if(gfx_widget_label(a[0].str, (int)a[1].num, (int)a[2].num, a[3].str) < 0)
+    runtime_error(ip,"LarzRuntimeError","ui.label(): widget table full (max %d)", GFX_MAX_WIDGETS);
+  return V_nil();
+}
+static Value bi_ui_button(Interp *ip, Value *a, int n){
+  if(n!=6 || a[0].t!=V_STR || !is_num(a[1]) || !is_num(a[2]) || !is_num(a[3]) || !is_num(a[4]) || a[5].t!=V_STR)
+    runtime_error(ip,"LarzTypeError","ui.button() expects (id, x, y, w, h, text)");
+  ensure_kernel_gfx();
+  if(gfx_widget_button(a[0].str, (int)a[1].num, (int)a[2].num, (int)a[3].num, (int)a[4].num, a[5].str) < 0)
+    runtime_error(ip,"LarzRuntimeError","ui.button(): widget table full (max %d)", GFX_MAX_WIDGETS);
+  return V_nil();
+}
+static Value bi_ui_set_text(Interp *ip, Value *a, int n){
+  if(n!=2 || a[0].t!=V_STR || a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.set_text() expects (id, text)");
+  gfx_widget_set_text(a[0].str, a[1].str);
+  return V_nil();
+}
+static Value bi_ui_on(Interp *ip, Value *a, int n){
+  if(n!=3 || a[0].t!=V_STR || a[1].t!=V_STR || (a[2].t!=V_FUNC && a[2].t!=V_BUILTIN))
+    runtime_error(ip,"LarzTypeError","ui.on() expects (id, event, function)");
+  int idx = gfx_widget_index(a[0].str);
+  if(idx<0) runtime_error(ip,"LarzNameError","ui.on(): no widget with id '%s'", a[0].str);
+  g_kernel_ui_callbacks[idx] = a[2];
+  return V_nil();
+}
+static int g_kernel_ui_quit = 0;
+static Value bi_ui_quit(Interp *ip, Value *a, int n){
+  (void)ip; (void)a; (void)n;
+  g_kernel_ui_quit = 1;
+  return V_nil();
+}
+static Value bi_ui_run(Interp *ip, Value *a, int n){
+  (void)a; (void)n;
+  g_kernel_ui_quit = 0;
+  while(!g_kernel_ui_quit){
+    const char *clicked = gfx_widget_poll();
+    if(clicked){
+      int idx = gfx_widget_index(clicked);
+      if(idx>=0 && g_kernel_ui_callbacks[idx].t != V_NIL) call_value(ip, g_kernel_ui_callbacks[idx], NULL, 0);
+    }
+  }
+  return V_nil();
+}
+
+static Builtin KB_label={"label",bi_ui_label}, KB_button={"button",bi_ui_button},
+  KB_set_text={"set_text",bi_ui_set_text}, KB_on={"on",bi_ui_on},
+  KB_run={"run",bi_ui_run}, KB_quit={"quit",bi_ui_quit};
+
+static void register_ui_module(Env *g){
+  Env *e = env_new(NULL);
+  env_define(e, "label", V_builtin(&KB_label));
+  env_define(e, "button", V_builtin(&KB_button));
+  env_define(e, "set_text", V_builtin(&KB_set_text));
+  env_define(e, "on", V_builtin(&KB_on));
+  env_define(e, "run", V_builtin(&KB_run));
+  env_define(e, "quit", V_builtin(&KB_quit));
+  env_define(g, "ui", V_module(e, xstrdup("ui")));
+}
+#endif /* kernel-native ui module */
 
 /* ===================== formatter (larzscript fmt) ===================== */
 static void fmt_expr(Node *n, int minprec);

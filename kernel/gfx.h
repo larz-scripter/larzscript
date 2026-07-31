@@ -50,6 +50,11 @@ int  gfx_widget_button(const char *id, int x, int y, int w, int h, const char *t
 void gfx_widget_set_text(const char *id, const char *text);
 void gfx_widget_redraw_all(void);
 
+/* index of the widget with this id, or -1 - lets a caller (the kernel-native
+ * `ui` Larzscript module) key its own per-widget storage (click closures) by
+ * the same small integer index gfx.c already uses internally. */
+int gfx_widget_index(const char *id);
+
 /* Blocks for the next keyboard event. Tab cycles focus among buttons
  * (forward-only wraparound - the existing scancode table has no distinct
  * shift+tab ASCII value, so that's an honest v1 limitation, not a bug).

@@ -1,0 +1,62 @@
+# gui.lz - a real GUI on bare-metal LarzOS: VGA Mode 13h graphics, a
+# keyboard-driven widget model (Tab focus, Enter click, no mouse in v1), and
+# the SAME `ui` module vocabulary the browser build uses (ui.set_text,
+# ui.on) - just backed by kernel/gfx.c instead of a DOM. Money-native, like
+# the browser demo at larzos.com/larzscript/gui/: a wallet balance, a
+# `pay`-driven buy button, and a `capability`-gated action using
+# `pay ... requires NAME` + try/catch.
+wallet buyer = $10.00
+wallet seller = $0.00
+capability premium
+
+fn render() {
+  ui.set_text("bal", "buyer " + str(buyer.balance) + " - seller " + str(seller.balance))
+}
+
+fn buy_coffee() {
+  if buyer.balance < $2.00 {
+    ui.set_text("log", "not enough funds")
+    return
+  }
+  pay $2.00 from buyer to seller
+  render()
+  ui.set_text("log", "bought a coffee for $2.00")
+}
+
+fn unlock() {
+  grant premium
+  ui.set_text("log", "premium unlocked")
+}
+
+fn use_premium() {
+  try {
+    pay $1.00 from buyer to seller requires premium
+    render()
+    ui.set_text("log", "used premium feature for $1.00")
+  } catch e {
+    ui.set_text("log", "blocked: " + e["type"])
+  }
+}
+
+fn do_quit() {
+  ui.set_text("log", "bye")
+  ui.quit()
+}
+
+ui.label("title", 10, 10, "LarzOS GUI - money-native")
+ui.label("bal", 10, 30, "loading...")
+ui.label("log", 10, 45, "tab = focus, enter = click")
+ui.button("buy", 10, 70, 110, 24, "buy - $2.00")
+ui.button("unlock", 130, 70, 130, 24, "unlock premium")
+ui.button("premium", 10, 100, 180, 24, "use premium - $1.00")
+ui.button("quit", 200, 100, 70, 24, "quit")
+
+ui.on("buy", "click", buy_coffee)
+ui.on("unlock", "click", unlock)
+ui.on("premium", "click", use_premium)
+ui.on("quit", "click", do_quit)
+
+render()
+ui.run()
+
+print("gui exited")

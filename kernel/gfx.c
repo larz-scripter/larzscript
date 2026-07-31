@@ -197,10 +197,18 @@ static int find_widget(const char *id){
     for(int i=0;i<g_nwidgets;i++) if(strcmp(g_widgets[i].id, id)==0) return i;
     return -1;
 }
+int gfx_widget_index(const char *id){ return find_widget(id); }
 
 static void draw_label(int idx){
     Widget *w=&g_widgets[idx];
-    gfx_fill_rect(w->x, w->y, (int)strlen(w->text)*8, 8, GFX_DARK_GRAY);   /* clear any longer previous text */
+    /* Clear to the edge of the screen, not just the NEW text's width - if
+     * the new text is shorter than what was there before (e.g. "$10.00" ->
+     * "$8.00"), sizing the clear to the new text leaves a stale trailing
+     * character on screen. Caught by an actual screendump during testing:
+     * "seller $2.000" / "...for $2.00K" - real leftover glyph fragments,
+     * not a rendering glitch. Assumes no other widget sits further right
+     * on the same row, true for every label this project draws so far. */
+    gfx_fill_rect(w->x, w->y, GFX_W - w->x, 8, GFX_DARK_GRAY);
     gfx_draw_text(w->x, w->y, w->text, GFX_WHITE, GFX_DARK_GRAY);
 }
 static void draw_button(int idx){
