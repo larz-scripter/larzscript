@@ -1,7 +1,14 @@
-# Larzscript package registry - `name  path-in-larzscript-packages` per line.
-# All packages live in one repo: https://github.com/larz-scripter/larzscript-packages
+# Larzscript package registry - one `name  value` line each. This is just an
+# INDEX; it doesn't have to be a monorepo write. `value` is either:
+#   - a path inside the official larzscript-packages monorepo, or
+#   - a direct git URL to YOUR OWN repo (own it, version it, no write access
+#     to this repo or the monorepo needed) - optionally with @ref (a branch
+#     or tag, for pinning) and/or #subpath (if main.lz isn't at the repo
+#     root): https://github.com/you/lz-thing@v1.0.0#sub/dir
 # Install with:  larzscript tools/larzpkg.lz install <name>
-# Add your package by opening a PR there, then append a line here.
+# Publish your own package:  larzscript tools/larzpkg.lz publish <git-url>
+# (prints the exact line to add + a link to open the PR). Full guide:
+# packages/PUBLISHING.md.
 mathx   packages/mathx
 greet   packages/greet
 json    packages/json
@@ -19,3 +26,4 @@ table   packages/table
 log     packages/log
 cli     packages/cli
 html    packages/html
+example-external  https://github.com/larz-scripter/lz-example-external
