@@ -73,6 +73,12 @@ void gfx_init(void){
 
 int gfx_width(void){ return g_fb_w; }
 int gfx_height(void){ return g_fb_h; }
+/* Has gfx_init() actually run? The PS/2 mouse driver (kernel/libk.c) shares
+ * the IRQ path with every other boot target, including plain serial-only
+ * ones that never touch graphics at all - it checks this before calling
+ * ANY gfx_* function, so a mouse move on a target with no framebuffer is a
+ * harmless no-op instead of writing pixels through a null/zeroed g_fb. */
+int gfx_ready(void){ return g_fb != 0; }
 
 void gfx_set_pixel(int x, int y, uint32_t color){
     if(!g_fb || x<0 || y<0 || x>=g_fb_w || y>=g_fb_h) return;
@@ -209,9 +215,68 @@ static void draw_window_chrome(int idx){
     gfx_vline(win->x + win->w - 1, win->y, win->h, border);
 }
 
+/* classic arrow cursor, 'X'=black outline, 'W'=white fill, '.'=see-through.
+ * Drawn last, on top, by every gfx_windows_redraw_all() call - the same
+ * "repaint everything" compositor approach as windows themselves (see the
+ * comment above), just one more layer on top. */
+#define CURSOR_W 12
+#define CURSOR_H 19
+static const char *CURSOR[CURSOR_H] = {
+    "X...........", "XX..........", "XWX.........", "XWWX........",
+    "XWWWX.......", "XWWWWX......", "XWWWWWX.....", "XWWWWWWX....",
+    "XWWWWWWWX...", "XWWWWWWWWX..", "XWWWWWWWWWX.", "XWWWWWWWWWWX",
+    "XWWWWWWXXXX.", "XWWWXWWX....", "XWWX.XWWX...", "XWX..XWWX...",
+    "XX....XWWX..", "X......XWWX.", ".......XXX..",
+};
+static int g_cursor_x = 100, g_cursor_y = 100;
+static int g_cursor_ready = 0;   /* only draw once a caller has actually moved it */
+
+static void draw_cursor(void){
+    if(!g_cursor_ready) return;
+    for(int r=0; r<CURSOR_H; r++){
+        int py = g_cursor_y + r;
+        if(py < 0 || py >= gfx_height()) continue;
+        for(int c=0; CURSOR[r][c]; c++){
+            int px = g_cursor_x + c;
+            if(px < 0 || px >= gfx_width()) continue;
+            char ch = CURSOR[r][c];
+            if(ch=='X') gfx_set_pixel(px, py, GFX_BLACK);
+            else if(ch=='W') gfx_set_pixel(px, py, GFX_WHITE);
+        }
+    }
+}
+
 void gfx_windows_redraw_all(void){
     gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_BLACK);   /* desktop background */
     for(int i=0; i<g_nwindows; i++) draw_window_chrome(g_window_order[i]);
+    draw_cursor();
+}
+
+void gfx_cursor_move(int x, int y){
+    if(x < 0) x = 0;
+    if(x >= gfx_width()) x = gfx_width()-1;
+    if(y < 0) y = 0;
+    if(y >= gfx_height()) y = gfx_height()-1;
+    g_cursor_x = x; g_cursor_y = y; g_cursor_ready = 1;
+    gfx_windows_redraw_all();   /* draws the cursor too, but widgets (below) may still cover it */
+    gfx_widget_redraw_all();   /* widgets aren't window-clipped yet (see gfx.h) - without this,
+                                * every mouse move would wipe them along with the black desktop
+                                * repaint above; a no-op when no widgets exist. */
+    draw_cursor();             /* redraw on top, LAST - a widget whose rect happens to sit under
+                                * the cursor (e.g. a terminal filling most of its window) would
+                                * otherwise paint back over it, a real bug caught by an actual
+                                * screendump: the cursor was there after gfx_windows_redraw_all()
+                                * and gone again after gfx_widget_redraw_all() drew on top of it. */
+}
+int gfx_cursor_x(void){ return g_cursor_x; }
+int gfx_cursor_y(void){ return g_cursor_y; }
+
+int gfx_window_hit_test(int x, int y){
+    for(int i=g_nwindows-1; i>=0; i--){        /* front-to-back */
+        Window *win = &g_windows[g_window_order[i]];
+        if(x>=win->x && x<win->x+win->w && y>=win->y && y<win->y+win->h) return g_window_order[i];
+    }
+    return -1;
 }
 
 void gfx_window_focus(int idx){
@@ -423,6 +488,20 @@ const char *gfx_widget_poll(void){
     if(c=='\n' || c=='\r'){
         if(g_focus>=0 && g_focus<g_nwidgets) return g_widgets[g_focus].id;
         return 0;
+    }
+    return 0;
+}
+
+int gfx_widget_click(int x, int y){
+    for(int i=0; i<g_nwidgets; i++){
+        Widget *w = &g_widgets[i];
+        if(w->kind!=WIDGET_BUTTON) continue;
+        if(x>=w->x && x<w->x+w->w && y>=w->y && y<w->y+w->h){
+            int old=g_focus; g_focus=i;
+            if(old>=0 && old!=i) redraw_widget(old);
+            redraw_widget(i);
+            return 1;
+        }
     }
     return 0;
 }

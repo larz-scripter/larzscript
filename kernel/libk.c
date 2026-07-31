@@ -219,21 +219,82 @@ void sched_init(void){                                    /* task 0 = the main/i
     task_create(task_b);
 }
 
-/* Drain the 8042 output buffer into the key ring. Called from BOTH the keyboard
- * IRQ (n==33, immediate - no lost keys on fast bursts) AND the timer tick
- * (n==32, a 100 Hz safety net in case the host doesn't deliver the keyboard
- * IRQ). It's dup-free: every read is guarded by the status bit and reading
- * clears the byte, and interrupt handlers don't nest, so whichever fires first
- * consumes the byte and the other sees an empty buffer. Mouse (aux) bytes are
- * skipped. This is robust across QEMU, VirtualBox and bare metal. */
+/* ---- PS/2 mouse (IRQ12) - standard 3-byte packet protocol ----
+ * Byte 0: bit0/1/2 = left/right/middle button, bit3 = always 1 (packet-sync
+ * marker - a real first byte always has it set, so a stream that's out of
+ * sync because a byte got dropped somewhere is caught rather than silently
+ * building a garbage packet from the wrong 3 bytes), bit4/5 = sign of
+ * dx/dy, bit6/7 = overflow. Bytes 1/2: dx/dy magnitude (combine with the
+ * sign bits above, NOT plain two's complement, per the protocol). */
+static unsigned char g_mpkt[3]; static int g_mcount=0;
+static int g_mouse_left_prev=0;
+static void mouse_byte(unsigned char b){
+    if(g_mcount==0 && !(b&0x08)) return;          /* not a valid packet start - resync */
+    g_mpkt[g_mcount++]=b;
+    if(g_mcount<3) return;
+    g_mcount=0;
+    unsigned char st=g_mpkt[0];
+    if(st&0xC0) return;                           /* overflow bit set - drop the whole packet */
+    if(!gfx_ready()) return;                      /* no framebuffer on this boot target - nothing to move */
+    int dx=g_mpkt[1]; if(st&0x10) dx-=256;
+    int dy=g_mpkt[2]; if(st&0x20) dy-=256;
+    gfx_cursor_move(gfx_cursor_x()+dx, gfx_cursor_y()-dy);   /* PS/2 Y is inverted vs screen Y */
+    int left = st & 0x01;
+    if(left && !g_mouse_left_prev){               /* press edge, not held-down repeat */
+        int cx=gfx_cursor_x(), cy=gfx_cursor_y();
+        int hitw = gfx_window_hit_test(cx, cy);
+        if(hitw>=0) gfx_window_focus(hitw);
+        if(gfx_widget_click(cx, cy)) kbring_push('\n');   /* same path a real Enter takes - see gfx.h */
+    }
+    g_mouse_left_prev = left;
+}
+
+/* Drain the 8042 output buffer into the key ring (or the mouse packet
+ * accumulator above). Called from the keyboard IRQ (n==33), the mouse IRQ
+ * (n==44) and the timer tick (n==32, a 100 Hz safety net in case the host
+ * doesn't deliver IRQ1/IRQ12) - ALL THREE share this one function rather
+ * than each reading port 0x60 independently, because the output buffer is
+ * one shared resource for both devices: whichever caller runs first for a
+ * given byte consumes it (dup-free, same reasoning as the keyboard-only
+ * version of this comment used to say), so if only the dedicated IRQ
+ * handlers read their "own" device's bytes, the 100 Hz backup poll could
+ * still race in and steal a byte meant for the other device's packet
+ * framing. Routing every byte through the SAME status-bit-5 check here,
+ * regardless of who called it, is what keeps that safe. */
 static void kbd_drain(void){
     for(int g=0; g<32; g++){
         unsigned char st=inb(0x64);
         if(!(st&1)) break;                                /* output buffer empty */
         unsigned char sc=inb(0x60);                       /* read clears the byte */
-        if(st&0x20) continue;                             /* bit5 = mouse (aux) byte -> ignore */
+        if(st&0x20){ mouse_byte(sc); continue; }          /* bit5 = mouse (aux) byte */
         int c=kbd_translate(sc); if(c>0) kbring_push((char)c);
     }
+}
+
+/* Bounded waits on the 8042 status port - NEVER an unbounded spin. If a host
+ * doesn't have a PS/2 mouse (or the controller just doesn't answer), this
+ * must fail open silently, the same "leave the working setup alone" spirit
+ * as the keyboard driver's own comment below - not hang every other boot
+ * target that calls ints_init() forever. */
+static int m_wait_write(void){ for(unsigned i=0;i<200000u;i++) if(!(inb(0x64)&2)) return 1; return 0; }
+static int m_wait_read(void){  for(unsigned i=0;i<200000u;i++) if(inb(0x64)&1)    return 1; return 0; }
+static void mouse_init(void){
+    if(!m_wait_write()) return;
+    outb(0x64,0xA8);                                        /* enable the auxiliary (mouse) port */
+    if(!m_wait_write()) return;
+    outb(0x64,0x20);                                        /* "read controller command byte" */
+    if(!m_wait_read()) return;
+    unsigned char cmd=inb(0x60);
+    cmd |= 0x02; cmd &= ~0x20;                               /* enable IRQ12; enable the mouse clock */
+    if(!m_wait_write()) return;
+    outb(0x64,0x60);                                        /* "write controller command byte" */
+    if(!m_wait_write()) return;
+    outb(0x60,cmd);
+    if(!m_wait_write()) return;
+    outb(0x64,0xD4);                                        /* "next byte to port 0x60 goes to the mouse" */
+    if(!m_wait_write()) return;
+    outb(0x60,0xF4);                                        /* mouse command: enable data reporting */
+    if(m_wait_read()) (void)inb(0x60);                      /* ACK (0xFA) - timeout here is harmless */
 }
 
 uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_common; returns new rsp */
@@ -254,6 +315,7 @@ uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_com
         rsp=schedule(rsp);
     }
     else if(n==33){ kbd_drain(); }                        /* keyboard IRQ: immediate capture */
+    else if(n==44){ kbd_drain(); }                        /* mouse IRQ (IRQ12): same shared drain, see kbd_drain() */
     if(n>=40) outb(0xA0,0x20);                            /* EOI to slave */
     outb(0x20,0x20);                                      /* EOI to master */
     return rsp;
@@ -263,7 +325,9 @@ static void pic_remap(void){
     outb(0x21,0x20); outb(0xA1,0x28);                     /* master->32, slave->40 */
     outb(0x21,0x04); outb(0xA1,0x02);
     outb(0x21,0x01); outb(0xA1,0x01);
-    outb(0x21,0xFC); outb(0xA1,0xFF);                     /* unmask IRQ0 (timer) + IRQ1 (keyboard) */
+    outb(0x21,0xF8); outb(0xA1,0xEF);                     /* unmask IRQ0 (timer) + IRQ1 (keyboard) + IRQ2
+                                                            * (cascade - required for ANY slave IRQ, including
+                                                            * IRQ12, to ever reach the CPU) + IRQ12 (mouse) */
 }
 
 /* We deliberately do NOT reprogram the 8042 controller. The firmware/BIOS has
@@ -277,8 +341,9 @@ void ints_init(void){
     for(int i=0;i<48;i++) idt_set(i, isr_stub_table[i]);
     struct idtptr p; p.limit=sizeof(g_idt)-1; p.base=(uint64_t)g_idt;
     __asm__ volatile("lidt %0"::"m"(p));
-    pic_remap();                                                           /* unmasks IRQ0 (timer) + IRQ1 (keyboard) */
+    pic_remap();                                                           /* unmasks IRQ0/1/2 (timer/kbd/cascade) + IRQ12 (mouse) */
     while(inb(0x64)&1) (void)inb(0x60);                                    /* drain any stale scancode so IRQ1 can re-fire */
+    mouse_init();                       /* unlike the keyboard, the AUX port needs an explicit enable - see above */
     outb(0x43,0x36); outb(0x40, 11932&0xFF); outb(0x40, (11932>>8)&0xFF);   /* PIT ch0 ~100 Hz */
     g_irq_on=1;
     __asm__ volatile("sti");

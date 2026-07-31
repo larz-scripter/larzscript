@@ -23,6 +23,7 @@ void gfx_init(void);
 
 int gfx_width(void);
 int gfx_height(void);
+int gfx_ready(void);   /* has gfx_init() actually run? (a real framebuffer exists) */
 
 /* colors are plain 24-bit RGB, 0x00RRGGBB - no palette anymore, any value
  * is valid. A handful of named ones for the UI chrome this project already
@@ -85,7 +86,23 @@ void gfx_windows_redraw_all(void);
  * window-owned content should actually draw, in screen coordinates. */
 void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h);
 
-/* ---- a minimal retained widget model, keyboard-driven (no mouse in v1) ----
+/* index of the topmost (frontmost) window whose rect contains (x,y), or -1 -
+ * searches z-order back-to-front, i.e. checks the FRONT window first, since
+ * that's what a real click would actually hit if windows overlap there. */
+int gfx_window_hit_test(int x, int y);
+
+/* ---- mouse: a cursor sprite drawn on top of everything, moved by the PS/2
+ * mouse driver (kernel/libk.c, IRQ12). Position is authoritative here (not
+ * in libk.c) because moving the cursor means repainting - the same
+ * back-to-front redraw gfx_windows_redraw_all() already does, with the
+ * sprite drawn last, on top, wherever it is; keeping "where's the cursor"
+ * and "how do I redraw it" in one place avoids the two being able to drift
+ * apart. */
+void gfx_cursor_move(int x, int y);   /* clamps to the screen, repaints */
+int  gfx_cursor_x(void);
+int  gfx_cursor_y(void);
+
+/* ---- a minimal retained widget model, keyboard- AND mouse-driven ----
  * The kernel has no pre-existing markup to select into (unlike the browser's
  * `ui` module, which queries a real DOM) - widgets are *created* by these
  * calls, keyed by a small stable id string. This file knows nothing about
@@ -122,5 +139,14 @@ int gfx_widget_index(const char *id);
  * Returns the id of a button just clicked (Enter while focused), or NULL if
  * the event was a focus change or an unhandled key - callers just loop. */
 const char *gfx_widget_poll(void);
+
+/* Hit-tests (x,y) against every BUTTON widget's rect; on a hit, focuses it
+ * (the same visible state Tab landing on it would produce) and returns 1 -
+ * a real left-click's press-edge (kernel/libk.c's mouse driver) then injects
+ * a synthetic '\n' into the keyboard ring so the existing gfx_widget_poll()
+ * loop picks the click up exactly the way it already picks up a real Enter
+ * key, with no separate mouse-event code path needed there. Returns 0 if no
+ * button was hit. */
+int gfx_widget_click(int x, int y);
 
 #endif
