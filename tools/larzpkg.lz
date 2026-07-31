@@ -1,16 +1,17 @@
 # larzpkg - the Larzscript package manager, written in Larzscript itself.
 #
-# Installs packages from the registry into ~/.larzscript/lib, where
-# `import "name"` finds them. All packages live in one repo
-# (larzscript-packages, packages/<name>/main.lz each); the registry just maps
-# a short name to its path there. Add a package by opening a PR against
-# larzscript-packages, then append a line to packages/registry.txt.
+# Installs packages from the registry (packages/registry.txt) into
+# ~/.larzscript/lib, where `import "name"` finds them. A registry entry is
+# either a path inside the official larzscript-packages monorepo, or a
+# direct git URL to anyone's own repo - own it, version it, run it
+# yourself, no monorepo write access needed. See packages/PUBLISHING.md.
 #
 #   larzscript larzpkg.lz install <name>
 #   larzscript larzpkg.lz update [name]
 #   larzscript larzpkg.lz list
 #   larzscript larzpkg.lz remove <name>
 #   larzscript larzpkg.lz search <term>
+#   larzscript larzpkg.lz publish <git-url> [as <name>]
 
 let HOME = env("HOME", ".")
 let LIB = HOME + "/.larzscript/lib"
@@ -53,14 +54,50 @@ fn ensure_packages_repo() {
   }
 }
 
-# Copy packages-repo/<relpath> -> ~/.larzscript/lib/<name>, replacing whatever
-# was there. Shared by both install and update - the only difference between
-# them is which message makes sense to print first.
-fn sync_package(name, relpath) {
+# A registry value is either a path inside the shared packages-repo monorepo
+# (today's official packages) or a direct git URL - anyone's own repo, no
+# monorepo write access needed. Split an optional @ref (branch/tag, for
+# pinning) and #subpath (if main.lz isn't at the repo root) off a URL value.
+# https://github.com/alice/lz-coolmath@v1.2.0#sub/dir
+#   -> ["https://github.com/alice/lz-coolmath", "v1.2.0", "sub/dir"]
+fn parse_pkg_value(value) {
+  let v = value
+  let subpath = ""
+  let hpos = v.find("#")
+  if hpos >= 0 { subpath = v[hpos + 1:]; v = v[0:hpos] }
+  let ref = ""
+  let apos = v.find("@")
+  if apos >= 0 { ref = v[apos + 1:]; v = v[0:apos] }
+  return [v, ref, subpath]
+}
+
+# Copy the resolved package source -> ~/.larzscript/lib/<name>, replacing
+# whatever was there. Shared by both install and update - the only
+# difference between them is which message makes sense to print first.
+fn sync_package(name, value) {
   run("mkdir -p " + LIB)
   let dest = LIB + "/" + name
   run("rm -rf " + dest)
-  return run("cp -r " + PACKAGES_REPO + "/" + relpath + " " + dest) == 0
+  if value.contains("://") {
+    let parsed = parse_pkg_value(value)
+    let url = parsed[0]
+    let ref = parsed[1]
+    let subpath = parsed[2]
+    let tmp = "/tmp/larzpkg_ext_" + name
+    run("rm -rf " + tmp)
+    let clone_cmd = "git clone --depth 1 "
+    if ref != "" { clone_cmd = clone_cmd + "--branch " + ref + " " }
+    clone_cmd = clone_cmd + url + " " + tmp + " 2>/dev/null"
+    if run(clone_cmd) != 0 { run("rm -rf " + tmp); return false }
+    let src = subpath != "" ? tmp + "/" + subpath : tmp
+    let ok = run("cp -r " + src + " " + dest) == 0
+    run("rm -rf " + tmp)
+    if ok { run("rm -rf " + dest + "/.git") }
+    return ok
+  } else {
+    ensure_packages_repo()
+    return run("cp -r " + PACKAGES_REPO + "/" + value + " " + dest) == 0
+  }
 }
 
 fn install(name) {
@@ -73,12 +110,11 @@ fn install(name) {
   let dest = LIB + "/" + name
   let verb = file_exists(dest) ? "updating" : "installing"
   print(verb + " " + name + " ...")
-  ensure_packages_repo()
   if sync_package(name, reg[name]) {
     print(name + " is up to date  ->  " + dest)
     print("use it with:  import \"" + name + "\"")
   } else {
-    print("failed to sync " + name + " (is git installed and the packages repo reachable?)")
+    print("failed to sync " + name + " (is git installed and the source reachable?)")
   }
 }
 
