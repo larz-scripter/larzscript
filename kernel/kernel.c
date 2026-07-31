@@ -67,6 +67,24 @@ void kernel_main(uint64_t mb_info){
         }
     }
 #endif
+#ifdef LARZ_WMDIAG
+    /* raw window-manager diagnostic (never returns) - three overlapping
+     * windows (deliberately positioned in a staircase so each partially
+     * covers the last) proving z-order compositing is correct, then Tab
+     * cycles focus/bring-to-front for real via the keyboard, verified by
+     * screendump before/after - not just a single static frame. See
+     * kernel/README.md. */
+    ints_init();
+    gfx_init();
+    gfx_windows_redraw_all();          /* paints the (currently empty) desktop background */
+    gfx_window_create("Window A", 60, 60, 300, 200);
+    gfx_window_create("Window B", 160, 140, 300, 200);
+    gfx_window_create("Window C", 260, 220, 300, 200);
+    for(;;){
+        char c = console_getc();
+        if(c=='\t') gfx_window_focus_next();
+    }
+#endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */
     sched_init();                  /* preemptive scheduler + background tasks */
     vfs_init();                    /* mount the writable filesystem */

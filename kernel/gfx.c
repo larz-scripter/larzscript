@@ -185,6 +185,76 @@ void gfx_draw_text(int x, int y, const char *s, uint32_t fg, uint32_t bg){
     }
 }
 
+/* ---- windows: a real compositor, back-to-front by z-order ---- */
+typedef struct {
+    char title[GFX_TITLE_LEN];
+    int x, y, w, h;
+} Window;
+static Window g_windows[GFX_MAX_WINDOWS];
+static int g_window_order[GFX_MAX_WINDOWS];   /* window indices, back(0)..front(n-1) */
+static int g_nwindows = 0;
+static int g_focused_window = -1;
+
+static void draw_window_chrome(int idx){
+    Window *win = &g_windows[idx];
+    int focused = (idx == g_focused_window);
+    uint32_t bar = focused ? GFX_ACCENT : GFX_ACCENT_DIM;
+    gfx_fill_rect(win->x, win->y, win->w, GFX_TITLEBAR_H, bar);
+    gfx_draw_text(win->x + 6, win->y + (GFX_TITLEBAR_H - 8) / 2, win->title, GFX_WHITE, bar);
+    gfx_fill_rect(win->x, win->y + GFX_TITLEBAR_H, win->w, win->h - GFX_TITLEBAR_H, GFX_DARK_GRAY);
+    uint32_t border = focused ? GFX_WHITE : GFX_MID_GRAY;
+    gfx_hline(win->x, win->y, win->w, border);
+    gfx_hline(win->x, win->y + win->h - 1, win->w, border);
+    gfx_vline(win->x, win->y, win->h, border);
+    gfx_vline(win->x + win->w - 1, win->y, win->h, border);
+}
+
+void gfx_windows_redraw_all(void){
+    gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_BLACK);   /* desktop background */
+    for(int i=0; i<g_nwindows; i++) draw_window_chrome(g_window_order[i]);
+}
+
+void gfx_window_focus(int idx){
+    if(idx < 0 || idx >= g_nwindows) return;
+    int pos = -1;
+    for(int i=0; i<g_nwindows; i++) if(g_window_order[i]==idx){ pos=i; break; }
+    if(pos < 0) return;
+    for(int i=pos; i<g_nwindows-1; i++) g_window_order[i] = g_window_order[i+1];
+    g_window_order[g_nwindows-1] = idx;
+    g_focused_window = idx;
+    gfx_windows_redraw_all();
+}
+
+void gfx_window_focus_next(void){
+    if(g_nwindows == 0) return;
+    if(g_focused_window < 0){ gfx_window_focus(g_window_order[g_nwindows-1]); return; }
+    int pos = 0;
+    for(int i=0; i<g_nwindows; i++) if(g_window_order[i]==g_focused_window){ pos=i; break; }
+    gfx_window_focus(g_window_order[(pos+1) % g_nwindows]);
+}
+
+int gfx_window_focused(void){ return g_focused_window; }
+
+int gfx_window_create(const char *title, int x, int y, int w, int h){
+    if(g_nwindows >= GFX_MAX_WINDOWS) return -1;
+    int idx = g_nwindows++;
+    Window *win = &g_windows[idx];
+    strncpy(win->title, title, GFX_TITLE_LEN-1); win->title[GFX_TITLE_LEN-1] = 0;
+    win->x=x; win->y=y; win->w=w; win->h=h;
+    g_window_order[idx] = idx;   /* appended - already at the "front" end of the order array */
+    gfx_window_focus(idx);       /* new windows come to front and take focus, redraws everything */
+    return idx;
+}
+
+void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h){
+    if(idx < 0 || idx >= g_nwindows){ *x=*y=*w=*h=0; return; }
+    Window *win = &g_windows[idx];
+    *x = win->x + 1;
+    *y = win->y + GFX_TITLEBAR_H;
+    *w = win->w - 2;
+    *h = win->h - GFX_TITLEBAR_H - 1;
+}
+
 /* ---- widgets ---- */
 typedef enum { WIDGET_LABEL, WIDGET_BUTTON, WIDGET_TERMINAL } WidgetKind;
 typedef struct {

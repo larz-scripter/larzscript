@@ -48,6 +48,43 @@ void gfx_vline(int x, int y, int h, uint32_t color);
  * notes on the embedded font). */
 void gfx_draw_text(int x, int y, const char *s, uint32_t fg, uint32_t bg);
 
+/* ---- windows: a real compositor, back-to-front by z-order ---- *
+ * A window is a title-barred rect on the desktop. Compositing is the
+ * simplest correct approach for a handful of windows: repaint every window
+ * in back-to-front order on any change - a front window's pixels overwrite
+ * a back window's wherever they overlap, which alone is the right visual
+ * result, no explicit clipping/damage-region math needed. Not yet wired to
+ * the widget system above (that's the next step - each app/task will own
+ * one window and draw its widgets inside it); this is the compositor core
+ * on its own: create, z-order, focus/bring-to-front, redraw. */
+#define GFX_MAX_WINDOWS 8
+#define GFX_TITLEBAR_H 22
+#define GFX_TITLE_LEN 32
+
+/* Creates a window and brings it to front; returns its index (stable for
+ * the window's lifetime - windows are never destroyed in v1) or -1 if
+ * GFX_MAX_WINDOWS is already in use. */
+int gfx_window_create(const char *title, int x, int y, int w, int h);
+
+/* Moves a window to the front of the z-order (drawn last = on top) and
+ * marks it focused (a highlighted title bar) - redraws immediately. */
+void gfx_window_focus(int idx);
+
+/* Cycles focus to the next window in z-order (wrapping), bringing it to
+ * front - the placeholder keyboard-only equivalent of clicking a window
+ * (mouse click-to-focus is a later step). */
+void gfx_window_focus_next(void);
+
+/* index of the currently focused window, or -1 if none exist yet */
+int gfx_window_focused(void);
+
+/* repaints the whole desktop: background, then every window back-to-front */
+void gfx_windows_redraw_all(void);
+
+/* the window's CLIENT area (inside the border and title bar) - where
+ * window-owned content should actually draw, in screen coordinates. */
+void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h);
+
 /* ---- a minimal retained widget model, keyboard-driven (no mouse in v1) ----
  * The kernel has no pre-existing markup to select into (unlike the browser's
  * `ui` module, which queries a real DOM) - widgets are *created* by these
