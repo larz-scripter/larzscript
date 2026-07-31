@@ -233,7 +233,14 @@ static int g_current_window[GFX_MAX_TASKS] = {-1,-1,-1,-1,-1,-1,-1,-1};
  * GFX_CLOSE_W wide, spanning the bar's full height - same square gfx_window_
  * close_hit_test() below checks. Drawn as an "X" glyph, same font as
  * everything else, no new glyph asset needed. */
+#define TASKBAR_H 28   /* moved up from the taskbar section below - gfx_window_resize()
+                        * (stage 6) needs it before that section is reached */
 #define GFX_CLOSE_W 18
+/* the resize grip: a small square in the bottom-right corner, GFX_RESIZE_
+ * GRIP on a side - same square gfx_window_resize_hit_test() below checks.
+ * Drawn as three diagonal notches (classic bottom-right-corner grip look),
+ * distinct enough from the plain border to read as "grab here". */
+#define GFX_RESIZE_GRIP 14
 static void draw_window_chrome(int idx){
     Window *win = &g_windows[idx];
     int focused = (idx == g_focused_window);
@@ -248,6 +255,8 @@ static void draw_window_chrome(int idx){
     gfx_vline(win->x, win->y, win->h, border);
     gfx_vline(win->x + win->w - 1, win->y, win->h, border);
     gfx_vline(win->x + win->w - GFX_CLOSE_W, win->y, GFX_TITLEBAR_H, border);   /* separates X from the title */
+    for(int k=4; k<GFX_RESIZE_GRIP; k+=4)
+        gfx_hline(win->x+win->w-k, win->y+win->h-2, k, border);
 }
 
 /* window index whose close-X (top-right of its title bar) contains (x,y),
@@ -261,6 +270,38 @@ int gfx_window_close_hit_test(int x, int y){
             return g_window_order[i];
     }
     return -1;
+}
+
+/* Stage 6: window index whose bottom-right resize grip contains (x,y), or
+ * -1 - checked by the mouse driver before gfx_window_titlebar_hit_test()
+ * (the two regions never overlap in practice, but checking resize first
+ * costs nothing and matches the close-X's own ordering). */
+int gfx_window_resize_hit_test(int x, int y){
+    for(int i=g_nwindows-1; i>=0; i--){
+        Window *win = &g_windows[g_window_order[i]];
+        if(x>=win->x+win->w-GFX_RESIZE_GRIP && x<win->x+win->w &&
+           y>=win->y+win->h-GFX_RESIZE_GRIP && y<win->y+win->h)
+            return g_window_order[i];
+    }
+    return -1;
+}
+
+/* Resizes a window and redraws - deliberately does NOT reflow or resize any
+ * of its widgets (a resized terminal keeps its original cols/rows, same
+ * "resize the frame, clip contents" scope as every other v1 compositor
+ * limitation already in kernel/README.md, not a bug). Clamped to a sane
+ * minimum (big enough for the title + close-X to stay legible) and to
+ * never push the window past the screen edge or under the taskbar. */
+void gfx_window_resize(int idx, int w, int h){
+    if(idx<0 || idx>=GFX_MAX_WINDOWS || !g_windows[idx].used) return;
+    Window *win = &g_windows[idx];
+    int minw = GFX_CLOSE_W + 60, minh = GFX_TITLEBAR_H + 30;
+    if(w < minw) w = minw;
+    if(h < minh) h = minh;
+    if(win->x + w > gfx_width()) w = gfx_width() - win->x;
+    if(win->y + h > gfx_height() - TASKBAR_H) h = gfx_height() - TASKBAR_H - win->y;
+    win->w = w; win->h = h;
+    gfx_windows_redraw_all();
 }
 
 /* classic arrow cursor, 'X'=black outline, 'W'=white fill, '.'=see-through.
@@ -302,7 +343,6 @@ static void draw_cursor(void){
  * in the SAME order every redraw (g_window_order at draw time, not window
  * creation order) only for simplicity - fine for the handful of windows
  * this desktop supports (GFX_MAX_WINDOWS). */
-#define TASKBAR_H 28
 #define TASKBAR_ENTRY_W 140
 static void draw_taskbar(void){
     int y = gfx_height() - TASKBAR_H;
@@ -558,16 +598,18 @@ static int g_focus = -1;               /* index into g_widgets of the focused bu
  * A widget with no owner (owner<0) is unclipped, absolute-screen-coords
  * legacy behavior - the standalone widget diagnostics that predate windows
  * still work exactly as before. */
-static void widget_abs_xy(int idx, int *ax, int *ay, int *right_edge){
+static void widget_abs_xy(int idx, int *ax, int *ay, int *right_edge, int *bottom_edge){
     Widget *w = &g_widgets[idx];
     if(w->owner >= 0){
         int cx, cy, cw, ch;
         gfx_window_client_rect(w->owner, &cx, &cy, &cw, &ch);
         *ax = cx + w->x; *ay = cy + w->y;
         if(right_edge) *right_edge = cx + cw;
+        if(bottom_edge) *bottom_edge = cy + ch;
     } else {
         *ax = w->x; *ay = w->y;
         if(right_edge) *right_edge = gfx_width();
+        if(bottom_edge) *bottom_edge = gfx_height();
     }
 }
 
@@ -594,7 +636,7 @@ int gfx_widget_index(const char *id){ return find_widget(id); }
 static void draw_label(int idx){
     Widget *w=&g_widgets[idx];
     int ax, ay, right_edge;
-    widget_abs_xy(idx, &ax, &ay, &right_edge);
+    widget_abs_xy(idx, &ax, &ay, &right_edge, 0);
     /* Clear to the edge of the window (or screen, if unowned) - not just the
      * NEW text's width - if the new text is shorter than what was there
      * before (e.g. "$10.00" -> "$8.00"), sizing the clear to the new text
@@ -611,33 +653,48 @@ static void draw_label(int idx){
 }
 static void draw_button(int idx){
     Widget *w=&g_widgets[idx];
-    int ax, ay;
-    widget_abs_xy(idx, &ax, &ay, NULL);
+    int ax, ay, right_edge, bottom_edge;
+    widget_abs_xy(idx, &ax, &ay, &right_edge, &bottom_edge);
+    /* Stage 6: clamp to the OWNING window's CURRENT client area, not just
+     * this widget's own stored w/h - a window shrunk via its resize grip
+     * after this widget was created must not let it keep painting past the
+     * new, smaller border. Doesn't reflow the button, just crops it. */
+    int dw = w->w; if(ax+dw > right_edge) dw = right_edge-ax; if(dw<0) dw=0;
+    int dh = w->h; if(ay+dh > bottom_edge) dh = bottom_edge-ay; if(dh<0) dh=0;
     int focused = (idx==g_focus);
     uint32_t fill = focused ? GFX_ACCENT : GFX_ACCENT_DIM;
     uint32_t border = focused ? GFX_WHITE : GFX_MID_GRAY;
-    gfx_fill_rect(ax, ay, w->w, w->h, fill);
-    gfx_hline(ax, ay, w->w, border);
-    gfx_hline(ax, ay+w->h-1, w->w, border);
-    gfx_vline(ax, ay, w->h, border);
-    gfx_vline(ax+w->w-1, ay, w->h, border);
+    gfx_fill_rect(ax, ay, dw, dh, fill);
+    gfx_hline(ax, ay, dw, border);
+    gfx_hline(ax, ay+dh-1, dw, border);
+    gfx_vline(ax, ay, dh, border);
+    gfx_vline(ax+dw-1, ay, dh, border);
     int tw = (int)strlen(w->text)*8;
-    int tx = ax + (w->w-tw)/2; if(tx < ax+2) tx = ax+2;
-    int ty = ay + (w->h-8)/2;
+    int tx = ax + (dw-tw)/2; if(tx < ax+2) tx = ax+2;
+    int ty = ay + (dh-8)/2;
     gfx_draw_text(tx, ty, w->text, GFX_WHITE, fill);
 }
 static void draw_terminal(int idx){
     Widget *w = &g_widgets[idx];
     Terminal *t = &g_terminals[idx];
-    int ax, ay;
-    widget_abs_xy(idx, &ax, &ay, NULL);
-    gfx_fill_rect(ax, ay, w->w, w->h, GFX_BLACK);
-    gfx_hline(ax, ay, w->w, GFX_MID_GRAY);
-    gfx_hline(ax, ay+w->h-1, w->w, GFX_MID_GRAY);
-    gfx_vline(ax, ay, w->h, GFX_MID_GRAY);
-    gfx_vline(ax+w->w-1, ay, w->h, GFX_MID_GRAY);
+    int ax, ay, right_edge, bottom_edge;
+    widget_abs_xy(idx, &ax, &ay, &right_edge, &bottom_edge);
+    /* Stage 6: same clamp as draw_button above - a terminal widget covers
+     * most of its window's client area, so this is the case that actually
+     * exposed the bug (a shrunk window's border ending up INSIDE the
+     * terminal's own unclamped, stale-sized border - caught by a real
+     * screendump, not a hypothetical). Content still wraps at the ORIGINAL
+     * cols/rows (no reflow - an accepted v1 limitation, see gfx_window_
+     * resize()); only the drawn RECTANGLE is cropped to fit. */
+    int dw = w->w; if(ax+dw > right_edge) dw = right_edge-ax; if(dw<0) dw=0;
+    int dh = w->h; if(ay+dh > bottom_edge) dh = bottom_edge-ay; if(dh<0) dh=0;
+    gfx_fill_rect(ax, ay, dw, dh, GFX_BLACK);
+    gfx_hline(ax, ay, dw, GFX_MID_GRAY);
+    gfx_hline(ax, ay+dh-1, dw, GFX_MID_GRAY);
+    gfx_vline(ax, ay, dh, GFX_MID_GRAY);
+    gfx_vline(ax+dw-1, ay, dh, GFX_MID_GRAY);
     if(!t->lines) return;   /* first redraw, triggered from inside register_widget - not initialized yet */
-    for(int r=0; r<t->rows; r++) gfx_draw_text(ax+2, ay+2+r*8, t->lines[r], GFX_WHITE, GFX_BLACK);
+    for(int r=0; r<t->rows && ay+2+r*8 < bottom_edge; r++) gfx_draw_text(ax+2, ay+2+r*8, t->lines[r], GFX_WHITE, GFX_BLACK);
 }
 static void redraw_widget(int idx){
     if(idx<0 || idx>=g_nwidgets || !g_widgets[idx].used) return;
@@ -744,7 +801,7 @@ void gfx_terminal_putc(char c){
     line[t->cur_col + 1] = 0;
     t->cur_col++;
     int ax, ay;
-    widget_abs_xy(g_active_terminal, &ax, &ay, NULL);
+    widget_abs_xy(g_active_terminal, &ax, &ay, 0, 0);
     char buf[2] = { c, 0 };
     gfx_draw_text(ax + 2 + (t->cur_col - 1) * 8, ay + 2 + t->cur_row * 8, buf, GFX_WHITE, GFX_BLACK);
 }
@@ -775,7 +832,7 @@ int gfx_widget_click(int x, int y){
         Widget *w = &g_widgets[i];
         if(!w->used || w->kind!=WIDGET_BUTTON) continue;
         int ax, ay;
-        widget_abs_xy(i, &ax, &ay, NULL);
+        widget_abs_xy(i, &ax, &ay, 0, 0);
         if(x>=ax && x<ax+w->w && y>=ay && y<ay+w->h){
             int old=g_focus; g_focus=i;
             if(old>=0 && old!=i) redraw_widget(old);

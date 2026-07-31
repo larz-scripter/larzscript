@@ -91,6 +91,17 @@ void gfx_window_close(int idx);
  * first is what makes clicking the X close instead of starting a drag). */
 int gfx_window_close_hit_test(int x, int y);
 
+/* Stage 6: window index whose bottom-right resize grip contains (x,y), or
+ * -1 - check this before gfx_window_titlebar_hit_test(), same reasoning as
+ * the close-X above (the two regions don't actually overlap, but checking
+ * resize first costs nothing and matches its ordering). */
+int gfx_window_resize_hit_test(int x, int y);
+
+/* Resizes a window (clamped to a sane minimum and to the screen/taskbar) -
+ * does NOT reflow or resize its widgets, an intentional v1 limitation (see
+ * kernel/README.md), not a bug. */
+void gfx_window_resize(int idx, int w, int h);
+
 /* Cycles focus to the next window in z-order (wrapping), bringing it to
  * front - the placeholder keyboard-only equivalent of clicking a window
  * (mouse click-to-focus is a later step). */
