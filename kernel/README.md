@@ -247,58 +247,111 @@ handing the response to Larzscript, so a client can only branch on **body
 text**, not a numeric status code - `demo_client.lz` checks for the string
 "payment required", not "402".
 
-### A GUI on bare metal
+### A real windowed desktop
 
-The same `ui` module vocabulary the [browser build](../native/WEB.md) uses
-(`ui.set_text`, `ui.on`) - a different backend behind an identical
-Larzscript-level API. [`gfx.c`](gfx.c) switches the VGA card into linear
-320x200x256 graphics (Mode 13h - a pure runtime register sequence, no
-boot-time/Multiboot changes) and implements a small retained widget model:
-`ui.label`/`ui.button` create widgets (there's no pre-existing markup to
-select into, unlike a real DOM), `Tab` cycles keyboard focus, `Enter` fires
-the focused widget's click handler. `ui.terminal(id,x,y,w,h)` adds a
-scrolling log pane - once created, plain `print()` anywhere (this demo,
-`webserver.lz`, `larzsh`, anything) shows up in it live, with no GUI-aware
-code needed in whatever's printing: the mechanism is one hook in
-`libk.c`'s `serial_putc()`, the single sink every std-stream write already
-funnels through. [`rootfs/gui.lz`](rootfs/gui.lz) is the money-native demo:
-a wallet balance, a `pay`-driven buy button, a `capability`-gated action
-(`pay ... requires NAME` + `try`/`catch`), and a terminal pane showing each
-action's outcome live - the bare-metal mirror of
-[larzos.com/larzscript/gui/](https://larzos.com/larzscript/gui/).
+LarzOS looks and works like a real OS GUI - Windows/macOS-style, not a single
+fixed-layout demo screen. Multiple apps run **at the same time**, each in its
+own overlapping, title-barred window with a real taskbar to switch between
+them, and apps are written in **plain Larzscript** running as **real,
+independent tasks** on the existing preemptive scheduler - not a display
+convention layered over one shared screen.
+
+**A real linear framebuffer.** `boot.S`'s Multiboot1 header requests a linear
+graphics mode (1024x768x32, GRUB grants what it can and hands back what it
+actually granted - `gfx.c` reads that back rather than assuming); this
+replaced the original 320x200x256 VGA Mode 13h backend, which was never going
+to be readable with overlapping windows on it. Colors are real 24-bit RGB, no
+palette.
+
+**A window compositor** (`gfx.c`) - the simplest correct approach for a
+handful of windows: every change repaints every window back-to-front by
+z-order, a front window's pixels naturally occluding a back one wherever they
+overlap, no dirty-rect/clipping math needed. `gfx_window_create`/
+`gfx_window_focus`/`gfx_window_focus_next` manage z-order and the highlighted
+"focused" title bar.
+
+**Apps as real tasks.** Each running app - the terminal, the clock - is a
+*genuinely separate* Larzscript interpreter instance, spawned with the
+existing `task_create` (`libk.c`'s scheduler, previously only running two toy
+counter tasks) and owning one window. Getting this right needed real,
+empirical work, not just wiring things up: a spawned task's stack **actually
+overflowed** running this same interpreter (a real `#GP`/invalid-opcode
+fault, reproduced and bisected, not assumed) - this interpreter's native C
+recursion costs roughly **50 KiB of stack per nested Larzscript call**
+(`exec()`'s switch alone reserves several KB for its largest case), nowhere
+near the "a few hundred bytes" a naive estimate suggests, so no reasonable
+fixed task-stack size makes *unbounded* recursion safe on its own. The real
+fix is a recursion-depth guard in the interpreter itself
+(`MAX_CALL_DEPTH=150`, `native/larzscript.c`'s `call_value` - the same fail-
+safe CPython gets from `RecursionError`), which matters even more here than
+on a hosted OS: task stacks sit in one contiguous, **unguarded**, identity-
+mapped region, so an overflow doesn't fault cleanly, it silently corrupts a
+*neighboring task's* memory. [`rootfs/stress.lz`](rootfs/stress.lz) is the
+permanent regression proving both halves: a safe depth computes the right
+answer, a runaway one is caught as a graceful `LarzRecursionError`.
+
+**A PS/2 mouse** (`libk.c`, IRQ12, the standard 3-byte packet protocol) drives
+a real cursor sprite, click-to-focus (clicking a window, or its taskbar
+entry, brings it to front), and click-to-interact (clicking a button widget
+is wired to the same code path a real `Enter` keypress already used, via a
+synthetic key injected into the keyboard ring - no separate mouse-event
+handling needed at the widget layer). Every wait in the mouse's 8042 enable
+sequence is *bounded*, so a host with no PS/2 mouse fails open silently
+rather than hanging every other boot target that calls `ints_init()`.
+Keyboard `Tab`/`Enter` still work as a fallback input path.
+
+The `ui` module vocabulary is unchanged from the [browser build](../native/WEB.md)
+(`ui.label`/`ui.button`/`ui.set_text`/`ui.on`/`ui.terminal`) - a different
+backend behind an identical Larzscript-level API, still no pre-existing
+markup to select into the way a real DOM has. `ui.terminal(id,x,y,w,h)`'s
+scrolling log pane still means any script's plain `print()` (this shell,
+`webserver.lz`, anything) shows up live with no GUI-aware code in whatever's
+printing - the one hook in `libk.c`'s `serial_putc()` every std-stream write
+already funnels through.
 
 ```bash
-make EXTRA=-DLARZ_GUI iso
+make EXTRA=-DLARZ_DESKTOP iso
 qemu-system-x86_64 -m 128 -cdrom larzos.iso -display none -serial null \
   -monitor tcp:127.0.0.1:4444,server,nowait -no-reboot
 ```
 
-No real display needed to verify it - same headless discipline as the
-two-machine demo above. Connect to the monitor (e.g. `exec 3<>/dev/tcp/127.0.0.1/4444`
-from bash) and drive it for real:
+Same headless verification discipline as everywhere else in this project -
+connect to the monitor and drive it for real:
 
 ```
-(qemu) screendump frame1.ppm     # initial state: "buy" focused
-(qemu) sendkey ret               # click buy - pays $2, updates the balance label
-(qemu) screendump frame2.ppm
-(qemu) sendkey tab
-(qemu) sendkey tab
-(qemu) sendkey ret               # click "use premium" BEFORE unlocking - blocked
-(qemu) screendump frame3.ppm     # "blocked: CapabilityError"
+(qemu) screendump frame1.ppm     # Terminal + Clock windows, taskbar along the bottom
+(qemu) sendkey h
+(qemu) sendkey e
+(qemu) sendkey l
+(qemu) sendkey p
+(qemu) sendkey ret               # types "help" into the focused Terminal window
+(qemu) screendump frame2.ppm     # full shell help output AND the clock ticked forward -
+                                  # both genuinely alive at once, not one app at a time
+(qemu) mouse_move -30 650        # move the cursor over the taskbar's "Terminal" entry
+(qemu) mouse_button 1
+(qemu) mouse_button 0
+(qemu) screendump frame3.ppm     # Terminal brought to front by the taskbar click
 ```
 
-Verified this way through a full sequence: initial render, a successful
-purchase, an attempt correctly blocked by the ungranted capability, granting
-it, then a successful capability-gated purchase - five captured frames, real
-wallet arithmetic changing on screen each time, not just a static render.
-The terminal pane was verified the same way, separately: real `print()`
-calls (not a special GUI-only call) from the button handlers showing up
-live after each click, including a wrapped multi-line `CapabilityError`
-message.
+Verified exactly this way: the clock's own window visibly ticks upward on its
+own while, in the *same running boot*, real keyboard input into the terminal
+window produces the full shell output - proof of genuine concurrency, not
+two windows drawn once. A real simulated click on a background, partially-
+covered window in a 3-window test correctly brought it to front; a real
+click on a button widget registered exactly like `Enter` would.
 
-⚠ Keyboard-only in this first pass - no mouse/PS-2-IRQ12 work yet, and Tab
-only cycles forward (the existing scancode table has no distinct shift+tab
-ASCII value). ⚠ The embedded 8x8 font covers digits, uppercase A-Z, and the
+⚠ Widgets aren't window-clipped yet - each app/task owns one window, but the
+widget system underneath (labels/buttons/the terminal pane) still draws in
+absolute screen coordinates rather than being confined to (and scrolling
+with) its owning window; a C-side task wrapper positions each widget inside
+its window's client rect by hand (see `kernel.c`'s `task_terminal`/
+`task_clock`). ⚠ No window dragging, resizing, or closing yet - windows are
+created once at boot and live for the session. ⚠ The taskbar lists windows
+that are already running; it doesn't yet launch a *new* app on demand (that
+still needs a new `task_create` call wired into a boot target, like
+`task_terminal`/`task_clock` - see `CONTRIBUTING.md`). ⚠ Tab only cycles
+focus forward (the existing scancode table has no distinct shift+tab ASCII
+value). ⚠ The embedded 8x8 font covers digits, uppercase A-Z, and the
 punctuation this project's own UI text uses; lowercase folds to its
 uppercase glyph.
 
@@ -306,9 +359,13 @@ uppercase glyph.
 
 - **Multiboot1 ELF64**, loaded by GRUB at 1 MiB.
 - **`boot.S`** — from 32-bit protected mode: zeroes the BSS, builds page tables
-  (identity-maps the low 1 GiB with 2 MiB pages), enables PAE + long mode +
-  paging, loads a 64-bit GDT, turns on **SSE** (the interpreter uses `double`/
-  xmm), sets up an 8 MiB stack, and calls `kernel_main`.
+  (identity-maps the low **4 GiB** with 2 MiB pages - needed because the real
+  linear framebuffer below is a PCI BAR that QEMU places near the 4 GiB
+  boundary), enables PAE + long mode + paging, loads a 64-bit GDT, turns on
+  **SSE** (the interpreter uses `double`/xmm), sets up an 8 MiB stack, requests
+  a **linear graphics mode** via the Multiboot1 header (see "A real windowed
+  desktop" below) and preserves the Multiboot info pointer GRUB hands in
+  `%ebx`, and calls `kernel_main`.
 - **`libk.c`** — a freestanding libc/libm replacement so the interpreter needs
   **zero source changes**: a K&R heap allocator over a 32 MiB arena, string/
   memory/ctype helpers, a streaming `printf` with a `%g` float formatter,
@@ -334,9 +391,11 @@ uppercase glyph.
   **interrupt-driven keyboard** (IRQ1 fills a ring buffer). CPU exceptions print
   `CPU exception N … RIP` and halt instead of a silent triple fault.
 - **Preemptive multitasking** — a round-robin **scheduler** switches tasks on the
-  timer tick with a full context switch through the interrupt frame. The
-  interpreter runs as one task; `/proc/tasks` shows background tasks advancing
-  concurrently while the shell stays interactive.
+  timer tick with a full context switch through the interrupt frame. Real
+  desktop **apps run as real tasks** (`task_create`), each a genuinely separate
+  interpreter instance with its own window - not just a display convention,
+  see "A real windowed desktop" below. `/proc/tasks` shows background tasks
+  advancing concurrently while the shell stays interactive.
 - **PS/2 keyboard + VGA console** (in `libk.c`) — a polled scancode-set-1
   keyboard driver (shift/caps) gives **local input on real hardware / a VM**, and
   a scrolling VGA text console with a hardware cursor gives local output. Input
@@ -389,18 +448,27 @@ persist` for a two-boot demo (writes a file, reboots, reads it back).
 
 ## Contributing
 
-Want to add a `pkg`-installable command or a GUI app? See
+Want to add a `pkg`-installable command or a desktop app? See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) - both are plain Larzscript, no C
-needed. Launching a GUI app on demand from `larzsh` (rather than only via a
-dedicated boot target) isn't built yet - see "Next" below.
+needed beyond the small task-wrapper a desktop app currently needs (see
+"A real windowed desktop" above and "Next" below).
 
 ## Next
 
-~~A PS/2 keyboard + framebuffer driver (local, non-serial use)~~ - done (see
-"A GUI on bare metal" above): VGA Mode 13h graphics + a keyboard-driven
-widget model, with the same `ui.*` vocabulary the browser build uses.
-Mouse/PS-2-IRQ12 support and a shift+tab / reverse-focus path are the
-natural next steps there, not yet built. Also not yet built: launching a
-GUI app on demand from `larzsh` (would need a "revert VGA to text mode"
-capability so control can hand back to the shell) - today a GUI app is its
-own dedicated boot target, per `CONTRIBUTING.md`.
+~~A PS/2 keyboard + framebuffer driver (local, non-serial use)~~ - done: a
+polled scancode-set-1 keyboard driver plus a real linear framebuffer.
+~~Mouse/PS-2-IRQ12 support~~ - done: a real cursor, click-to-focus,
+click-to-interact (see "A real windowed desktop" above). ~~A single fixed-
+layout GUI screen~~ - replaced entirely by a real windowed desktop: multiple
+apps, each a genuinely separate task, in overlapping windows with a taskbar.
+
+Still not yet built: **window dragging/resizing/closing** (windows are
+created once at boot and live for the session); **widgets wired into the
+window system properly** (window-clipped, scrolling with their owning
+window, instead of a C-side task wrapper positioning each one by hand in
+absolute screen coordinates); **launching a new app on demand** from the
+taskbar or the shell (today every desktop app is a `task_create` call wired
+into a boot target at compile time - `task_terminal`/`task_clock` in
+`kernel.c` - not something you can start at runtime the way `pkg install`
+works for shell commands); and a **shift+tab / reverse-focus** path (the
+existing scancode table has no distinct shift+tab ASCII value).

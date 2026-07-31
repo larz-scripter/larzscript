@@ -22,10 +22,12 @@ ordinary Larzscript composing `ui.set_text`/`ui.on` with `wallet`/`pay`/
 [live demo's source](https://larzos.com/larzscript/gui/) for a real one.
 
 The design paid off sooner than expected: the LarzOS kernel now has a real
-GUI too (VGA Mode 13h graphics + a keyboard-driven widget model), using the
-**same `ui.set_text`/`ui.on` vocabulary** documented here, just backed by a
-framebuffer instead of a DOM - see
-[`kernel/README.md`'s "A GUI on bare metal"](../kernel/README.md#a-gui-on-bare-metal).
+windowed desktop too (a real linear framebuffer, overlapping title-barred
+windows, a taskbar, a PS/2 mouse - apps as genuinely separate tasks, not a
+single fixed-layout screen), using the **same `ui.set_text`/`ui.on`
+vocabulary** documented here, just backed by a window compositor instead of
+a DOM - see
+[`kernel/README.md`'s "A real windowed desktop"](../kernel/README.md#a-real-windowed-desktop).
 Same Larzscript-level API, a different renderer selected by build target.
 
 ## Build
