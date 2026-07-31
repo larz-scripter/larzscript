@@ -340,6 +340,30 @@ two windows drawn once. A real simulated click on a background, partially-
 covered window in a 3-window test correctly brought it to front; a real
 click on a button widget registered exactly like `Enter` would.
 
+**A real VirtualBox compatibility bug, found and fixed the hard way.** A user
+hit `error: out of memory` / `error: you need to load the kernel first`
+booting the desktop ISO in VirtualBox - QEMU booted the identical ISO
+perfectly every time, so this project's usual QEMU-only regression sweep
+never caught it. Two guesses (dropping `grub.cfg`'s `insmod vbe`/`video`/
+`gfxpayload`; suggesting the VBoxVGA graphics controller) did NOT fix it -
+that's what finally forced a bisection-with-real-VirtualBox-tests approach
+instead of more guessing: a near-zero-BSS multiboot kernel booted fine
+(rules out "VirtualBox can't boot ANY multiboot GRUB2 ISO" at all); the
+real kernel with its Multiboot video-mode-request *removed* still failed
+identically (rules out video/VBE negotiation, despite that looking like
+the obvious suspect, and despite QEMU *and* the browser-based v86 emulator
+both independently negotiating the requested mode without complaint); the
+same kernel with its declared BSS footprint cut from ~90 MiB to ~10 MiB
+booted fine; a ~46 MiB budget also booted fine. **GRUB's own memory
+accounting for a Multiboot kernel's *declared* BSS extent - not its on-disk
+file size, since BSS isn't read from disk at all - has a real ceiling on at
+least one real VirtualBox install, well below the 128 MiB the VM is
+actually given.** Fixed by dropping two vestigial "toy" background tasks
+(`task_a`/`task_b`, dead weight now that real apps exist) and right-sizing
+the heap arena, landing around ~46 MiB - not a provably safe number in
+general, just what got verified working. See the `NTASK`/`TSTK`/
+`HEAP_BYTES` comments in `libk.c` before raising any of them again.
+
 ⚠ Widgets aren't window-clipped yet - each app/task owns one window, but the
 widget system underneath (labels/buttons/the terminal pane) still draws in
 absolute screen coordinates rather than being confined to (and scrolling
