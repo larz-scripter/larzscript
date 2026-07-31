@@ -242,16 +242,38 @@ int current_task_id(void){ return g_cur; }
  * and in order (this is the same index it's about to hand out), unlike a
  * single shared "pending launch" variable, which a second launch landing
  * before the first new task ever runs could silently overwrite. */
-int next_task_slot(void){ return g_ntask<NTASK ? g_ntask : -1; }
+/* Stage 5: a killed task (task_exit()) leaves a hole at its index (used=0,
+ * but g_ntask itself never shrinks) - reuse that hole before ever growing
+ * g_ntask, so closing an app really does free up room for a different one,
+ * not just an ever-climbing counter that hits NTASK once and stays there
+ * for the rest of uptime. */
+int next_task_slot(void){
+    for(int i=0;i<g_ntask;i++) if(!g_tasks[i].used) return i;
+    return g_ntask<NTASK ? g_ntask : -1;
+}
 void task_create(void (*fn)(void)){
-    if(g_ntask>=NTASK) return;
-    int i=g_ntask++;
+    int i = next_task_slot();
+    if(i<0) return;
+    if(i==g_ntask) g_ntask++;   /* only grows when no killed slot was free to reuse */
     g_tasks[i].used=1;
     uint64_t top=((uint64_t)(g_tstack[i]+TSTK)) & ~15ULL;
     struct iframe *f=(struct iframe*)(top - sizeof(struct iframe));
     for(unsigned k=0;k<sizeof(struct iframe)/8;k++) ((uint64_t*)f)[k]=0;
     f->rip=(uint64_t)fn; f->cs=0x08; f->rflags=0x202; f->rsp=top-8; f->ss=0; f->int_no=32;
     g_tasks[i].rsp=(uint64_t)f;
+}
+/* Stage 5: kills task `tid` - marks its slot unused so schedule()'s
+ * round-robin (which already skips !used slots) simply stops ever
+ * scheduling it again, and next_task_slot() above can hand its index back
+ * out to a future task_create(). Called from the mouse driver (a DIFFERENT
+ * task's context - whichever one happened to be running when the close-X
+ * was clicked), not by a task on itself: it can't free its own stack
+ * mid-execution, so it's just left parked, unreachable, wherever it was
+ * when killed - a real, accepted memory-leak-per-close tradeoff for v1
+ * (see kernel/README.md), not a graceful shutdown. */
+void task_exit(int tid){
+    if(tid<0 || tid>=NTASK) return;
+    g_tasks[tid].used=0;
 }
 void sched_init(void){                                    /* task 0 = the main/interpreter context */
     g_tasks[0].used=1; g_ntask=1; g_cur=0;
@@ -293,7 +315,15 @@ static void mouse_byte(unsigned char b){
     else if(left && !g_mouse_left_prev){           /* press edge, not held-down repeat */
         int cx=gfx_cursor_x(), cy=gfx_cursor_y();
         int tbw = gfx_taskbar_hit_test(cx, cy);   /* the taskbar strip is more specific - check first */
+        int closeIdx = gfx_window_close_hit_test(cx, cy);   /* stage 5: close-X, checked before
+                                                              * the title bar (same square is also
+                                                              * a valid drag-start point otherwise) */
         if(tbw>=0){ gfx_window_focus(tbw); }
+        else if(closeIdx>=0){
+            task_exit(gfx_window_owner_task(closeIdx));   /* the task keeps running one more tick
+                                                            * at most (see task_exit()) - harmless */
+            gfx_window_close(closeIdx);
+        }
         else {
             int tb = gfx_window_titlebar_hit_test(cx, cy);
             if(tb>=0){                             /* grabbed a title bar - focus it and start a drag */

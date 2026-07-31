@@ -62,14 +62,34 @@ void gfx_draw_text(int x, int y, const char *s, uint32_t fg, uint32_t bg);
 #define GFX_TITLEBAR_H 22
 #define GFX_TITLE_LEN 32
 
-/* Creates a window and brings it to front; returns its index (stable for
- * the window's lifetime - windows are never destroyed in v1) or -1 if
- * GFX_MAX_WINDOWS is already in use. */
+/* Creates a window and brings it to front; returns its index (stable until
+ * gfx_window_close() below) or -1 if every window SLOT is already in use -
+ * a closed window's slot is reused by a later call, so this only actually
+ * fails if GFX_MAX_WINDOWS windows are open AT ONCE, not "ever opened". */
 int gfx_window_create(const char *title, int x, int y, int w, int h);
 
 /* Moves a window to the front of the z-order (drawn last = on top) and
  * marks it focused (a highlighted title bar) - redraws immediately. */
 void gfx_window_focus(int idx);
+
+/* Stage 5: which task created this window (gfx_window_create() stashes
+ * current_task_id() at creation time) - the mouse driver needs this to
+ * know which task to task_exit() when a window's close-X is clicked;
+ * gfx.c has no other notion of tasks. -1 if idx isn't a live window. */
+int gfx_window_owner_task(int idx);
+
+/* Stage 5: closes a window - removes it from the z-order/taskbar and frees
+ * its widgets (its slot becomes reusable by a future gfx_window_create()).
+ * Does NOT touch the owning task; the caller must also call task_exit() on
+ * whatever gfx_window_owner_task() returned, or the task keeps running
+ * with no window at all. */
+void gfx_window_close(int idx);
+
+/* window index whose close-X (top-right corner of its title bar) contains
+ * (x,y), or -1 - check this BEFORE gfx_window_titlebar_hit_test() (that
+ * function already excludes the close-X square, but checking this one
+ * first is what makes clicking the X close instead of starting a drag). */
+int gfx_window_close_hit_test(int x, int y);
 
 /* Cycles focus to the next window in z-order (wrapping), bringing it to
  * front - the placeholder keyboard-only equivalent of clicking a window

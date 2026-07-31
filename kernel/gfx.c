@@ -195,9 +195,17 @@ void gfx_draw_text(int x, int y, const char *s, uint32_t fg, uint32_t bg){
 typedef struct {
     char title[GFX_TITLE_LEN];
     int x, y, w, h;
+    int used;         /* stage 5: is this SLOT (g_windows[idx]) in use at all? independent of
+                        * whether it's currently in the z-order list below - see gfx_window_close() */
+    int owner_task;   /* which task created it - gfx_window_close() needs this to know which
+                        * task to kill when the window's close-X is clicked */
 } Window;
 static Window g_windows[GFX_MAX_WINDOWS];
-static int g_window_order[GFX_MAX_WINDOWS];   /* window indices, back(0)..front(n-1) */
+static int g_window_order[GFX_MAX_WINDOWS];   /* ACTIVE window indices only, back(0)..front(g_nwindows-1) -
+                                                * g_nwindows is the count of currently OPEN windows, not
+                                                * "ever created"; a closed window's slot in g_windows[]
+                                                * becomes free for gfx_window_create() to reuse, found by
+                                                * scanning for !used, independent of this ordering array. */
 static int g_nwindows = 0;
 static int g_focused_window = -1;
 /* The window whatever widget gets created NEXT belongs to (see gfx_window_
@@ -221,18 +229,38 @@ static int g_focused_window = -1;
 #define GFX_MAX_TASKS 8
 static int g_current_window[GFX_MAX_TASKS] = {-1,-1,-1,-1,-1,-1,-1,-1};
 
+/* the close button: a small square at the right end of the title bar,
+ * GFX_CLOSE_W wide, spanning the bar's full height - same square gfx_window_
+ * close_hit_test() below checks. Drawn as an "X" glyph, same font as
+ * everything else, no new glyph asset needed. */
+#define GFX_CLOSE_W 18
 static void draw_window_chrome(int idx){
     Window *win = &g_windows[idx];
     int focused = (idx == g_focused_window);
     uint32_t bar = focused ? GFX_ACCENT : GFX_ACCENT_DIM;
     gfx_fill_rect(win->x, win->y, win->w, GFX_TITLEBAR_H, bar);
     gfx_draw_text(win->x + 6, win->y + (GFX_TITLEBAR_H - 8) / 2, win->title, GFX_WHITE, bar);
+    gfx_draw_text(win->x + win->w - GFX_CLOSE_W + 5, win->y + (GFX_TITLEBAR_H - 8) / 2, "X", GFX_WHITE, bar);
     gfx_fill_rect(win->x, win->y + GFX_TITLEBAR_H, win->w, win->h - GFX_TITLEBAR_H, GFX_DARK_GRAY);
     uint32_t border = focused ? GFX_WHITE : GFX_MID_GRAY;
     gfx_hline(win->x, win->y, win->w, border);
     gfx_hline(win->x, win->y + win->h - 1, win->w, border);
     gfx_vline(win->x, win->y, win->h, border);
     gfx_vline(win->x + win->w - 1, win->y, win->h, border);
+    gfx_vline(win->x + win->w - GFX_CLOSE_W, win->y, GFX_TITLEBAR_H, border);   /* separates X from the title */
+}
+
+/* window index whose close-X (top-right of its title bar) contains (x,y),
+ * or -1 - checked by the mouse driver BEFORE gfx_window_titlebar_hit_test()
+ * (same square is otherwise also a valid drag-start point), front-to-back
+ * like every other hit test here so an overlapping front window wins. */
+int gfx_window_close_hit_test(int x, int y){
+    for(int i=g_nwindows-1; i>=0; i--){
+        Window *win = &g_windows[g_window_order[i]];
+        if(x>=win->x+win->w-GFX_CLOSE_W && x<win->x+win->w && y>=win->y && y<win->y+GFX_TITLEBAR_H)
+            return g_window_order[i];
+    }
+    return -1;
 }
 
 /* classic arrow cursor, 'X'=black outline, 'W'=white fill, '.'=see-through.
@@ -343,6 +371,7 @@ int gfx_desktop_icon_hit_test(int x, int y){
  * declared here so gfx_windows_redraw_all() (which needs to run BEFORE that
  * section, back-to-front by window) can call it. */
 static void redraw_widgets_owned_by(int win_idx);
+static void free_widgets_owned_by(int win_idx);   /* stage 5, defined below - see gfx_window_close() */
 
 void gfx_windows_redraw_all(void){
     gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_BLACK);   /* desktop background */
@@ -393,7 +422,9 @@ int gfx_window_hit_test(int x, int y){
 }
 
 void gfx_window_focus(int idx){
-    if(idx < 0 || idx >= g_nwindows) return;
+    if(idx < 0 || idx >= GFX_MAX_WINDOWS || !g_windows[idx].used) return;   /* stage 5: slots
+        aren't dense once closes create holes - g_nwindows is the ACTIVE count, not a valid
+        upper bound for a raw slot index (see the g_window_order comment above) */
     int pos = -1;
     for(int i=0; i<g_nwindows; i++) if(g_window_order[i]==idx){ pos=i; break; }
     if(pos < 0) return;
@@ -414,20 +445,50 @@ void gfx_window_focus_next(void){
 int gfx_window_focused(void){ return g_focused_window; }
 
 int gfx_window_create(const char *title, int x, int y, int w, int h){
-    if(g_nwindows >= GFX_MAX_WINDOWS) return -1;
-    int idx = g_nwindows++;
+    if(g_nwindows >= GFX_MAX_WINDOWS) return -1;   /* every SLOT taken, not just every z-order entry */
+    int idx = -1;
+    for(int i=0; i<GFX_MAX_WINDOWS; i++) if(!g_windows[i].used){ idx=i; break; }
+    if(idx < 0) return -1;
     Window *win = &g_windows[idx];
+    win->used = 1;
     strncpy(win->title, title, GFX_TITLE_LEN-1); win->title[GFX_TITLE_LEN-1] = 0;
     win->x=x; win->y=y; win->w=w; win->h=h;
-    g_window_order[idx] = idx;   /* appended - already at the "front" end of the order array */
     int tid = current_task_id();
+    win->owner_task = tid;
+    g_window_order[g_nwindows] = idx;   /* appended - already at the "front" end of the order array */
+    g_nwindows++;
     if(tid>=0 && tid<GFX_MAX_TASKS) g_current_window[tid] = idx;   /* see the field's comment */
     gfx_window_focus(idx);       /* new windows come to front and take focus, redraws everything */
     return idx;
 }
 
+int gfx_window_owner_task(int idx){
+    if(idx<0 || idx>=GFX_MAX_WINDOWS || !g_windows[idx].used) return -1;
+    return g_windows[idx].owner_task;
+}
+
+/* Closes a window: removes it from the z-order (so it stops drawing and
+ * disappears from the taskbar) and frees its widgets (see the widget
+ * section below) - the SLOT itself (g_windows[idx]) becomes reusable by a
+ * future gfx_window_create(). Does NOT touch the owning task - the caller
+ * (kernel/libk.c's mouse driver) is responsible for that via
+ * gfx_window_owner_task()+task_exit(), since gfx.c has no notion of tasks
+ * beyond the current_task_id()/g_current_window plumbing it already needs. */
+void gfx_window_close(int idx){
+    if(idx<0 || idx>=GFX_MAX_WINDOWS || !g_windows[idx].used) return;
+    int pos=-1;
+    for(int i=0;i<g_nwindows;i++) if(g_window_order[i]==idx){ pos=i; break; }
+    if(pos<0) return;
+    for(int i=pos;i<g_nwindows-1;i++) g_window_order[i]=g_window_order[i+1];
+    g_nwindows--;
+    free_widgets_owned_by(idx);
+    g_windows[idx].used = 0;
+    if(g_focused_window==idx) g_focused_window = g_nwindows>0 ? g_window_order[g_nwindows-1] : -1;
+    gfx_windows_redraw_all();
+}
+
 void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h){
-    if(idx < 0 || idx >= g_nwindows){ *x=*y=*w=*h=0; return; }
+    if(idx < 0 || idx >= GFX_MAX_WINDOWS || !g_windows[idx].used){ *x=*y=*w=*h=0; return; }
     Window *win = &g_windows[idx];
     *x = win->x + 1;
     *y = win->y + GFX_TITLEBAR_H;
@@ -436,7 +497,7 @@ void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h){
 }
 
 void gfx_window_rect(int idx, int *x, int *y, int *w, int *h){
-    if(idx < 0 || idx >= g_nwindows){ *x=*y=*w=*h=0; return; }
+    if(idx < 0 || idx >= GFX_MAX_WINDOWS || !g_windows[idx].used){ *x=*y=*w=*h=0; return; }
     Window *win = &g_windows[idx];
     *x = win->x; *y = win->y; *w = win->w; *h = win->h;
 }
@@ -452,7 +513,8 @@ int gfx_window_count(void){ return g_nwindows; }
 int gfx_window_titlebar_hit_test(int x, int y){
     for(int i=g_nwindows-1; i>=0; i--){
         Window *win = &g_windows[g_window_order[i]];
-        if(x>=win->x && x<win->x+win->w && y>=win->y && y<win->y+GFX_TITLEBAR_H) return g_window_order[i];
+        if(x>=win->x && x<win->x+win->w-GFX_CLOSE_W && y>=win->y && y<win->y+GFX_TITLEBAR_H)
+            return g_window_order[i];   /* excludes the close-X square - see gfx_window_close_hit_test() */
     }
     return -1;
 }
@@ -462,7 +524,7 @@ int gfx_window_titlebar_hit_test(int x, int y){
  * below). Clamped so the title bar can never end up somewhere you can't
  * grab it again: fully off the top/left/right, or under the taskbar. */
 void gfx_window_move(int idx, int x, int y){
-    if(idx < 0 || idx >= g_nwindows) return;
+    if(idx < 0 || idx >= GFX_MAX_WINDOWS || !g_windows[idx].used) return;
     Window *win = &g_windows[idx];
     int min_visible = 20;    /* at least this many px of title bar must stay reachable */
     if(x < min_visible - win->w) x = min_visible - win->w;
@@ -481,6 +543,9 @@ typedef struct {
     int x, y, w, h;    /* x,y are OFFSETS from owner's client origin if owner>=0,
                         * else absolute screen coords (legacy, no-window mode) */
     int owner;         /* index into g_windows, or -1 - see g_current_window above */
+    int used;          /* stage 5: is this slot in use? freed by free_widgets_owned_by() when
+                        * its owning window closes, reused by register_widget() before growing
+                        * g_nwidgets - same pattern as g_windows[].used and task_exit(). */
     char text[GFX_TEXT_LEN];
 } Widget;
 static Widget g_widgets[GFX_MAX_WIDGETS];
@@ -521,7 +586,7 @@ static int g_active_terminal = -1;     /* index into g_widgets/g_terminals, or -
                                          * widget gfx_terminal_putc() feeds; v1 supports just one */
 
 static int find_widget(const char *id){
-    for(int i=0;i<g_nwidgets;i++) if(strcmp(g_widgets[i].id, id)==0) return i;
+    for(int i=0;i<g_nwidgets;i++) if(g_widgets[i].used && strcmp(g_widgets[i].id, id)==0) return i;
     return -1;
 }
 int gfx_widget_index(const char *id){ return find_widget(id); }
@@ -575,22 +640,46 @@ static void draw_terminal(int idx){
     for(int r=0; r<t->rows; r++) gfx_draw_text(ax+2, ay+2+r*8, t->lines[r], GFX_WHITE, GFX_BLACK);
 }
 static void redraw_widget(int idx){
-    if(idx<0 || idx>=g_nwidgets) return;
+    if(idx<0 || idx>=g_nwidgets || !g_widgets[idx].used) return;
     if(g_widgets[idx].kind==WIDGET_BUTTON) draw_button(idx);
     else if(g_widgets[idx].kind==WIDGET_TERMINAL) draw_terminal(idx);
     else draw_label(idx);
 }
 static void redraw_widgets_owned_by(int win_idx){
-    for(int i=0; i<g_nwidgets; i++) if(g_widgets[i].owner==win_idx) redraw_widget(i);
+    for(int i=0; i<g_nwidgets; i++) if(g_widgets[i].used && g_widgets[i].owner==win_idx) redraw_widget(i);
+}
+/* Stage 5: frees every widget owned by a window that's closing - a
+ * WIDGET_TERMINAL's line buffer is malloc'd (see gfx_widget_terminal()
+ * below) and must be freed here too, or repeatedly opening/closing an app
+ * that uses one would leak a little heap every cycle forever. Clears
+ * g_focus/g_active_terminal if either pointed at a widget freed here, so
+ * neither can be left dangling at a slot register_widget() may hand out
+ * to something else next. */
+static void free_widgets_owned_by(int win_idx){
+    for(int i=0; i<g_nwidgets; i++){
+        if(!g_widgets[i].used || g_widgets[i].owner!=win_idx) continue;
+        if(g_widgets[i].kind==WIDGET_TERMINAL && g_terminals[i].lines){
+            for(int r=0;r<g_terminals[i].rows;r++) free(g_terminals[i].lines[r]);
+            free(g_terminals[i].lines);
+            g_terminals[i].lines = 0;
+        }
+        if(g_focus==i) g_focus = -1;
+        if(g_active_terminal==i) g_active_terminal = -1;
+        g_widgets[i].used = 0;
+    }
 }
 
 static int register_widget(const char *id, WidgetKind kind, int x, int y, int w, int h, const char *text){
     int idx = find_widget(id);
     if(idx<0){
-        if(g_nwidgets>=GFX_MAX_WIDGETS) return -1;
-        idx = g_nwidgets++;
+        for(int i=0;i<g_nwidgets;i++) if(!g_widgets[i].used){ idx=i; break; }
+        if(idx<0){
+            if(g_nwidgets>=GFX_MAX_WIDGETS) return -1;
+            idx = g_nwidgets++;
+        }
     }
     Widget *wi = &g_widgets[idx];
+    wi->used = 1;
     strncpy(wi->id, id, GFX_ID_LEN-1); wi->id[GFX_ID_LEN-1]=0;
     int tid = current_task_id();
     wi->kind=kind; wi->x=x; wi->y=y; wi->w=w; wi->h=h;
@@ -665,7 +754,7 @@ static void focus_next(void){
     int old=g_focus, i=g_focus;
     for(int step=0; step<g_nwidgets; step++){
         i=(i+1)%g_nwidgets;
-        if(g_widgets[i].kind==WIDGET_BUTTON){ g_focus=i; break; }
+        if(g_widgets[i].used && g_widgets[i].kind==WIDGET_BUTTON){ g_focus=i; break; }
     }
     if(old>=0) redraw_widget(old);
     if(g_focus>=0) redraw_widget(g_focus);
@@ -684,7 +773,7 @@ const char *gfx_widget_poll(void){
 int gfx_widget_click(int x, int y){
     for(int i=0; i<g_nwidgets; i++){
         Widget *w = &g_widgets[i];
-        if(w->kind!=WIDGET_BUTTON) continue;
+        if(!w->used || w->kind!=WIDGET_BUTTON) continue;
         int ax, ay;
         widget_abs_xy(i, &ax, &ay, NULL);
         if(x>=ax && x<ax+w->w && y>=ay && y<ay+w->h){
