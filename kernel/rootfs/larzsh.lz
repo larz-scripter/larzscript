@@ -98,6 +98,7 @@ fn cmd_help() {
   print("  windows         list open desktop windows")
   print("  launch NAME     open an app (terminal|clock|about|files)")
   print("  close N|NAME    close a window by index or title")
+  print("  calc OP N [N2]  sqrt|pow|gcd|factorial|hex|bin|abs")
   print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
   print("  <name> ARGS     run an installed package (e.g. banner, todo, figlet)")
