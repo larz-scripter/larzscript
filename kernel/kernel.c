@@ -29,25 +29,15 @@ static void task_stress(void){
     for(;;) __asm__ volatile("hlt");
 }
 #endif
-#if defined(LARZ_DESKTOP) || defined(LARZ_APPDIAG)
-/* The interactive terminal as a real task (task 1), owning its own window -
- * the first genuine "app" in the windowed-desktop model, not the whole
- * screen implicitly being one app the way LARZ_GUI's /gui.lz still is. */
-static void task_terminal(void){
-    int idx = gfx_window_create("Terminal", 40, 40, 640, 420);
-    int cx, cy, cw, ch;
-    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);   /* only cw/ch (size) needed now - widgets
-                                                         * are window-relative, see gfx.c */
-    gfx_widget_terminal("term1", 0, 0, cw, ch);
-    char *a[] = { "larzscript", "/larzsh.lz", 0 };
-    larz_main(2, a);
-    for(;;) __asm__ volatile("hlt");
-}
-
+#ifdef LARZ_DESKTOP
 /* A GENERIC app-launch mechanism: turns "add a desktop app" into "write a
  * .lz script that calls ui.window(...)" (native/larzscript.c) - no bespoke
- * C wrapper needed per app, unlike task_terminal above (which stays exactly
- * as it is; this is additive). launch_app() stashes which
+ * C wrapper needed per app at all - the Terminal itself (larzsh.lz) is now
+ * launched this same way (it used to be the one remaining bespoke
+ * task_terminal() C wrapper; retired once larzsh.lz started creating its
+ * own window via ui.window()/ui.window_size(), which is what let it join
+ * the icon-launcher manifest below and become relaunchable after being
+ * closed - see kernel/README.md). launch_app() stashes which
  * script to run in a per-SLOT array, indexed by the EXACT slot
  * next_task_slot() (kernel/libk.c) says task_create() is about to assign -
  * safe regardless of what else is running, unlike a single shared "pending
@@ -79,14 +69,14 @@ void launch_app(const char *script){
 
 /* Stage 4: a small fixed manifest of real, already-launchable scripts
  * turned into desktop icons (kernel/gfx.c draws/hit-tests them generically
- * by label alone). Clock used to be auto-started as its own bespoke task
- * (task_clock, removed above) - it now creates its own window via
- * ui.window() like any other generic app and is launched on demand instead,
- * which is also what frees the one spare NTASK=3 slot for this launcher to
- * use by default. */
-static const char *g_app_manifest_labels[] = { "Clock", "About", "Files" };
-static const char *g_app_manifest_scripts[] = { "/clock.lz", "/about.lz", "/files.lz" };
-#define APP_MANIFEST_COUNT 3
+ * by label alone). Clock/About/Files all create their own window via
+ * ui.window() and are launched on demand; Terminal joined this same list
+ * once larzsh.lz became self-contained too - this is what actually fixes
+ * the "close Terminal -> no way to get it back" bug: closing it now behaves
+ * exactly like closing any other app, and clicking its icon relaunches it. */
+static const char *g_app_manifest_labels[] = { "Terminal", "Clock", "About", "Files" };
+static const char *g_app_manifest_scripts[] = { "/larzsh.lz", "/clock.lz", "/about.lz", "/files.lz" };
+#define APP_MANIFEST_COUNT 4
 
 void desktop_icon_activate(int i){
     if(i>=0 && i<APP_MANIFEST_COUNT) launch_app(g_app_manifest_scripts[i]);
@@ -181,36 +171,21 @@ void kernel_main(uint64_t mb_info){
     task_create(task_stress);
     for(;;) __asm__ volatile("hlt");
 #endif
-#ifdef LARZ_APPDIAG
-    /* generic app-launch diagnostic (never returns) - proves task #37's
-     * mechanism for real: the Terminal (task_terminal, the existing bespoke
-     * C wrapper, kept running for a real interactive comparison point) plus
-     * a SECOND app launched purely via launch_app("/apptest.lz") - a script
-     * that creates its OWN window with ui.window() and never touches any
-     * C wrapper written specifically for it. See kernel/README.md. */
-    ints_init();
-    gfx_init();
-    sched_init();
-    vfs_init();
-    gfx_windows_redraw_all();
-    task_create(task_terminal);
-    launch_app("/apptest.lz");
-    for(;;) __asm__ volatile("hlt");
-#endif
 #ifdef LARZ_DESKTOP
     /* the real windowed desktop: the terminal auto-starts (task 1, its own
-     * window) plus a taskbar and a row of desktop-icon launchers (stage 4)
-     * for everything else - Clock/About/Files are launched on demand, not
-     * auto-started, since NTASK=3 only leaves ONE free app-task slot beside
-     * the terminal until stage 5 (window closing) can free others up. task 0
-     * stays idle (redraw-on-demand is already event-driven, not polled). */
+     * window, launched the same generic way any other app is) plus a
+     * taskbar and a row of desktop-icon launchers for everything else - all
+     * launched on demand, none auto-started besides Terminal, since NTASK=3
+     * only leaves ONE free app-task slot beside it (closing an app frees its
+     * slot back up - see gfx_window_close()/task_exit()). task 0 stays idle
+     * (redraw-on-demand is already event-driven, not polled). */
     ints_init();
     gfx_init();
     sched_init();
-    vfs_init();                    /* task_terminal opens .lz files - FS must be mounted first */
+    vfs_init();                    /* launch_app()'s apps open .lz files - FS must be mounted first */
     gfx_desktop_icons_init(g_app_manifest_labels, APP_MANIFEST_COUNT);
     gfx_windows_redraw_all();
-    task_create(task_terminal);
+    launch_app("/larzsh.lz");
     for(;;) __asm__ volatile("hlt");
 #endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */

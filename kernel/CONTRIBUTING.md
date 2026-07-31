@@ -77,19 +77,22 @@ Then add it to the desktop-icon launcher's manifest (`kernel.c`,
 activate()` calls the existing generic `launch_app("/yourthing.lz")`,
 which spawns it as a new task via `task_create(task_generic_app)` within
 `NTASK`'s budget (`libk.c`) the same way every other on-demand app does.
-No boot-target wiring needed at all; `about.lz`/`clock.lz`/`files.lz` are
-all worked examples of this exact pattern, and `apptest.lz` is the minimal
-one. A window's close-X (`gfx_window_close_hit_test`) frees its task slot
-(`task_exit`) automatically the moment the user closes it, so a manifest
-entry doesn't need to worry about NTASK running out - closing one app
-always makes room for launching a different one.
+No boot-target wiring needed at all; `larzsh.lz`/`about.lz`/`clock.lz`/
+`files.lz` are all worked examples of this exact pattern (the Terminal
+itself used to be the one bespoke-C-wrapper holdout - `task_terminal` -
+until it too became self-contained via `ui.window()`/`ui.window_size()`,
+which is what let it join the icon manifest and become relaunchable after
+being closed), and `apptest.lz` is the minimal one. A window's close-X
+(`gfx_window_close_hit_test`) frees its task slot (`task_exit`)
+automatically the moment the user closes it, so a manifest entry doesn't
+need to worry about NTASK running out - closing one app always makes room
+for launching a different one.
 
 **The fallback path: a bespoke C wrapper**, only worth it for an app that
 needs to create its widgets with specific pre-computed values a plain
 `ui.window()` call can't express (multiple windows from one task, for
-example) - `task_terminal` in `kernel.c` (wrapping `larzsh.lz`) is the one
-remaining example, kept exactly as it was before the generic mechanism
-existed, since it's fine as-is and the two paths are meant to coexist:
+example). Nothing in the shipped kernel needs this anymore, but the pattern
+still works if you do:
 
 ```c
 /* kernel.c - create the window + starting widget(s) yourself, then hand
@@ -106,8 +109,7 @@ static void task_yourthing(void){
 ```
 
 then `task_create(task_yourthing);` in the `LARZ_DESKTOP` branch of
-`kernel_main`, auto-started at boot rather than launched on demand - the
-same tradeoff `task_terminal` makes today.
+`kernel_main`, auto-started at boot rather than launched on demand.
 
 Windows can be **dragged** by their title bar, **resized** from the
 bottom-right grip, and **closed** via the X in the top-right of the title

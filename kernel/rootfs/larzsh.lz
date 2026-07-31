@@ -10,6 +10,17 @@
 #   echo "pwd\nls\nexit" | larzscript os/larzsh.lz   # scripted
 
 let VERSION = "0.1"
+
+# Desktop: create our own window and fill it with a terminal pane, the same
+# generic ui.window()/ui.terminal() pattern every other desktop app uses -
+# no bespoke C wrapper needed (kernel.c used to create this window/widget
+# by hand via task_terminal(), now retired). A no-op on non-desktop boot
+# targets since ui.window()/ui.terminal() lazily init the framebuffer only
+# when actually called on a build that has one.
+let MY_WINDOW = ui.window("Terminal", 640, 420)
+let _sz = ui.window_size()
+ui.terminal("term1", 0, 0, _sz[0], _sz[1])
+
 import "bank" as bank
 import "auth" as auth
 let LARZHOME = env("HOME") + "/.larzos"
