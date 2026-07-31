@@ -50,6 +50,16 @@ int  gfx_widget_button(const char *id, int x, int y, int w, int h, const char *t
 void gfx_widget_set_text(const char *id, const char *text);
 void gfx_widget_redraw_all(void);
 
+/* A scrolling text pane - the one widget kind that isn't set via
+ * gfx_widget_set_text: its content is a running LOG, appended to a
+ * character at a time by gfx_terminal_putc() (see kernel/libk.c's
+ * serial_putc(), which calls it for every character *any* program prints -
+ * this is what makes existing/future scripts' plain print() output show up
+ * in the GUI with no code changes to them). Exactly one terminal widget can
+ * be active at a time in v1 - the most recently created one. */
+int  gfx_widget_terminal(const char *id, int x, int y, int w, int h);
+void gfx_terminal_putc(char c);   /* no-op if no terminal widget exists yet */
+
 /* index of the widget with this id, or -1 - lets a caller (the kernel-native
  * `ui` Larzscript module) key its own per-widget storage (click closures) by
  * the same small integer index gfx.c already uses internally. */

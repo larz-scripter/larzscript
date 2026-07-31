@@ -32,6 +32,15 @@ void kernel_main(void){
     gfx_widget_label("bal", 10, 50, "balance: $10.00");
     gfx_widget_button("buy", 10, 70, 100, 24, "buy - $2.00");
     gfx_widget_button("premium", 120, 70, 140, 24, "unlock premium");
+    gfx_widget_terminal("term", 10, 100, 220, 60);
+    { const char *lines[] = {
+        "line one", "line two", "a much longer line that should wrap onto the next row for sure",
+        "line four", "line five", "line six", "line seven - should have scrolled by now", 0 };
+      for(int i=0; lines[i]; i++){
+        for(const char *p=lines[i]; *p; p++) gfx_terminal_putc(*p);
+        gfx_terminal_putc('\n');
+      }
+    }
     int clicks = 0;
     for(;;){
         const char *clicked = gfx_widget_poll();

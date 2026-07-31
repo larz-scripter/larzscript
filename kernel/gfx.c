@@ -17,6 +17,7 @@
 #include "gfx.h"
 #include "console.h"
 #include "libc/string.h"
+#include "libc/stdlib.h"
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -182,7 +183,7 @@ void gfx_draw_text(int x, int y, const char *s, unsigned char fg, unsigned char 
 }
 
 /* ---- widgets ---- */
-typedef enum { WIDGET_LABEL, WIDGET_BUTTON } WidgetKind;
+typedef enum { WIDGET_LABEL, WIDGET_BUTTON, WIDGET_TERMINAL } WidgetKind;
 typedef struct {
     char id[GFX_ID_LEN];
     WidgetKind kind;
@@ -192,6 +193,20 @@ typedef struct {
 static Widget g_widgets[GFX_MAX_WIDGETS];
 static int g_nwidgets = 0;
 static int g_focus = -1;               /* index into g_widgets of the focused button, or -1 */
+
+/* Terminal state, parallel to g_widgets by index (only populated for
+ * WIDGET_TERMINAL widgets) - a real scrolling line buffer, unlike the fixed
+ * GFX_TEXT_LEN text every other widget kind uses. Statically zero-init'd,
+ * so `lines==NULL` reliably means "not yet initialized" (see
+ * gfx_widget_terminal()/draw_terminal()). */
+typedef struct {
+    char **lines;              /* rows malloc'd buffers, each cols+1 bytes */
+    int rows, cols;
+    int cur_row, cur_col;
+} Terminal;
+static Terminal g_terminals[GFX_MAX_WIDGETS];
+static int g_active_terminal = -1;     /* index into g_widgets/g_terminals, or -1 - the ONE
+                                         * widget gfx_terminal_putc() feeds; v1 supports just one */
 
 static int find_widget(const char *id){
     for(int i=0;i<g_nwidgets;i++) if(strcmp(g_widgets[i].id, id)==0) return i;
@@ -226,9 +241,22 @@ static void draw_button(int idx){
     int ty = w->y + (w->h-8)/2;
     gfx_draw_text(tx, ty, w->text, GFX_WHITE, fill);
 }
+static void draw_terminal(int idx){
+    Widget *w = &g_widgets[idx];
+    Terminal *t = &g_terminals[idx];
+    gfx_fill_rect(w->x, w->y, w->w, w->h, GFX_BLACK);
+    gfx_hline(w->x, w->y, w->w, GFX_MID_GRAY);
+    gfx_hline(w->x, w->y+w->h-1, w->w, GFX_MID_GRAY);
+    gfx_vline(w->x, w->y, w->h, GFX_MID_GRAY);
+    gfx_vline(w->x+w->w-1, w->y, w->h, GFX_MID_GRAY);
+    if(!t->lines) return;   /* first redraw, triggered from inside register_widget - not initialized yet */
+    for(int r=0; r<t->rows; r++) gfx_draw_text(w->x+2, w->y+2+r*8, t->lines[r], GFX_WHITE, GFX_BLACK);
+}
 static void redraw_widget(int idx){
     if(idx<0 || idx>=g_nwidgets) return;
-    if(g_widgets[idx].kind==WIDGET_BUTTON) draw_button(idx); else draw_label(idx);
+    if(g_widgets[idx].kind==WIDGET_BUTTON) draw_button(idx);
+    else if(g_widgets[idx].kind==WIDGET_TERMINAL) draw_terminal(idx);
+    else draw_label(idx);
 }
 void gfx_widget_redraw_all(void){ for(int i=0;i<g_nwidgets;i++) redraw_widget(i); }
 
@@ -256,6 +284,53 @@ void gfx_widget_set_text(const char *id, const char *text){
     int idx = find_widget(id); if(idx<0) return;
     strncpy(g_widgets[idx].text, text, GFX_TEXT_LEN-1); g_widgets[idx].text[GFX_TEXT_LEN-1]=0;
     redraw_widget(idx);
+}
+
+int gfx_widget_terminal(const char *id, int x, int y, int w, int h){
+    int idx = register_widget(id, WIDGET_TERMINAL, x, y, w, h, "");
+    if(idx < 0) return -1;
+    int cols = (w - 4) / 8; if(cols < 1) cols = 1;
+    int rows = (h - 4) / 8; if(rows < 1) rows = 1;
+    Terminal *t = &g_terminals[idx];
+    t->lines = (char**)malloc(sizeof(char*) * (size_t)rows);
+    for(int i=0; i<rows; i++){ t->lines[i] = (char*)malloc((size_t)cols + 1); t->lines[i][0] = 0; }
+    t->rows = rows; t->cols = cols; t->cur_row = 0; t->cur_col = 0;
+    g_active_terminal = idx;
+    redraw_widget(idx);   /* the redraw triggered inside register_widget ran before t->lines existed */
+    return idx;
+}
+
+/* Appends one character to the active terminal widget - called from
+ * kernel/libk.c's serial_putc() for EVERY character any program prints, so
+ * plain print()/puts()/printf() output shows up in the GUI with no code
+ * changes to the program producing it. A no-op if no terminal widget has
+ * been created yet - every other boot target is completely unaffected. */
+void gfx_terminal_putc(char c){
+    if(g_active_terminal < 0) return;
+    Terminal *t = &g_terminals[g_active_terminal];
+    if(!t->lines) return;
+    if(c == '\r') return;         /* serial_putc already treats \n as the one newline signal */
+    if(c == '\n'){
+        t->cur_row++; t->cur_col = 0;
+        if(t->cur_row >= t->rows){
+            for(int i=0; i<t->rows-1; i++){ char *tmp=t->lines[i]; t->lines[i]=t->lines[i+1]; t->lines[i+1]=tmp; }
+            t->lines[t->rows-1][0] = 0;
+            t->cur_row = t->rows - 1;
+            redraw_widget(g_active_terminal);   /* every line moved - a full repaint, not an append */
+            return;
+        }
+        t->lines[t->cur_row][0] = 0;
+        return;
+    }
+    if(c < 32 || c > 126) return;  /* other control chars (e.g. a raw \b/\t) - skip, not meaningful here */
+    if(t->cur_col >= t->cols){ gfx_terminal_putc('\n'); gfx_terminal_putc(c); return; }
+    char *line = t->lines[t->cur_row];
+    line[t->cur_col] = c;
+    line[t->cur_col + 1] = 0;
+    t->cur_col++;
+    Widget *w = &g_widgets[g_active_terminal];
+    char buf[2] = { c, 0 };
+    gfx_draw_text(w->x + 2 + (t->cur_col - 1) * 8, w->y + 2 + t->cur_row * 8, buf, GFX_WHITE, GFX_BLACK);
 }
 
 static void focus_next(void){
