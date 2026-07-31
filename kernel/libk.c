@@ -175,11 +175,15 @@ static void idt_set(int n, void *h){
     g_idt[n].mid=(a>>16)&0xFFFF; g_idt[n].hi=(a>>32)&0xFFFFFFFF; g_idt[n].zero=0;
 }
 /* ---- preemptive scheduler: round-robin tasks switched on the timer tick ---- */
-/* 5 slots: task 0 (main/idle), the two toy demo counters (task_a/task_b,
- * kept for /proc/tasks + the top/ps commands), and 2 real app tasks -
- * enough for the terminal (task #31) plus one more real app (task #33),
- * proving genuine concurrent multitasking, not just one app at a time. */
-#define NTASK 5
+/* 3 slots: task 0 (main/idle) + 2 real app tasks - enough for the terminal
+ * (task #31) plus one more real app (task #33), proving genuine concurrent
+ * multitasking. Used to be 5 (task 0 + two toy demo counters, task_a/
+ * task_b, + the 2 real app tasks) - the toy counters predated having real
+ * apps as tasks and were pure dead weight once the terminal/clock existed;
+ * removed 2026-07-31 as part of shrinking the kernel's total declared BSS
+ * footprint (see TSTK/HEAP_BYTES below for why that turned out to matter a
+ * lot more than expected). */
+#define NTASK 3
 /* 10 MiB. A spawned task running this interpreter genuinely overflowed the
  * original 64 KiB (a real #GP fault, not a guess), and simply copying the
  * main kernel stack's own 8 MiB wasn't enough either - empirically, this
@@ -188,16 +192,31 @@ static void idt_set(int n, void *h){
  * biggest case), not the low hundreds of bytes a naive estimate suggests.
  * The real fix was a recursion-depth guard in the interpreter itself
  * (MAX_CALL_DEPTH=150, native/larzscript.c) rather than an ever-bigger
- * TSTK - 150 levels tops out at ~7.5 MiB, so 10 MiB gives real margin
- * without the 16 MiB this needed before that guard existed (freed-up
- * headroom is exactly what makes a 5th task slot affordable within the
- * 128 MiB QEMU is given - see kernel/README.md for the measurements). */
+ * TSTK - 150 levels tops out at ~7.5 MiB, so 10 MiB gives real margin.
+ *
+ * ⚠ DO NOT casually raise NTASK*TSTK (or HEAP_BYTES below) without testing
+ * on real VirtualBox, not just QEMU. A real user hit "error: out of memory"
+ * / "error: you need to load the kernel first" in VirtualBox on the
+ * previous budget (NTASK=5, ~90 MiB of task-stack+heap BSS) - QEMU booted
+ * that exact ISO perfectly every time, so this was NOT caught by this
+ * project's usual QEMU-only regression sweep. Root-caused by bisection
+ * with real VirtualBox tests (not guessing): a minimal zero-BSS multiboot
+ * kernel booted fine (rules out "VirtualBox can't boot ANY multiboot GRUB2
+ * ISO"); the real kernel with its video-mode-request REMOVED still failed
+ * identically (rules out video/VBE negotiation, despite that being the
+ * initial suspect); the SAME kernel with its BSS footprint cut to ~10 MiB
+ * booted fine; this budget (~46 MiB: 3×10 MiB task stacks + 8 MiB heap + 8
+ * MiB main stack) also booted fine. So GRUB's own memory accounting for a
+ * Multiboot kernel's *declared* BSS extent (not just its on-disk file
+ * size - BSS isn't read from disk at all) has a real ceiling on at least
+ * one real VirtualBox install, well below the 128 MiB the VM is actually
+ * given - somewhere between ~10 MiB and ~90 MiB, "fixed" here by landing
+ * at ~46 MiB, not because that number is provably safe in general. */
 #define TSTK  (10*1024*1024)
 struct task { uint64_t rsp; int used; };
 static struct task g_tasks[NTASK];
 static int g_ntask=0, g_cur=0;
 static unsigned char g_tstack[NTASK][TSTK] __attribute__((aligned(16)));
-volatile unsigned long long g_ca=0, g_cb=0;               /* demo task counters */
 
 static uint64_t schedule(uint64_t rsp){
     if(g_ntask<2) return rsp;
@@ -215,12 +234,8 @@ void task_create(void (*fn)(void)){
     f->rip=(uint64_t)fn; f->cs=0x08; f->rflags=0x202; f->rsp=top-8; f->ss=0; f->int_no=32;
     g_tasks[i].rsp=(uint64_t)f;
 }
-static void task_a(void){ for(;;){ g_ca++; for(volatile int i=0;i<80000;i++){} } }
-static void task_b(void){ for(;;){ g_cb++; for(volatile int i=0;i<200000;i++){} } }
 void sched_init(void){                                    /* task 0 = the main/interpreter context */
     g_tasks[0].used=1; g_ntask=1; g_cur=0;
-    task_create(task_a);                                  /* preemptive multitasking demo (keyboard is IRQ-captured) */
-    task_create(task_b);
 }
 
 /* ---- PS/2 mouse (IRQ12) - standard 3-byte packet protocol ----
@@ -408,7 +423,12 @@ int tolower(int c){ return isupper(c)? c-'A'+'a' : c; }
 /* ======================================================================
  * Heap allocator (K&R style: free-list over a static arena)
  * ==================================================================== */
-#define HEAP_BYTES (32u*1024*1024)      /* 32 MiB - give the VM >= 64 MiB RAM */
+/* 8 MiB - was 32 MiB; cut 2026-07-31 as part of shrinking the kernel's total
+ * declared BSS footprint for real-VirtualBox compatibility (see the NTASK/
+ * TSTK comment above for the full story - this arena is a big part of what
+ * GRUB was choking on, size-wise, even though none of it is read from
+ * disk). Still generous for what this OS's own scripts actually allocate. */
+#define HEAP_BYTES (8u*1024*1024)
 typedef long Align;
 typedef union header { struct { union header *ptr; size_t size; } s; Align x; } Header;
 static Header base;
@@ -917,8 +937,11 @@ static char *proc_content(const char *path){
         snprintf(c,256,"filesystem: LarzFS\nmount:      /home (persistent)\nused:       %u bytes\n", g_home?vn_total(g_home):0);
     else if(strcmp(path,"/proc/uptime")==0)
         snprintf(c,256,"ticks: %llu\nseconds: %llu  (timer IRQ @ 100 Hz)\n", g_ticks, g_ticks/100);
-    else if(strcmp(path,"/proc/tasks")==0)
-        snprintf(c,256,"scheduler: preemptive, round-robin\ntask0: shell/interpreter\ntask1: %llu ticks (bg)\ntask2: %llu ticks (bg)\n", g_ca, g_cb);
+    else if(strcmp(path,"/proc/tasks")==0){
+        int n=snprintf(c,256,"scheduler: preemptive, round-robin\n");
+        for(int i=0;i<NTASK && n<250;i++)
+            if(g_tasks[i].used) n+=snprintf(c+n,256-n,"task%d: %s\n", i, i==0?"main/idle":"active");
+    }
     else if(strcmp(path,"/proc/gas")==0)
         snprintf(c,256,"gas_used: %u ticks\ngas_budget: %u\nmetering: %s\n", g_gas_used, g_gas_budget, g_gas_on?"on":"off");
     else snprintf(c,256,"no such /proc file\n");
