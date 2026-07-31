@@ -14,6 +14,36 @@
 /* the interpreter's main(), renamed via -Dmain=larz_main at compile time */
 int larz_main(int argc, char **argv);
 
+#ifdef LARZ_TASKDIAG
+/* Runs a full Larzscript interpreter instance inside its own SPAWNED task
+ * (task_create, kernel/libk.c) rather than task 0's main context - task 0's
+ * own stack is already a proven-sufficient 8 MiB (see boot.S); this is the
+ * empirically real question task #31 has to answer: is a *spawned* task's
+ * (much smaller, per-task) stack big enough for the same interpreter's real
+ * recursion depth? See stress.lz and kernel/README.md. */
+static void task_stress(void){
+    char *a[] = { "larzscript", "/stress.lz", 0 };
+    larz_main(2, a);
+    printf("\n[stress] task 1 finished - see the \"stress result\" line above.\n");
+    qemu_exit(0);
+    for(;;) __asm__ volatile("hlt");
+}
+#endif
+#ifdef LARZ_DESKTOP
+/* The interactive terminal as a real task (task 1), owning its own window -
+ * the first genuine "app" in the windowed-desktop model, not the whole
+ * screen implicitly being one app the way LARZ_GUI's /gui.lz still is. */
+static void task_terminal(void){
+    int idx = gfx_window_create("Terminal", 40, 40, 640, 420);
+    int cx, cy, cw, ch;
+    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);
+    gfx_widget_terminal("term1", cx, cy, cw, ch);
+    char *a[] = { "larzscript", "/larzsh.lz", 0 };
+    larz_main(2, a);
+    for(;;) __asm__ volatile("hlt");
+}
+#endif
+
 void kernel_main(uint64_t mb_info){
     console_init();
     gfx_set_multiboot_info(mb_info);   /* stash it - see gfx.h for why this is split from gfx_init() */
@@ -84,6 +114,34 @@ void kernel_main(uint64_t mb_info){
         char c = console_getc();
         if(c=='\t') gfx_window_focus_next();
     }
+#endif
+#ifdef LARZ_TASKDIAG
+    /* stack-sizing stress diagnostic (never returns) - stress.lz recurses
+     * 3000 deep inside a SPAWNED task (task 1), while task 0 idles; task 1
+     * prints its own pass/fail (a verifiable closed-form sum, so silent
+     * stack corruption producing a wrong-but-plausible number is caught
+     * too, not just a crash) then halts the machine. Run once with the
+     * ORIGINAL TSTK (64 KiB) to confirm this genuinely fails without the
+     * fix, then again after raising TSTK to confirm it passes - a real
+     * before/after, not an assumption. See kernel/README.md. */
+    ints_init();
+    sched_init();
+    vfs_init();                    /* task_stress opens /stress.lz - needs the writable FS mounted first */
+    task_create(task_stress);
+    for(;;) __asm__ volatile("hlt");
+#endif
+#ifdef LARZ_DESKTOP
+    /* the real windowed desktop, v1: the terminal (task 1) is the first and
+     * so-far-only app, running in its own window. task 0 becomes idle here -
+     * later stages (taskbar + a 2nd app, task #33) give task 0 real desktop-
+     * level work (redraw-on-demand is already event-driven, not polled). */
+    ints_init();
+    gfx_init();
+    sched_init();
+    vfs_init();                    /* task_terminal opens /larzsh.lz - needs the writable FS mounted first */
+    gfx_windows_redraw_all();
+    task_create(task_terminal);
+    for(;;) __asm__ volatile("hlt");
 #endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */
     sched_init();                  /* preemptive scheduler + background tasks */

@@ -779,6 +779,7 @@ typedef struct Interp {
   int has_gas; long long gas; long long gas_used;
   int returning; Value retval;
   int loopflow;                 /* 0 none, 1 break, 2 continue */
+  int calldepth;                 /* nested Larzscript function calls in flight - see call_value() */
   int curline;                  /* line currently executing, for errors */
   char *basedir;                /* directory of the current file, for imports */
   struct ModRec { char *path; Value val; } *modcache; int nmod, modcap;
@@ -1206,11 +1207,28 @@ static Value eval(Interp *ip, Node *n, Env *env){
   }
 }
 
+/* Every nested Larzscript call is a real native C recursion (eval() ->
+ * call_value() -> exec() -> eval() ...), and this interpreter's own stack
+ * frames are large (exec()'s switch alone reserves several KB for its
+ * biggest case) - empirically measured on the kernel build at ~50 KiB of
+ * *native* stack per nested Larzscript call (see kernel/README.md), not a
+ * few hundred bytes as a naive estimate would suggest. On a hosted OS a
+ * runaway recursion just SEGVs that one process; on the freestanding
+ * kernel, task stacks sit contiguously in one identity-mapped, unguarded
+ * region (kernel/libk.c) with no guard pages, so overflowing one task's
+ * stack silently corrupts a NEIGHBORING task's memory instead of faulting
+ * cleanly - a real, reproduced failure mode, not a hypothetical one. Fail
+ * safe on every platform with a graceful, catchable error well before any
+ * stack actually runs out, the same way CPython raises RecursionError
+ * rather than letting the process SIGSEGV. 150 is far beyond any legitimate
+ * LarzOS script's recursion depth (boot.lz's factorial demo is 7 deep). */
+#define MAX_CALL_DEPTH 150
 static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
   if(callee.t==V_BUILTIN) return callee.bi->fn(ip,args,nargs);
   if(callee.t==V_FUNC){
     Node *decl=callee.fn->decl;
     const char *fname = decl->name ? decl->name : "function";
+    if(ip->calldepth>=MAX_CALL_DEPTH) runtime_error(ip,"LarzRecursionError","maximum call depth (%d) exceeded calling '%s' - check for infinite/runaway recursion", MAX_CALL_DEPTH, fname);
     if(nargs>decl->nparams) runtime_error(ip,"LarzTypeError","%s expects at most %d argument(s), got %d", fname, decl->nparams, nargs);
     if(decl->has_gas && decl->gas){
       ip->gas_used += decl->gas;
@@ -1223,9 +1241,11 @@ static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
       else runtime_error(ip,"LarzTypeError","%s missing argument '%s'", fname, decl->params[i]);
     }
     ip->returning=0;
+    ip->calldepth++;
     gc_root_push(ip, call_env);
     for(int i=0;i<decl->b->nkids;i++){ exec(ip, decl->b->kids[i], call_env); if(ip->returning) break; }
     gc_root_pop(ip);
+    ip->calldepth--;
     Value r = ip->returning ? ip->retval : V_nil();
     ip->returning=0;
     return r;
@@ -1380,13 +1400,13 @@ static void exec(Interp *ip, Node *n, Env *env){
     case N_CONTINUE: ip->loopflow=2; return;
     case N_TRY: {
       jmp_buf saved; memcpy(saved, ip->jb, sizeof(jmp_buf));
-      int nr=ip->nroots, nt=ip->ntemp;              /* restore GC roots if the try unwinds */
+      int nr=ip->nroots, nt=ip->ntemp, ncd=ip->calldepth;  /* restore GC roots + call depth if the try unwinds */
       if(setjmp(ip->jb)==0){
         exec(ip, n->a, env);
         memcpy(ip->jb, saved, sizeof(jmp_buf));       /* normal exit: restore outer */
       } else {
         memcpy(ip->jb, saved, sizeof(jmp_buf));       /* error: restore outer first */
-        ip->nroots=nr; ip->ntemp=nt;
+        ip->nroots=nr; ip->ntemp=nt; ip->calldepth=ncd;
         ip->returning=0; ip->loopflow=0;
         Dict *d=dict_new();
         dict_set(d, V_string("type"),    V_string(ip->errname?ip->errname:"Error"));

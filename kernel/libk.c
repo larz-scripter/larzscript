@@ -176,7 +176,19 @@ static void idt_set(int n, void *h){
 }
 /* ---- preemptive scheduler: round-robin tasks switched on the timer tick ---- */
 #define NTASK 4
-#define TSTK  65536
+/* 16 MiB. A spawned task running this interpreter genuinely overflowed the
+ * original 64 KiB (a real #GP fault, not a guess) - and empirically, this
+ * interpreter's own native C recursion is expensive per Larzscript call
+ * level (eval()/call_value() nest several C stack frames per level, each
+ * with sizeable locals): binary-searching the real failure point found it
+ * between depth 1000 (fine, even at just 8 MiB) and depth 1500 (still
+ * faults at 8 MiB) - i.e. even the *main* kernel stack's own 8 MiB size
+ * turned out not to be the right number to copy here, contrary to the
+ * original assumption; ~6-7 KiB/level, not a few hundred bytes. 16 MiB
+ * clears depth 3000 with margin (see kernel/README.md for the before/after
+ * numbers). NTASK*TSTK (64 MiB) + the 8 MiB main stack is still a fraction
+ * of the 128 MiB QEMU is given. */
+#define TSTK  (16*1024*1024)
 struct task { uint64_t rsp; int used; };
 static struct task g_tasks[NTASK];
 static int g_ntask=0, g_cur=0;
@@ -189,7 +201,7 @@ static uint64_t schedule(uint64_t rsp){
     do { g_cur=(g_cur+1)%g_ntask; } while(!g_tasks[g_cur].used);
     return g_tasks[g_cur].rsp;
 }
-static void task_create(void (*fn)(void)){
+void task_create(void (*fn)(void)){
     if(g_ntask>=NTASK) return;
     int i=g_ntask++;
     g_tasks[i].used=1;
@@ -228,7 +240,11 @@ uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_com
     struct iframe *f=(struct iframe*)rsp;
     unsigned n=(unsigned)f->int_no;
     if(n<32){                                             /* CPU exception: report + halt */
-        printf("\n[CPU exception %u  err=%x  RIP=%lx]  halting.\n", n, (unsigned)f->err, (unsigned long)f->rip);
+        printf("\n[CPU exception %u  err=%x  RIP=%lx  RSP=%lx  task=%d]  halting.\n",
+               n, (unsigned)f->err, (unsigned long)f->rip, (unsigned long)f->rsp, g_cur);
+        for(int t=0;t<NTASK;t++) if(g_tasks[t].used)
+            printf("  task %d: stack [%lx .. %lx)\n", t,
+                   (unsigned long)g_tstack[t], (unsigned long)(g_tstack[t]+TSTK));
         for(;;) __asm__ volatile("cli; hlt");
     }
     if(n==32){                                            /* timer: tick, poll kbd (backup), gas, switch task */

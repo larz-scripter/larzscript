@@ -1,0 +1,35 @@
+# stress.lz - task-stack sizing diagnostic (see kernel/README.md).
+#
+# Empirically, running this interpreter inside a SPAWNED task (kernel/libk.c's
+# task_create, not task 0's own main context) genuinely overflowed the
+# original per-task stack - a real #GP fault, not a hypothetical one - and
+# further measurement showed why: this interpreter's own native C recursion
+# is expensive per nested Larzscript call (~50 KiB of stack per level on this
+# build - exec()'s switch alone reserves several KB for its largest case),
+# not the few hundred bytes a naive estimate would suggest. Worse, on this
+# kernel every task's stack sits in one contiguous, unguarded, identity-mapped
+# region: overflowing one task's stack doesn't fault cleanly, it silently
+# corrupts a NEIGHBORING task's memory.
+#
+# The real fix is a recursion-depth guard in the interpreter itself
+# (MAX_CALL_DEPTH, native/larzscript.c's call_value) - the same approach
+# CPython uses (RecursionError) rather than relying on the native stack to
+# happen to be big enough. This script proves both halves empirically: a
+# realistic recursion depth still computes the right answer, and a runaway
+# one is caught as a graceful, catchable error instead of crashing anything.
+fn sum_down(n) {
+  if n <= 0 { return 0 }
+  return n + sum_down(n - 1)
+}
+
+let safe = 100
+let expect = safe * (safe + 1) / 2
+let r = sum_down(safe)
+print(r == expect ? "PASS: depth " + str(safe) + " -> " + str(r) : "FAIL: depth " + str(safe) + " -> " + str(r) + " (expected " + str(expect) + ")")
+
+try {
+  sum_down(100000)
+  print("FAIL: runaway recursion was not caught")
+} catch e {
+  print(e["type"] == "LarzRecursionError" ? "PASS: runaway recursion caught (" + e["type"] + ")" : "FAIL: wrong error type " + e["type"])
+}
