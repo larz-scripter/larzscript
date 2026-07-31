@@ -379,6 +379,42 @@ void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h){
     *h = win->h - GFX_TITLEBAR_H - 1;
 }
 
+void gfx_window_rect(int idx, int *x, int *y, int *w, int *h){
+    if(idx < 0 || idx >= g_nwindows){ *x=*y=*w=*h=0; return; }
+    Window *win = &g_windows[idx];
+    *x = win->x; *y = win->y; *w = win->w; *h = win->h;
+}
+
+/* window index whose TITLE BAR SPECIFICALLY (not just its window rect)
+ * contains (x,y), or -1 - front-to-back like gfx_window_hit_test, but
+ * restricted to the GFX_TITLEBAR_H strip at the top. Distinct from the
+ * whole-window hit test because a drag should only start from the title
+ * bar - clicking a window's body focuses it (existing behavior) without
+ * also moving it. */
+int gfx_window_titlebar_hit_test(int x, int y){
+    for(int i=g_nwindows-1; i>=0; i--){
+        Window *win = &g_windows[g_window_order[i]];
+        if(x>=win->x && x<win->x+win->w && y>=win->y && y<win->y+GFX_TITLEBAR_H) return g_window_order[i];
+    }
+    return -1;
+}
+
+/* Moves a window to a new top-left position and redraws - its widgets move
+ * for free since they're stored relative to it (see the widget section
+ * below). Clamped so the title bar can never end up somewhere you can't
+ * grab it again: fully off the top/left/right, or under the taskbar. */
+void gfx_window_move(int idx, int x, int y){
+    if(idx < 0 || idx >= g_nwindows) return;
+    Window *win = &g_windows[idx];
+    int min_visible = 20;    /* at least this many px of title bar must stay reachable */
+    if(x < min_visible - win->w) x = min_visible - win->w;
+    if(x > gfx_width() - min_visible) x = gfx_width() - min_visible;
+    if(y < 0) y = 0;
+    if(y > gfx_height() - TASKBAR_H - GFX_TITLEBAR_H) y = gfx_height() - TASKBAR_H - GFX_TITLEBAR_H;
+    win->x = x; win->y = y;
+    gfx_windows_redraw_all();
+}
+
 /* ---- widgets ---- */
 typedef enum { WIDGET_LABEL, WIDGET_BUTTON, WIDGET_TERMINAL } WidgetKind;
 typedef struct {

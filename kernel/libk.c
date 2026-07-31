@@ -257,6 +257,14 @@ void sched_init(void){                                    /* task 0 = the main/i
  * sign bits above, NOT plain two's complement, per the protocol). */
 static unsigned char g_mpkt[3]; static int g_mcount=0;
 static int g_mouse_left_prev=0;
+/* Drag state: which window (if any) is being dragged by the title bar right
+ * now, and where its top-left corner is as of the last packet - seeded
+ * once from gfx_window_rect() when the drag starts, then updated purely
+ * from mouse deltas (not re-read from gfx.c every packet) so a fast drag
+ * can't "lose" fractional movement between reads. -1 = not dragging. */
+static int g_drag_window = -1;
+static int g_drag_win_x = 0, g_drag_win_y = 0;
+
 static void mouse_byte(unsigned char b){
     if(g_mcount==0 && !(b&0x08)) return;          /* not a valid packet start - resync */
     g_mpkt[g_mcount++]=b;
@@ -269,16 +277,28 @@ static void mouse_byte(unsigned char b){
     int dy=g_mpkt[2]; if(st&0x20) dy-=256;
     gfx_cursor_move(gfx_cursor_x()+dx, gfx_cursor_y()-dy);   /* PS/2 Y is inverted vs screen Y */
     int left = st & 0x01;
-    if(left && !g_mouse_left_prev){               /* press edge, not held-down repeat */
+    if(left && g_drag_window>=0){                 /* held down, already dragging - move with the cursor */
+        g_drag_win_x += dx; g_drag_win_y -= dy;    /* same inversion as the cursor above */
+        gfx_window_move(g_drag_window, g_drag_win_x, g_drag_win_y);
+    }
+    else if(left && !g_mouse_left_prev){           /* press edge, not held-down repeat */
         int cx=gfx_cursor_x(), cy=gfx_cursor_y();
         int tbw = gfx_taskbar_hit_test(cx, cy);   /* the taskbar strip is more specific - check first */
         if(tbw>=0){ gfx_window_focus(tbw); }
         else {
-            int hitw = gfx_window_hit_test(cx, cy);
-            if(hitw>=0) gfx_window_focus(hitw);
-            if(gfx_widget_click(cx, cy)) kbring_push('\n');   /* same path a real Enter takes - see gfx.h */
+            int tb = gfx_window_titlebar_hit_test(cx, cy);
+            if(tb>=0){                             /* grabbed a title bar - focus it and start a drag */
+                gfx_window_focus(tb);
+                int ww, wh; gfx_window_rect(tb, &g_drag_win_x, &g_drag_win_y, &ww, &wh);
+                g_drag_window = tb;
+            } else {
+                int hitw = gfx_window_hit_test(cx, cy);
+                if(hitw>=0) gfx_window_focus(hitw);
+                if(gfx_widget_click(cx, cy)) kbring_push('\n');   /* same path a real Enter takes - see gfx.h */
+            }
         }
     }
+    if(!left) g_drag_window = -1;                  /* release ends any drag */
     g_mouse_left_prev = left;
 }
 

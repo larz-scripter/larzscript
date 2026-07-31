@@ -86,10 +86,27 @@ void gfx_windows_redraw_all(void);
  * window-owned content should actually draw, in screen coordinates. */
 void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h);
 
+/* the window's RAW rect (its own x,y,w,h - the whole frame, title bar
+ * included) - distinct from gfx_window_client_rect's inset area. The mouse
+ * driver (kernel/libk.c) reads this once when a drag starts, to seed where
+ * the window currently is before applying subsequent mouse deltas. */
+void gfx_window_rect(int idx, int *x, int *y, int *w, int *h);
+
 /* index of the topmost (frontmost) window whose rect contains (x,y), or -1 -
  * searches z-order back-to-front, i.e. checks the FRONT window first, since
  * that's what a real click would actually hit if windows overlap there. */
 int gfx_window_hit_test(int x, int y);
+
+/* Same idea, but restricted to the window's title-bar strip specifically -
+ * used to start a drag (kernel/libk.c's mouse driver): clicking a window's
+ * BODY focuses it without moving it; only the title bar drags. */
+int gfx_window_titlebar_hit_test(int x, int y);
+
+/* Moves a window to a new top-left position and redraws - its widgets move
+ * for free (they're stored relative to their owning window). Clamped so
+ * the title bar always stays reachable (not fully off-screen or under the
+ * taskbar). */
+void gfx_window_move(int idx, int x, int y);
 
 /* window index whose taskbar entry contains (x,y), or -1 if (x,y) isn't
  * over the taskbar strip at all (see gfx.c's draw_taskbar()) - checked
