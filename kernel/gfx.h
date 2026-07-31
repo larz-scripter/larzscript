@@ -1,38 +1,52 @@
-/* gfx.h - VGA Mode 13h (320x200, 256 colors) graphics primitives.
- * Public interface used by kernel.c (diagnostic) and by the kernel-native
- * `ui` Larzscript module in native/larzscript.c. */
+/* gfx.h - a real linear framebuffer (via Multiboot, boot.S), real RGB color.
+ * Public interface used by kernel.c and the kernel-native `ui` Larzscript
+ * module in native/larzscript.c. Replaces the original 320x200x256 VGA
+ * Mode 13h backend - screen size/pitch/bpp are read from the Multiboot
+ * info struct at boot, not assumed, and may differ from what boot.S asked
+ * for (1024x768x32) if GRUB granted something else - use gfx_width()/
+ * gfx_height(), never hardcode a resolution. */
 #ifndef _LARZOS_GFX_H
 #define _LARZOS_GFX_H
+#include <stdint.h>
 
-#define GFX_W 320
-#define GFX_H 200
+/* kernel_main (kernel.c) calls this once, immediately, with the Multiboot
+ * info pointer it received from boot.S - stored for gfx_init() to actually
+ * use later. Split from gfx_init() itself because gfx_init() is invoked
+ * lazily, on first use, from inside the kernel-native `ui` Larzscript
+ * module (native/larzscript.c's ensure_kernel_gfx()) - code with no other
+ * way to reach the pointer kernel_main was handed at boot. */
+void gfx_set_multiboot_info(uint64_t mb_info);
 
-/* switches the VGA card from text mode into linear 320x200x256 graphics mode
- * and sets a small fixed palette (see gfx.c for the color indices). Only
- * call this once - it destroys the text console. */
+/* Parses the framebuffer fields out of the info pointer gfx_set_multiboot_
+ * info() stored and sets up pixel-writing accordingly. Call once. */
 void gfx_init(void);
 
-void gfx_set_pixel(int x, int y, unsigned char color);
-void gfx_fill_rect(int x, int y, int w, int h, unsigned char color);
-void gfx_hline(int x, int y, int w, unsigned char color);
-void gfx_vline(int x, int y, int h, unsigned char color);
+int gfx_width(void);
+int gfx_height(void);
+
+/* colors are plain 24-bit RGB, 0x00RRGGBB - no palette anymore, any value
+ * is valid. A handful of named ones for the UI chrome this project already
+ * draws with, kept for readability at call sites: */
+enum {
+    GFX_BLACK      = 0x000000,
+    GFX_WHITE      = 0xFFFFFF,
+    GFX_DARK_GRAY  = 0x14161f,   /* matches larzos.com's #0b0f1a card bg, roughly */
+    GFX_MID_GRAY   = 0x3c4048,
+    GFX_ACCENT     = 0x2ec4a0,   /* teal/green accent */
+    GFX_ACCENT_DIM = 0x1a6a54,
+    GFX_RED        = 0xb01a1a,
+};
+
+void gfx_set_pixel(int x, int y, uint32_t color);
+void gfx_fill_rect(int x, int y, int w, int h, uint32_t color);
+void gfx_hline(int x, int y, int w, uint32_t color);
+void gfx_vline(int x, int y, int h, uint32_t color);
 
 /* draws `s` starting at (x,y), 8x8 cells per character, fg on bg.
  * ASCII only (bytes >=128 render as a placeholder glyph); ASCII 32-126
  * covered, uppercase and lowercase both render (see gfx.c for coverage
  * notes on the embedded font). */
-void gfx_draw_text(int x, int y, const char *s, unsigned char fg, unsigned char bg);
-
-/* fixed palette indices set up by gfx_init() - use these, not raw numbers */
-enum {
-    GFX_BLACK = 0,
-    GFX_WHITE = 1,
-    GFX_DARK_GRAY = 2,
-    GFX_MID_GRAY = 3,
-    GFX_ACCENT = 4,     /* teal/green, matches the larzos.com accent */
-    GFX_ACCENT_DIM = 5,
-    GFX_RED = 6,
-};
+void gfx_draw_text(int x, int y, const char *s, uint32_t fg, uint32_t bg);
 
 /* ---- a minimal retained widget model, keyboard-driven (no mouse in v1) ----
  * The kernel has no pre-existing markup to select into (unlike the browser's

@@ -45,7 +45,19 @@
 .align 4096
 pml4:  .skip 4096
 pdpt:  .skip 4096
-pd:    .skip 4096
+/* 4 page directories = 4 GiB identity-mapped (2 MiB pages each), not just
+ * the original 1 GiB. Needed because the framebuffer's physical address is
+ * a PCI BAR that QEMU places near the 4 GiB boundary (observed at
+ * 0xfd000000) - well above the low 1 GiB the kernel's own code/data/heap
+ * live in. A REAL triple fault was hit here before this fix: accessing an
+ * unmapped page faults, and with no page-fault handler installed this
+ * early, that escalates silently to a double fault, then a triple fault
+ * (CPU reset) - zero serial output at all, because it happens mid-write,
+ * before there's anything to report it with. Confirmed via QEMU's
+ * `-d int,cpu_reset`: CR2=0xfd000000 (the exact framebuffer address),
+ * "check_exception old: 0xe new 0xd" (an unhandled #PF escalating to
+ * #GP/#DF), then "Triple fault" - not a guess, a captured trace. */
+pd:    .skip 4096 * 4
 .align 16
 stack_bottom:
 .skip 0x800000                         /* 8 MiB kernel stack - the interpreter recurses deeply */
@@ -89,21 +101,34 @@ _start:
     rep stosl
     movl %ebx, mb_info_ptr
 
-    /* --- page tables: PML4[0] -> PDPT[0] -> PD, identity map 1 GiB --- */
+    /* --- page tables: PML4[0] -> PDPT[0..3] -> 4x PD, identity map 4 GiB --- */
     movl $pdpt, %eax
     orl  $0x3, %eax               /* present + writable */
     movl %eax, pml4
     movl $0,   pml4+4
 
-    movl $pd, %eax
+    /* PDPT[0..3] each point at one of the 4 contiguous 4096-byte PD tables
+     * inside `pd` (see the .bss layout above) - PDPT[i] -> pd + i*4096,
+     * covering physical [i*1GiB, (i+1)*1GiB). */
+    movl $pd, %ebx
+    movl $0, %ecx                 /* loop index i = 0..3 */
+2:
+    movl %ebx, %eax
     orl  $0x3, %eax
-    movl %eax, pdpt
-    movl $0,   pdpt+4
+    movl %eax, pdpt(,%ecx,8)
+    movl $0,   pdpt+4(,%ecx,8)
+    addl $4096, %ebx
+    incl %ecx
+    cmpl $4, %ecx
+    jl   2b
 
-    /* fill PD: 512 entries x 2 MiB = 1 GiB, each present+writable+huge(PS) */
+    /* fill all 4 PD tables: 4x512 entries x 2 MiB = 4 GiB, each
+     * present+writable+huge(PS), physical address counting up contiguously
+     * across all 4 tables (pd[0] covers phys 0, pd[1] covers phys 1 GiB,
+     * ... - matches the PDPT mapping above exactly). */
     movl $pd, %edi
     movl $0x83, %eax              /* phys 0 | present | write | PS */
-    movl $512, %ecx
+    movl $2048, %ecx              /* 4 tables * 512 entries */
 1:
     movl %eax, (%edi)
     movl $0, 4(%edi)

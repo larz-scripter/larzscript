@@ -14,55 +14,18 @@
 /* the interpreter's main(), renamed via -Dmain=larz_main at compile time */
 int larz_main(int argc, char **argv);
 
-/* The Multiboot1 info struct GRUB hands back (see boot.S's mb_info_ptr) -
- * field order/sizes exactly match the spec (multiboot.org), packed
- * defensively rather than relying on default alignment happening to agree
- * (it does here, but don't leave that to chance). Only the fields this
- * kernel actually reads are named; the rest are left as anonymous padding.
- * Bit 12 of `flags` says whether framebuffer_* below are valid at all. */
-typedef struct __attribute__((packed)) {
-    uint32_t flags;
-    uint32_t mem_lower, mem_upper;
-    uint32_t boot_device;
-    uint32_t cmdline;
-    uint32_t mods_count, mods_addr;
-    uint32_t syms[4];
-    uint32_t mmap_length, mmap_addr;
-    uint32_t drives_length, drives_addr;
-    uint32_t config_table;
-    uint32_t boot_loader_name;
-    uint32_t apm_table;
-    uint32_t vbe_control_info, vbe_mode_info;
-    uint16_t vbe_mode, vbe_interface_seg, vbe_interface_off, vbe_interface_len;
-    uint64_t framebuffer_addr;
-    uint32_t framebuffer_pitch;
-    uint32_t framebuffer_width, framebuffer_height;
-    uint8_t  framebuffer_bpp;
-    uint8_t  framebuffer_type;
-    uint8_t  color_info[6];
-} MultibootInfo;
-#define MB_FLAG_FRAMEBUFFER (1u << 12)
-
 void kernel_main(uint64_t mb_info){
     console_init();
+    gfx_set_multiboot_info(mb_info);   /* stash it - see gfx.h for why this is split from gfx_init() */
 #ifdef LARZ_MBDIAG
     /* raw Multiboot-info diagnostic (never returns) - proves the info
      * pointer boot.S now preserves and passes through actually parses to
-     * sane values, BEFORE any graphics-mode code is written against it.
-     * See kernel/README.md. */
-    MultibootInfo *mbi = (MultibootInfo*)mb_info;
+     * sane values via the real gfx_init()/gfx_width()/gfx_height() path
+     * (not a separate copy of the parsing logic). See kernel/README.md. */
+    gfx_init();
     printf("\nmb_info ptr = 0x%llx\n", (unsigned long long)mb_info);
-    printf("flags = 0x%x\n", mbi->flags);
-    if(mbi->flags & MB_FLAG_FRAMEBUFFER){
-        printf("framebuffer_addr   = 0x%llx\n", (unsigned long long)mbi->framebuffer_addr);
-        printf("framebuffer_pitch  = %u\n", mbi->framebuffer_pitch);
-        printf("framebuffer_width  = %u\n", mbi->framebuffer_width);
-        printf("framebuffer_height = %u\n", mbi->framebuffer_height);
-        printf("framebuffer_bpp    = %u\n", mbi->framebuffer_bpp);
-        printf("framebuffer_type   = %u  (1 = RGB linear)\n", mbi->framebuffer_type);
-    } else {
-        printf("NO framebuffer info reported - flags bit 12 not set\n");
-    }
+    printf("gfx_width()  = %d\n", gfx_width());
+    printf("gfx_height() = %d\n", gfx_height());
     for(;;) __asm__ volatile("hlt");
 #endif
 #ifdef LARZ_KBDDIAG
@@ -76,7 +39,7 @@ void kernel_main(uint64_t mb_info){
      * IRQ-driven) - unlike the plain gfx test, this one calls ints_init(). */
     ints_init();
     gfx_init();
-    gfx_fill_rect(0, 0, GFX_W, GFX_H, GFX_DARK_GRAY);
+    gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_DARK_GRAY);
     gfx_draw_text(10, 10, "LARZOS GUI TEST 0123", GFX_WHITE, GFX_DARK_GRAY);
     gfx_draw_text(10, 25, "$1.00 (buy) - a.b.c?", GFX_ACCENT, GFX_DARK_GRAY);
     gfx_widget_label("bal", 10, 50, "balance: $10.00");

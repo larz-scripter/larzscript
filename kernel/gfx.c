@@ -1,101 +1,104 @@
-/* gfx.c - VGA Mode 13h (320x200, 256-color, linear, chain-4) graphics.
+/* gfx.c - a real linear framebuffer (via Multiboot, see boot.S), real RGB.
  *
- * Mode 13h is the classic "easiest real graphics mode" on PC hardware: after
- * the register sequence in gfx_init(), the framebuffer is one linear byte
- * per pixel at physical 0xA0000 (already inside the low-1GiB identity map
- * boot.S sets up - no page-table changes needed here). No BIOS/VESA calls,
- * no boot-time changes - this is a pure runtime mode switch via outb/inb,
- * the same style already used for the VGA text cursor in libk.c.
+ * Replaces the original VGA Mode 13h backend (320x200x256, paletted) - a
+ * real desktop with overlapping windows needs real screen space, and Mode
+ * 13h was never going to get there. GRUB negotiates a video mode via the
+ * Multiboot header's video-mode-request fields and hands back where it put
+ * the framebuffer (address/pitch/width/height/bpp) in the Multiboot info
+ * struct passed to kernel_main - this file just reads that back and writes
+ * pixels; no VGA register programming, no BIOS calls, nothing hardware-
+ * specific here at all (that's all in boot.S + GRUB now).
  *
- * Register values below are the standard, widely-documented Mode 13h
- * initialization sequence (Sequencer/CRTC/Graphics-Controller/Attribute
- * Controller) - the same one nearly every "VGA without BIOS" OS-dev
- * reference uses. Verify visually via QEMU's monitor `screendump` command
- * (see kernel/README.md) - this is hardware register programming, so the
- * real proof is a real captured frame, not just "it compiled."
+ * Getting the *header* right was the hard, verified part (see boot.S and
+ * kernel/README.md) - a wrong field layout there produced a real, screen-
+ * dump-confirmed GRUB failure ("unsupported graphical mode type"), not a
+ * hypothetical. This file trusts what kernel_main hands it, but still
+ * reads the actual granted width/height/bpp rather than assuming the
+ * 1024x768x32 boot.S asked for was what GRUB actually gave.
  */
 #include "gfx.h"
 #include "console.h"
 #include "libc/string.h"
 #include "libc/stdlib.h"
 
-typedef unsigned char u8;
-typedef unsigned short u16;
+/* The Multiboot1 info struct GRUB hands back - field order/sizes exactly
+ * match the spec (multiboot.org), packed defensively rather than relying
+ * on default alignment happening to agree (it does here, but don't leave
+ * that to chance). Only the fields actually read are named. */
+typedef struct __attribute__((packed)) {
+    uint32_t flags;
+    uint32_t mem_lower, mem_upper;
+    uint32_t boot_device;
+    uint32_t cmdline;
+    uint32_t mods_count, mods_addr;
+    uint32_t syms[4];
+    uint32_t mmap_length, mmap_addr;
+    uint32_t drives_length, drives_addr;
+    uint32_t config_table;
+    uint32_t boot_loader_name;
+    uint32_t apm_table;
+    uint32_t vbe_control_info, vbe_mode_info;
+    uint16_t vbe_mode, vbe_interface_seg, vbe_interface_off, vbe_interface_len;
+    uint64_t framebuffer_addr;
+    uint32_t framebuffer_pitch;
+    uint32_t framebuffer_width, framebuffer_height;
+    uint8_t  framebuffer_bpp;
+    uint8_t  framebuffer_type;
+    uint8_t  color_info[6];
+} MultibootInfo;
+#define MB_FLAG_FRAMEBUFFER (1u << 12)
 
-static inline void outb(u16 port, u8 val){ __asm__ volatile("outb %0,%1"::"a"(val),"Nd"(port)); }
-static inline u8   inb(u16 port){ u8 r; __asm__ volatile("inb %1,%0":"=a"(r):"Nd"(port)); return r; }
+static volatile uint8_t *g_fb = 0;
+static int g_fb_w = 0, g_fb_h = 0, g_fb_pitch = 0, g_fb_bpp = 0;
+static uint64_t g_mb_info = 0;
 
-static volatile u8 *const FB = (u8*)0xA0000;
-
-/* ---- mode switch ---- */
-static void vga_write_seq(u8 idx, u8 val){ outb(0x3C4, idx); outb(0x3C5, val); }
-static void vga_write_crtc(u8 idx, u8 val){ outb(0x3D4, idx); outb(0x3D5, val); }
-static void vga_write_gc(u8 idx, u8 val){ outb(0x3CE, idx); outb(0x3CF, val); }
-static void vga_write_attr(u8 idx, u8 val){
-    (void)inb(0x3DA);          /* reset the index/data flip-flop */
-    outb(0x3C0, idx);
-    outb(0x3C0, val);
-}
-
-static const u8 SEQ[5]  = { 0x03, 0x01, 0x0F, 0x00, 0x0E };
-static const u8 CRTC[25] = {
-    0x5F,0x4F,0x50,0x82,0x54,0x80,0xBF,0x1F,0x00,0x41,0x00,0x00,
-    0x00,0x00,0x00,0x00,0x9C,0x8E,0x8F,0x28,0x40,0x96,0xB9,0xA3,0xFF
-};
-static const u8 GC[9]   = { 0x00,0x00,0x00,0x00,0x00,0x40,0x05,0x0F,0xFF };
-static const u8 ATTR[21] = {
-    0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
-    0x41,0x00,0x0F,0x00,0x00
-};
-
-/* fixed palette (index -> RGB, 6-bit-per-channel VGA DAC values 0-63) -
- * see the GFX_* enum in gfx.h. Set once at init; not meant to be dynamic. */
-static const u8 PALETTE[7][3] = {
-    {0,0,0},        /* GFX_BLACK */
-    {63,63,63},     /* GFX_WHITE */
-    {12,13,17},     /* GFX_DARK_GRAY  - matches larzos.com's #0b0f1a card bg, roughly */
-    {30,32,38},     /* GFX_MID_GRAY */
-    {20,58,48},     /* GFX_ACCENT     - teal/green accent */
-    {12,35,29},     /* GFX_ACCENT_DIM */
-    {50,10,10},     /* GFX_RED */
-};
+void gfx_set_multiboot_info(uint64_t mb_info){ g_mb_info = mb_info; }
 
 void gfx_init(void){
-    outb(0x3C2, 0x63);                                   /* misc output */
-    vga_write_seq(0x00, 0x03);                            /* sync reset off */
-    for(int i=1;i<5;i++) vga_write_seq((u8)i, SEQ[i]);
-
-    /* unlock CRTC registers 0-7 (bit 7 of index 0x11 protects them) */
-    outb(0x3D4, 0x11); u8 cur = inb(0x3D5);
-    outb(0x3D4, 0x11); outb(0x3D5, cur & 0x7F);
-    for(int i=0;i<25;i++) vga_write_crtc((u8)i, CRTC[i]);
-
-    for(int i=0;i<9;i++) vga_write_gc((u8)i, GC[i]);
-
-    for(int i=0;i<21;i++) vga_write_attr((u8)i, ATTR[i]);
-    outb(0x3C0, 0x20);                                    /* re-enable video output */
-
-    /* palette: identity-mapped by ATTR[]'s first 16 entries, program the DAC */
-    outb(0x3C8, 0);                                       /* start writing at DAC index 0 */
-    for(int i=0;i<7;i++){ outb(0x3C9, PALETTE[i][0]); outb(0x3C9, PALETTE[i][1]); outb(0x3C9, PALETTE[i][2]); }
-
-    gfx_fill_rect(0, 0, GFX_W, GFX_H, GFX_DARK_GRAY);
+    MultibootInfo *mbi = (MultibootInfo*)(uintptr_t)g_mb_info;
+    if(mbi->flags & MB_FLAG_FRAMEBUFFER){
+        g_fb = (volatile uint8_t*)(uintptr_t)mbi->framebuffer_addr;
+        g_fb_w = (int)mbi->framebuffer_width;
+        g_fb_h = (int)mbi->framebuffer_height;
+        g_fb_pitch = (int)mbi->framebuffer_pitch;
+        g_fb_bpp = mbi->framebuffer_bpp;
+    }
+    /* if GRUB somehow didn't report a framebuffer at all, g_fb stays NULL -
+     * every drawing call below is a bounds/null-checked no-op, so the
+     * kernel doesn't crash, it just can't draw (a diagnostic elsewhere
+     * would need to report this; not expected in practice, verified
+     * granted exactly what was requested - see kernel/README.md). */
+    gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_DARK_GRAY);
 }
 
-void gfx_set_pixel(int x, int y, unsigned char color){
-    if(x<0 || y<0 || x>=GFX_W || y>=GFX_H) return;
-    FB[y*GFX_W + x] = color;
+int gfx_width(void){ return g_fb_w; }
+int gfx_height(void){ return g_fb_h; }
+
+void gfx_set_pixel(int x, int y, uint32_t color){
+    if(!g_fb || x<0 || y<0 || x>=g_fb_w || y>=g_fb_h) return;
+    volatile uint8_t *p = g_fb + (long)y*g_fb_pitch + (long)x*(g_fb_bpp/8);
+    if(g_fb_bpp==32){
+        *(volatile uint32_t*)p = color;
+    } else if(g_fb_bpp==24){
+        p[0]=(uint8_t)(color & 0xFF); p[1]=(uint8_t)((color>>8)&0xFF); p[2]=(uint8_t)((color>>16)&0xFF);
+    } else if(g_fb_bpp==16){
+        /* 5-6-5 - lossy, but a reasonable fallback if that's ever what's granted */
+        uint16_t v = (uint16_t)((((color>>19)&0x1F)<<11) | (((color>>10)&0x3F)<<5) | ((color>>3)&0x1F));
+        *(volatile uint16_t*)p = v;
+    }
+    /* other depths: not expected from a `mode_type=0` linear request; skip
+     * rather than guess at a layout that could write out of bounds. */
 }
 
-void gfx_fill_rect(int x, int y, int w, int h, unsigned char color){
+void gfx_fill_rect(int x, int y, int w, int h, uint32_t color){
     int x0 = x<0?0:x, y0 = y<0?0:y;
-    int x1 = x+w; if(x1>GFX_W) x1=GFX_W;
-    int y1 = y+h; if(y1>GFX_H) y1=GFX_H;
-    for(int yy=y0; yy<y1; yy++) for(int xx=x0; xx<x1; xx++) FB[yy*GFX_W+xx] = color;
+    int x1 = x+w; if(x1>g_fb_w) x1=g_fb_w;
+    int y1 = y+h; if(y1>g_fb_h) y1=g_fb_h;
+    for(int yy=y0; yy<y1; yy++) for(int xx=x0; xx<x1; xx++) gfx_set_pixel(xx, yy, color);
 }
 
-void gfx_hline(int x, int y, int w, unsigned char color){ gfx_fill_rect(x,y,w,1,color); }
-void gfx_vline(int x, int y, int h, unsigned char color){ gfx_fill_rect(x,y,1,h,color); }
+void gfx_hline(int x, int y, int w, uint32_t color){ gfx_fill_rect(x,y,w,1,color); }
+void gfx_vline(int x, int y, int h, uint32_t color){ gfx_fill_rect(x,y,1,h,color); }
 
 /* ---- 8x8 bitmap font, 5x7 glyphs left-packed into bits 7..3 of each row
  * byte (bits 2..0 stay 0 - natural inter-character spacing). Digits +
@@ -162,7 +165,7 @@ static const unsigned char *font_lookup(char c){
     return 0;                                          /* unsupported char: draw nothing */
 }
 
-static void gfx_draw_char(int x, int y, char c, unsigned char fg, unsigned char bg){
+static void gfx_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg){
     const unsigned char *rows = font_lookup(c);
     for(int ry=0; ry<8; ry++){
         unsigned char bits = rows ? rows[ry] : 0;
@@ -173,7 +176,7 @@ static void gfx_draw_char(int x, int y, char c, unsigned char fg, unsigned char 
     }
 }
 
-void gfx_draw_text(int x, int y, const char *s, unsigned char fg, unsigned char bg){
+void gfx_draw_text(int x, int y, const char *s, uint32_t fg, uint32_t bg){
     int cx = x;
     for(const char *p=s; *p; p++){
         if(*p=='\n'){ cx=x; y+=8; continue; }
@@ -223,14 +226,14 @@ static void draw_label(int idx){
      * "seller $2.000" / "...for $2.00K" - real leftover glyph fragments,
      * not a rendering glitch. Assumes no other widget sits further right
      * on the same row, true for every label this project draws so far. */
-    gfx_fill_rect(w->x, w->y, GFX_W - w->x, 8, GFX_DARK_GRAY);
+    gfx_fill_rect(w->x, w->y, gfx_width() - w->x, 8, GFX_DARK_GRAY);
     gfx_draw_text(w->x, w->y, w->text, GFX_WHITE, GFX_DARK_GRAY);
 }
 static void draw_button(int idx){
     Widget *w=&g_widgets[idx];
     int focused = (idx==g_focus);
-    unsigned char fill = focused ? GFX_ACCENT : GFX_ACCENT_DIM;
-    unsigned char border = focused ? GFX_WHITE : GFX_MID_GRAY;
+    uint32_t fill = focused ? GFX_ACCENT : GFX_ACCENT_DIM;
+    uint32_t border = focused ? GFX_WHITE : GFX_MID_GRAY;
     gfx_fill_rect(w->x, w->y, w->w, w->h, fill);
     gfx_hline(w->x, w->y, w->w, border);
     gfx_hline(w->x, w->y+w->h-1, w->w, border);
