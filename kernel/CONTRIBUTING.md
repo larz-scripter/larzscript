@@ -46,37 +46,23 @@ yourcommand` / `yourcommand some args` (`make EXTRA=-DLARZ_SHELL iso`, then
 
 Runs as its own real task, in its own window, on the windowed desktop
 (`EXTRA=-DLARZ_DESKTOP` - see "A real windowed desktop" in
-[`README.md`](README.md)). Uses the `ui` module (`ui.label`/`ui.button`/
-`ui.on`/`ui.terminal`/`ui.set_text`, documented alongside the primitives
-themselves in [`gfx.h`](gfx.h)) - the identical vocabulary the [browser
-build](../native/WEB.md) uses, just backed by `gfx.c`'s window compositor
-instead of a DOM. `kernel/rootfs/clock.lz` is the minimal worked example (a
-label updated once a second); `kernel/rootfs/larzsh.lz` (running as the
-Terminal window) is the fuller one.
+[`README.md`](README.md)). Uses the `ui` module (`ui.window`/`ui.label`/
+`ui.button`/`ui.on`/`ui.terminal`/`ui.set_text`, documented alongside the
+primitives themselves in [`gfx.h`](gfx.h)) - the identical vocabulary the
+[browser build](../native/WEB.md) uses (minus `ui.window`, which only
+exists here), just backed by `gfx.c`'s window compositor instead of a DOM.
 
-Two pieces, matching the existing `task_terminal`/`task_clock` pattern in
-`kernel.c` exactly:
-
-```c
-/* kernel.c - one small C wrapper: create the window + starting widget(s),
- * positioned inside the window's own client rect, then hand off to your
- * .lz file. This is the one part that isn't yet pure Larzscript - see
- * README.md's "Next" (widgets aren't window-clipped, so today a human
- * picks the coordinates by hand instead of the window system doing it). */
-static void task_yourthing(void){
-    int idx = gfx_window_create("Your Thing", 400, 40, 300, 200);
-    int cx, cy, cw, ch;
-    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);
-    gfx_widget_label("yourthing_status", cx+4, cy+4, "starting...");
-    char *a[] = { "larzscript", "/yourthing.lz", 0 };
-    larz_main(2, a);
-    for(;;) __asm__ volatile("hlt");
-}
-```
+**The primary path: pure Larzscript, no C at all.** `ui.window(title, w, h)`
+creates your app's own window (auto-cascaded position - you don't pick x,y)
+and makes it "current", so every `ui.label`/`ui.button`/`ui.terminal` call
+after that lands inside it automatically, as an offset from its client
+origin, not an absolute screen coordinate:
 
 ```
-# kernel/rootfs/yourthing.lz - touches the widget only by id, via ui.*;
-# never needs to know its own screen coordinates.
+# kernel/rootfs/yourthing.lz - the whole app. No C wrapper, no boot-target
+# wiring, nothing else to write.
+ui.window("Your Thing", 300, 200)
+ui.label("yourthing_status", 4, 4, "starting...")
 let n = 0
 while true {
   n = n + 1
@@ -85,13 +71,49 @@ while true {
 }
 ```
 
-Then add `task_create(task_yourthing);` alongside the existing
-`task_create(task_terminal); task_create(task_clock);` calls in the
-`LARZ_DESKTOP` branch of `kernel_main` (`kernel.c`) - within `NTASK`'s
-budget (`libk.c`; raise it, and its matching `TSTK` RAM-budget math, if
-you're adding enough apps to need more slots). Launching an app **on
-demand** (from the taskbar or the shell, rather than every app being wired
-in at compile time) isn't built yet - see `README.md`'s "Next" section.
+Then add it to the desktop-icon launcher's manifest (`kernel.c`,
+`g_app_manifest_labels`/`g_app_manifest_scripts` next to `about.lz`/
+`clock.lz`/`files.lz`) so it shows up as a clickable icon - `desktop_icon_
+activate()` calls the existing generic `launch_app("/yourthing.lz")`,
+which spawns it as a new task via `task_create(task_generic_app)` within
+`NTASK`'s budget (`libk.c`) the same way every other on-demand app does.
+No boot-target wiring needed at all; `about.lz`/`clock.lz`/`files.lz` are
+all worked examples of this exact pattern, and `apptest.lz` is the minimal
+one. A window's close-X (`gfx_window_close_hit_test`) frees its task slot
+(`task_exit`) automatically the moment the user closes it, so a manifest
+entry doesn't need to worry about NTASK running out - closing one app
+always makes room for launching a different one.
+
+**The fallback path: a bespoke C wrapper**, only worth it for an app that
+needs to create its widgets with specific pre-computed values a plain
+`ui.window()` call can't express (multiple windows from one task, for
+example) - `task_terminal` in `kernel.c` (wrapping `larzsh.lz`) is the one
+remaining example, kept exactly as it was before the generic mechanism
+existed, since it's fine as-is and the two paths are meant to coexist:
+
+```c
+/* kernel.c - create the window + starting widget(s) yourself, then hand
+ * off to your .lz file, which touches them only by id via ui.*. */
+static void task_yourthing(void){
+    int idx = gfx_window_create("Your Thing", 400, 40, 300, 200);
+    int cx, cy, cw, ch;
+    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);
+    gfx_widget_label("yourthing_status", 4, 4, "starting...");   /* window-relative now (stage 1) */
+    char *a[] = { "larzscript", "/yourthing.lz", 0 };
+    larz_main(2, a);
+    for(;;) __asm__ volatile("hlt");
+}
+```
+
+then `task_create(task_yourthing);` in the `LARZ_DESKTOP` branch of
+`kernel_main`, auto-started at boot rather than launched on demand - the
+same tradeoff `task_terminal` makes today.
+
+Windows can be **dragged** by their title bar, **resized** from the
+bottom-right grip, and **closed** via the X in the top-right of the title
+bar - all built-in, nothing an app needs to opt into. Resizing only resizes
+the frame; widgets don't reflow (a resized terminal keeps its original
+wrap width) - see `README.md`'s "Known limitations".
 
 ## Verifying a change actually works
 

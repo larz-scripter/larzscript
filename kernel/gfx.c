@@ -407,6 +407,28 @@ int gfx_desktop_icon_hit_test(int x, int y){
     return i;
 }
 
+/* Stage 7: a subtle vertical gradient instead of plain black - drawn in
+ * GRAD_BAND-tall horizontal strips (gfx_fill_rect is the only fill
+ * primitive that exists; a strip per scanline would be needlessly slow for
+ * something this subtle), each strip's color linearly interpolated between
+ * a slightly-lighter top and the existing GFX_DARK_GRAY at the bottom - a
+ * background that reads as "a desktop", not an empty diagnostic screen,
+ * while staying dark enough that every existing window/text/icon color
+ * still has the same contrast it always had. */
+#define GFX_GRAD_TOP    0x0a0c14
+#define GFX_GRAD_BOTTOM 0x1c2030
+#define GFX_GRAD_BAND   4
+static void draw_desktop_background(void){
+    int h = gfx_height(), w = gfx_width();
+    int tr=(GFX_GRAD_TOP>>16)&0xff, tg=(GFX_GRAD_TOP>>8)&0xff, tb=GFX_GRAD_TOP&0xff;
+    int br=(GFX_GRAD_BOTTOM>>16)&0xff, bg=(GFX_GRAD_BOTTOM>>8)&0xff, bb=GFX_GRAD_BOTTOM&0xff;
+    for(int y=0; y<h; y+=GFX_GRAD_BAND){
+        int r = tr + (br-tr)*y/h, g = tg + (bg-tg)*y/h, b = tb + (bb-tb)*y/h;
+        int bh = GFX_GRAD_BAND; if(y+bh>h) bh = h-y;
+        gfx_fill_rect(0, y, w, bh, ((uint32_t)r<<16)|((uint32_t)g<<8)|(uint32_t)b);
+    }
+}
+
 /* Defined once the widget system exists further down this file - forward
  * declared here so gfx_windows_redraw_all() (which needs to run BEFORE that
  * section, back-to-front by window) can call it. */
@@ -414,7 +436,7 @@ static void redraw_widgets_owned_by(int win_idx);
 static void free_widgets_owned_by(int win_idx);   /* stage 5, defined below - see gfx_window_close() */
 
 void gfx_windows_redraw_all(void){
-    gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_BLACK);   /* desktop background */
+    draw_desktop_background();
     draw_desktop_icons();
     /* Each window's chrome AND its own widgets are drawn together, back-to-
      * front - NOT all chrome first then all widgets after (Stage 4's real,

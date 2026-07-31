@@ -270,8 +270,10 @@ overlap, no dirty-rect/clipping math needed. `gfx_window_create`/
 `gfx_window_focus`/`gfx_window_focus_next` manage z-order and the highlighted
 "focused" title bar.
 
-**Apps as real tasks.** Each running app - the terminal, the clock - is a
-*genuinely separate* Larzscript interpreter instance, spawned with the
+**Apps as real tasks.** Each running app - the always-on Terminal, plus
+whatever else is launched from a desktop icon (Clock/About/Files, or
+anything added to `kernel.c`'s launcher manifest - see `CONTRIBUTING.md`) -
+is a *genuinely separate* Larzscript interpreter instance, spawned with the
 existing `task_create` (`libk.c`'s scheduler, previously only running two toy
 counter tasks) and owning one window. Getting this right needed real,
 empirical work, not just wiring things up: a spawned task's stack **actually
@@ -300,14 +302,16 @@ sequence is *bounded*, so a host with no PS/2 mouse fails open silently
 rather than hanging every other boot target that calls `ints_init()`.
 Keyboard `Tab`/`Enter` still work as a fallback input path.
 
-The `ui` module vocabulary is unchanged from the [browser build](../native/WEB.md)
-(`ui.label`/`ui.button`/`ui.set_text`/`ui.on`/`ui.terminal`) - a different
-backend behind an identical Larzscript-level API, still no pre-existing
-markup to select into the way a real DOM has. `ui.terminal(id,x,y,w,h)`'s
-scrolling log pane still means any script's plain `print()` (this shell,
-`webserver.lz`, anything) shows up live with no GUI-aware code in whatever's
-printing - the one hook in `libk.c`'s `serial_putc()` every std-stream write
-already funnels through.
+The `ui` module vocabulary is the [browser build](../native/WEB.md)'s
+(`ui.label`/`ui.button`/`ui.set_text`/`ui.on`/`ui.terminal`) plus one this
+backend alone has: `ui.window(title, w, h)`, which creates a script's own
+window (auto-cascaded position) and is what turns "add a desktop app" into
+"write a `.lz` file" with zero bespoke C - the primary way to add one now
+(see `CONTRIBUTING.md`). `ui.terminal(id,x,y,w,h)`'s scrolling log pane
+still means any script's plain `print()` (this shell, `webserver.lz`,
+anything) shows up live with no GUI-aware code in whatever's printing - the
+one hook in `libk.c`'s `serial_putc()` every std-stream write already
+funnels through.
 
 ```bash
 make EXTRA=-DLARZ_DESKTOP iso
@@ -319,26 +323,30 @@ Same headless verification discipline as everywhere else in this project -
 connect to the monitor and drive it for real:
 
 ```
-(qemu) screendump frame1.ppm     # Terminal + Clock windows, taskbar along the bottom
+(qemu) screendump frame1.ppm     # Terminal window + a row of desktop icons (Clock/About/Files),
+                                  # taskbar along the bottom
 (qemu) sendkey h
 (qemu) sendkey e
 (qemu) sendkey l
 (qemu) sendkey p
 (qemu) sendkey ret               # types "help" into the focused Terminal window
-(qemu) screendump frame2.ppm     # full shell help output AND the clock ticked forward -
-                                  # both genuinely alive at once, not one app at a time
-(qemu) mouse_move -30 650        # move the cursor over the taskbar's "Terminal" entry
+(qemu) screendump frame2.ppm     # full shell help output
+(qemu) mouse_move 950 125        # move the cursor over the "Clock" desktop icon
 (qemu) mouse_button 1
 (qemu) mouse_button 0
-(qemu) screendump frame3.ppm     # Terminal brought to front by the taskbar click
+(qemu) screendump frame3.ppm     # Clock's own window now open, independently ticking, while
+                                  # the Terminal (still focused a moment ago) keeps running too
 ```
 
-Verified exactly this way: the clock's own window visibly ticks upward on its
-own while, in the *same running boot*, real keyboard input into the terminal
-window produces the full shell output - proof of genuine concurrency, not
-two windows drawn once. A real simulated click on a background, partially-
-covered window in a 3-window test correctly brought it to front; a real
-click on a button widget registered exactly like `Enter` would.
+Verified exactly this way: after launching Clock from its icon, its own window
+visibly ticks upward on its own while, in the *same running boot*, real
+keyboard input into the Terminal window produces the full shell output - proof
+of genuine concurrency, not one app at a time. Dragging a title bar, resizing
+from the bottom-right grip, and closing via the title-bar X were each verified
+the same way - a real simulated click/drag sequence, then a screendump, not an
+assumption. A real simulated click on a background, partially-covered window
+in a 3-window test correctly brought it to front; a real click on a button
+widget registered exactly like `Enter` would.
 
 **A real VirtualBox compatibility bug, found and fixed the hard way.** A user
 hit `error: out of memory` / `error: you need to load the kernel first`
@@ -364,20 +372,30 @@ the heap arena, landing around ~46 MiB - not a provably safe number in
 general, just what got verified working. See the `NTASK`/`TSTK`/
 `HEAP_BYTES` comments in `libk.c` before raising any of them again.
 
-⚠ Widgets aren't window-clipped yet - each app/task owns one window, but the
-widget system underneath (labels/buttons/the terminal pane) still draws in
-absolute screen coordinates rather than being confined to (and scrolling
-with) its owning window; a C-side task wrapper positions each widget inside
-its window's client rect by hand (see `kernel.c`'s `task_terminal`/
-`task_clock`). ⚠ No window dragging, resizing, or closing yet - windows are
-created once at boot and live for the session. ⚠ The taskbar lists windows
-that are already running; it doesn't yet launch a *new* app on demand (that
-still needs a new `task_create` call wired into a boot target, like
-`task_terminal`/`task_clock` - see `CONTRIBUTING.md`). ⚠ Tab only cycles
-focus forward (the existing scancode table has no distinct shift+tab ASCII
-value). ⚠ The embedded 8x8 font covers digits, uppercase A-Z, and the
-punctuation this project's own UI text uses; lowercase folds to its
-uppercase glyph.
+**Desktop v2** closed every gap in the paragraph above: widgets are now
+window-relative and clipped to their owning window's *current* size, not
+drawn in absolute screen coordinates by a hand-positioned C wrapper;
+windows can be **dragged** by their title bar, **resized** from a
+bottom-right grip, and **closed** via a title-bar X (which frees the
+owning task's slot too, so `NTASK`'s tight budget is actually reusable, not
+a one-shot ceiling); a row of **desktop icons** launches real apps *on
+demand* via `ui.window()` - a script creates its own window with zero
+bespoke C wrapper needed (`kernel.c`'s `launch_app`/`task_generic_app`) -
+instead of every app being wired into a boot target at compile time; and
+the desktop background is a real (if subtle) gradient, not plain black.
+See "A real windowed desktop" above and `CONTRIBUTING.md`'s "A desktop
+app" for the current, primary way to add one.
+
+⚠ Still not built: **text-input widgets** (a script can't get typed text
+into a widget the way `larzsh.lz` reads its own stdin inside the Terminal
+window - every other app is display/click-driven only); **reflow on
+resize** (a resized window's widgets don't reflow or resize with it - a
+resized terminal keeps its original wrap width/cols, an intentional "clip
+the frame, not the content" scope, not a bug); **minimize/maximize**; and a
+**shift+tab / reverse-focus** path (the existing scancode table has no
+distinct shift+tab ASCII value). ⚠ The embedded 8x8 font covers digits,
+uppercase A-Z, and the punctuation this project's own UI text uses;
+lowercase folds to its uppercase glyph.
 
 ## How it works
 
@@ -474,8 +492,8 @@ persist` for a two-boot demo (writes a file, reboots, reads it back).
 
 Want to add a `pkg`-installable command or a desktop app? See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) - both are plain Larzscript, no C
-needed beyond the small task-wrapper a desktop app currently needs (see
-"A real windowed desktop" above and "Next" below).
+needed at all (a bespoke C wrapper is a fallback for the rare app that
+needs one, not the normal path - see "A real windowed desktop" above).
 
 ## Next
 
@@ -486,13 +504,17 @@ click-to-interact (see "A real windowed desktop" above). ~~A single fixed-
 layout GUI screen~~ - replaced entirely by a real windowed desktop: multiple
 apps, each a genuinely separate task, in overlapping windows with a taskbar.
 
-Still not yet built: **window dragging/resizing/closing** (windows are
-created once at boot and live for the session); **widgets wired into the
-window system properly** (window-clipped, scrolling with their owning
-window, instead of a C-side task wrapper positioning each one by hand in
-absolute screen coordinates); **launching a new app on demand** from the
-taskbar or the shell (today every desktop app is a `task_create` call wired
-into a boot target at compile time - `task_terminal`/`task_clock` in
-`kernel.c` - not something you can start at runtime the way `pkg install`
-works for shell commands); and a **shift+tab / reverse-focus** path (the
+~~Window dragging/resizing/closing~~ - done: drag by the title bar, resize
+from the bottom-right grip, close via the title-bar X (which frees the
+closed app's task slot for a future launch, not just its window).
+~~Widgets wired into the window system properly~~ - done: window-relative,
+clipped to the owning window's current size, no more hand-picked absolute
+coordinates. ~~Launching a new app on demand~~ - done: desktop icons call
+`ui.window()`-based scripts via `launch_app()`, no boot-target wiring
+needed (see `CONTRIBUTING.md`).
+
+Still not yet built: **text-input widgets** (an app can only display and
+react to clicks, not accept typed text the way the Terminal's own shell
+does); **reflow on resize** (see "Known limitations" above);
+**minimize/maximize**; and a **shift+tab / reverse-focus** path (the
 existing scancode table has no distinct shift+tab ASCII value).
