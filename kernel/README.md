@@ -247,6 +247,51 @@ handing the response to Larzscript, so a client can only branch on **body
 text**, not a numeric status code - `demo_client.lz` checks for the string
 "payment required", not "402".
 
+### A GUI on bare metal
+
+The same `ui` module vocabulary the [browser build](../native/WEB.md) uses
+(`ui.set_text`, `ui.on`) - a different backend behind an identical
+Larzscript-level API. [`gfx.c`](gfx.c) switches the VGA card into linear
+320x200x256 graphics (Mode 13h - a pure runtime register sequence, no
+boot-time/Multiboot changes) and implements a small retained widget model:
+`ui.label`/`ui.button` create widgets (there's no pre-existing markup to
+select into, unlike a real DOM), `Tab` cycles keyboard focus, `Enter` fires
+the focused widget's click handler. [`rootfs/gui.lz`](rootfs/gui.lz) is the
+money-native demo: a wallet balance, a `pay`-driven buy button, and a
+`capability`-gated action (`pay ... requires NAME` + `try`/`catch`) - the
+bare-metal mirror of [larzos.com/larzscript/gui/](https://larzos.com/larzscript/gui/).
+
+```bash
+make EXTRA=-DLARZ_GUI iso
+qemu-system-x86_64 -m 128 -cdrom larzos.iso -display none -serial null \
+  -monitor tcp:127.0.0.1:4444,server,nowait -no-reboot
+```
+
+No real display needed to verify it - same headless discipline as the
+two-machine demo above. Connect to the monitor (e.g. `exec 3<>/dev/tcp/127.0.0.1/4444`
+from bash) and drive it for real:
+
+```
+(qemu) screendump frame1.ppm     # initial state: "buy" focused
+(qemu) sendkey ret               # click buy - pays $2, updates the balance label
+(qemu) screendump frame2.ppm
+(qemu) sendkey tab
+(qemu) sendkey tab
+(qemu) sendkey ret               # click "use premium" BEFORE unlocking - blocked
+(qemu) screendump frame3.ppm     # "blocked: CapabilityError"
+```
+
+Verified this way through a full sequence: initial render, a successful
+purchase, an attempt correctly blocked by the ungranted capability, granting
+it, then a successful capability-gated purchase - five captured frames, real
+wallet arithmetic changing on screen each time, not just a static render.
+
+⚠ Keyboard-only in this first pass - no mouse/PS-2-IRQ12 work yet, and Tab
+only cycles forward (the existing scancode table has no distinct shift+tab
+ASCII value). ⚠ The embedded 8x8 font covers digits, uppercase A-Z, and the
+punctuation this project's own UI text uses; lowercase folds to its
+uppercase glyph.
+
 ## How it works
 
 - **Multiboot1 ELF64**, loaded by GRUB at 1 MiB.
@@ -334,6 +379,8 @@ persist` for a two-boot demo (writes a file, reboots, reads it back).
 
 ## Next
 
-A PS/2 keyboard + framebuffer driver (local, non-serial use), then a real
-storage/filesystem layer so `import` and files work — at which point `init.lz`
-and `larzsh.lz` from [`../os/`](../os/) run directly on this kernel.
+~~A PS/2 keyboard + framebuffer driver (local, non-serial use)~~ - done (see
+"A GUI on bare metal" above): VGA Mode 13h graphics + a keyboard-driven
+widget model, with the same `ui.*` vocabulary the browser build uses.
+Mouse/PS-2-IRQ12 support and a shift+tab / reverse-focus path are the
+natural next steps there, not yet built.

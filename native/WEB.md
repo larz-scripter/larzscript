@@ -7,19 +7,26 @@ the LarzOS kernel, not a separate JavaScript port. Live example:
 
 ## Why
 
-Every other Larzscript target is server/systems-side: the native interpreter,
-the `larzc` compiler, the LarzOS kernel. All of them can move money, but none
-of them can draw a button. The browser build is the UI layer for the same
-language - `wallet`/`pay`/`capability` keep working exactly as they do
-natively (pure in-memory value operations, no OS dependency), and a small `ui`
-module adds the one thing a browser needs that a terminal doesn't: a way to
-read and write a page.
+Every other Larzscript target started server/systems-side: the native
+interpreter, the `larzc` compiler, the LarzOS kernel - none of them could
+draw a button. The browser build is the UI layer for the same language -
+`wallet`/`pay`/`capability` keep working exactly as they do natively (pure
+in-memory value operations, no OS dependency), and a small `ui` module adds
+the one thing a browser needs that a terminal doesn't: a way to read and
+write a page.
 
 `ui.*` is deliberately small and money-native-flavored, not a DOM clone. A
 "pay button" or a live wallet-balance badge isn't a built-in widget - it's
 ordinary Larzscript composing `ui.set_text`/`ui.on` with `wallet`/`pay`/
 `require`, the same way any other Larzscript program is composed. See the
 [live demo's source](https://larzos.com/larzscript/gui/) for a real one.
+
+The design paid off sooner than expected: the LarzOS kernel now has a real
+GUI too (VGA Mode 13h graphics + a keyboard-driven widget model), using the
+**same `ui.set_text`/`ui.on` vocabulary** documented here, just backed by a
+framebuffer instead of a DOM - see
+[`kernel/README.md`'s "A GUI on bare metal"](../kernel/README.md#a-gui-on-bare-metal).
+Same Larzscript-level API, a different renderer selected by build target.
 
 ## Build
 
