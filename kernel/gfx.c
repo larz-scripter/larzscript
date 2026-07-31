@@ -385,6 +385,8 @@ void gfx_window_rect(int idx, int *x, int *y, int *w, int *h){
     *x = win->x; *y = win->y; *w = win->w; *h = win->h;
 }
 
+int gfx_window_count(void){ return g_nwindows; }
+
 /* window index whose TITLE BAR SPECIFICALLY (not just its window rect)
  * contains (x,y), or -1 - front-to-back like gfx_window_hit_test, but
  * restricted to the GFX_TITLEBAR_H strip at the top. Distinct from the

@@ -6,6 +6,7 @@ void ints_init(void);            /* IDT + PIC + timer/keyboard IRQs */
 void sched_init(void);           /* preemptive scheduler + demo background tasks */
 void task_create(void (*fn)(void));   /* spawn fn as a new preemptively-scheduled task */
 int  current_task_id(void);           /* which task is running right now (schedule()'s g_cur) */
+int  next_task_slot(void);            /* index task_create() will assign next, or -1 if full */
 void vfs_init(void);             /* build the writable filesystem from the initramfs */
 void serial_putc(char c);
 char serial_getc(void);

@@ -29,7 +29,7 @@ static void task_stress(void){
     for(;;) __asm__ volatile("hlt");
 }
 #endif
-#ifdef LARZ_DESKTOP
+#if defined(LARZ_DESKTOP) || defined(LARZ_APPDIAG)
 /* The interactive terminal as a real task (task 1), owning its own window -
  * the first genuine "app" in the windowed-desktop model, not the whole
  * screen implicitly being one app the way LARZ_GUI's /gui.lz still is. */
@@ -55,6 +55,39 @@ static void task_clock(void){
     char *a[] = { "larzscript", "/clock.lz", 0 };
     larz_main(2, a);
     for(;;) __asm__ volatile("hlt");
+}
+
+/* A GENERIC app-launch mechanism: turns "add a desktop app" into "write a
+ * .lz script that calls ui.window(...)" (native/larzscript.c) - no bespoke
+ * C wrapper needed per app, unlike task_terminal/task_clock above (which
+ * stay exactly as they are; this is additive). launch_app() stashes which
+ * script to run in a per-SLOT array, indexed by the EXACT slot
+ * next_task_slot() (kernel/libk.c) says task_create() is about to assign -
+ * safe regardless of what else is running, unlike a single shared "pending
+ * launch" variable a second launch could overwrite before the first new
+ * task ever reads it (task_create() assigns slots synchronously and in
+ * order, so populating the same index right before calling it is race-free). */
+#define APP_MAX_SLOTS 8
+static char g_app_script[APP_MAX_SLOTS][64];
+
+static void task_generic_app(void){
+    int tid = current_task_id();
+    char *a[] = { "larzscript", g_app_script[tid], 0 };
+    larz_main(2, a);
+    for(;;) __asm__ volatile("hlt");
+}
+
+/* Launches `script` as a new app task - the script itself creates its own
+ * window via ui.window(title,w,h). Silently does nothing if every task
+ * slot is already taken (no free app slot to launch into) - matches a real
+ * desktop just not opening a new window rather than crashing when you're
+ * out of room. */
+void launch_app(const char *script){
+    int slot = next_task_slot();
+    if(slot < 0 || slot >= APP_MAX_SLOTS) return;
+    int i=0; for(; script[i] && i<63; i++) g_app_script[slot][i]=script[i];
+    g_app_script[slot][i]=0;
+    task_create(task_generic_app);
 }
 #endif
 
@@ -142,6 +175,22 @@ void kernel_main(uint64_t mb_info){
     sched_init();
     vfs_init();                    /* task_stress opens /stress.lz - needs the writable FS mounted first */
     task_create(task_stress);
+    for(;;) __asm__ volatile("hlt");
+#endif
+#ifdef LARZ_APPDIAG
+    /* generic app-launch diagnostic (never returns) - proves task #37's
+     * mechanism for real: the Terminal (task_terminal, the existing bespoke
+     * C wrapper, kept running for a real interactive comparison point) plus
+     * a SECOND app launched purely via launch_app("/apptest.lz") - a script
+     * that creates its OWN window with ui.window() and never touches any
+     * C wrapper written specifically for it. See kernel/README.md. */
+    ints_init();
+    gfx_init();
+    sched_init();
+    vfs_init();
+    gfx_windows_redraw_all();
+    task_create(task_terminal);
+    launch_app("/apptest.lz");
     for(;;) __asm__ volatile("hlt");
 #endif
 #ifdef LARZ_DESKTOP

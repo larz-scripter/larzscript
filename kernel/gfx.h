@@ -92,6 +92,12 @@ void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h);
  * the window currently is before applying subsequent mouse deltas. */
 void gfx_window_rect(int idx, int *x, int *y, int *w, int *h);
 
+/* how many windows exist right now - used by ui.window() (native/
+ * larzscript.c) to pick a simple cascading default position for a newly
+ * launched app's window, so several launched-on-demand apps don't all
+ * land in an identical spot. */
+int gfx_window_count(void);
+
 /* index of the topmost (frontmost) window whose rect contains (x,y), or -1 -
  * searches z-order back-to-front, i.e. checks the FRONT window first, since
  * that's what a real click would actually hit if windows overlap there. */

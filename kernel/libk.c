@@ -234,6 +234,15 @@ static uint64_t schedule(uint64_t rsp){
  * Clock task's own gfx_window_create() ran in between, overwriting a
  * single shared variable. Keying by task avoids that entirely. */
 int current_task_id(void){ return g_cur; }
+/* The index task_create() will assign to the NEXT task it spawns, or -1 if
+ * every slot is taken. Lets a caller (kernel.c's app launcher) stash a
+ * per-slot "what to run" spec at that exact index BEFORE calling
+ * task_create(), so the new task can find its own spec deterministically
+ * once scheduled - safe because task_create() assigns slots synchronously
+ * and in order (this is the same index it's about to hand out), unlike a
+ * single shared "pending launch" variable, which a second launch landing
+ * before the first new task ever runs could silently overwrite. */
+int next_task_slot(void){ return g_ntask<NTASK ? g_ntask : -1; }
 void task_create(void (*fn)(void)){
     if(g_ntask>=NTASK) return;
     int i=g_ntask++;

@@ -2042,10 +2042,34 @@ static Value bi_ui_run(Interp *ip, Value *a, int n){
   return V_nil();
 }
 
+/* ui.window(title, w, h) - a script creates its OWN window and becomes its
+ * "current" window (see gfx.c's per-task g_current_window[]) - every
+ * ui.label/ui.button/ui.terminal call the script makes after this lands
+ * inside it automatically, with (x,y) as offsets from the window's client
+ * origin, not absolute screen coordinates. This is what turns "add a
+ * desktop app" into "write a .lz script that calls ui.window()" with no
+ * bespoke C wrapper needed at all (kernel.c's task_generic_app just runs
+ * whatever script it's told to, uninvolved in the window's title/size).
+ * Position is NOT a parameter - the kernel picks a simple cascading
+ * default (like a real desktop auto-placing new windows) so several
+ * launched-on-demand apps don't all land in an identical spot. */
+static Value bi_ui_window(Interp *ip, Value *a, int n){
+  if(n!=3 || a[0].t!=V_STR || !is_num(a[1]) || !is_num(a[2]))
+    runtime_error(ip,"LarzTypeError","ui.window() expects (title, w, h)");
+  ensure_kernel_gfx();
+  int w=(int)a[1].num, h=(int)a[2].num;
+  int existing = gfx_window_count();
+  int x = 120 + (existing % 5) * 30;
+  int y = 90  + (existing % 5) * 30;
+  if(gfx_window_create(a[0].str, x, y, w, h) < 0)
+    runtime_error(ip,"LarzRuntimeError","ui.window(): too many windows open (max %d)", GFX_MAX_WINDOWS);
+  return V_nil();
+}
+
 static Builtin KB_label={"label",bi_ui_label}, KB_button={"button",bi_ui_button},
   KB_set_text={"set_text",bi_ui_set_text}, KB_on={"on",bi_ui_on},
   KB_run={"run",bi_ui_run}, KB_quit={"quit",bi_ui_quit},
-  KB_terminal={"terminal",bi_ui_terminal};
+  KB_terminal={"terminal",bi_ui_terminal}, KB_window={"window",bi_ui_window};
 
 static void register_ui_module(Env *g){
   Env *e = env_new(NULL);
@@ -2056,6 +2080,7 @@ static void register_ui_module(Env *g){
   env_define(e, "run", V_builtin(&KB_run));
   env_define(e, "quit", V_builtin(&KB_quit));
   env_define(e, "terminal", V_builtin(&KB_terminal));
+  env_define(e, "window", V_builtin(&KB_window));
   env_define(g, "ui", V_module(e, xstrdup("ui")));
 }
 #endif /* kernel-native ui module */

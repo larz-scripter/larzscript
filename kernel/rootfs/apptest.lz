@@ -1,0 +1,13 @@
+# apptest.lz - task #37's proof: a desktop app that is PURE Larzscript, no
+# bespoke C wrapper at all (unlike task_terminal/task_clock in kernel.c).
+# Launched via kernel.c's generic launch_app("/apptest.lz") - the C side
+# only knows "run this script as a new task", nothing about its title,
+# size, or what it draws. This script creates its own window and never
+# needs to know its own screen coordinates - ui.label()'s (x,y) are offsets
+# from ui.window()'s client area, resolved by gfx.c.
+ui.window("App Test", 260, 120)
+ui.label("apptest_msg", 4, 4, "hello from a pure-Larzscript app")
+ui.label("apptest_msg2", 4, 20, "no C wrapper was written for me")
+while true {
+  sleep(1)
+}
