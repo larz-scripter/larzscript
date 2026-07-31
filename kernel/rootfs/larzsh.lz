@@ -98,6 +98,7 @@ fn cmd_help() {
   print("  windows         list open desktop windows")
   print("  launch NAME     open an app (terminal|clock|about|files)")
   print("  close N|NAME    close a window by index or title")
+  print("  script FILE     run a sequence of shell commands from a file")
   print("  calc OP N [N2]  sqrt|pow|gcd|factorial|hex|bin|abs")
   print("  pkg ...         package manager: pkg list / install / remove")
   print("  history         show command history")
@@ -192,6 +193,27 @@ fn cmd_close(rest) {
   return 1
 }
 
+# `script FILE` - runs a sequence of shell commands from a file, echoing
+# each one before running it (like a real shell's `-x` trace), reusing
+# run_command()/tokenize() exactly as-is - a "script" here is a flat list
+# of commands, not a control-flow language: no if/while/variables inside
+# the file itself. Real control-flow already exists with zero new code via
+# the pkg-fallback below (any .lz file defining fn run(args) gets full
+# Larzscript - loops, conditionals, all of it - the moment its name is
+# typed); this is deliberately not a second, heavier eval mechanism.
+fn cmd_script(rest) {
+  if len(rest) == 0 { print("usage: script FILE"); return 1 }
+  if not file_exists(rest[0]) { print("script: no such file: " + rest[0]); return 1 }
+  let state = {}
+  for line in read_file(rest[0]).split("\n") {
+    let trimmed = line.strip()
+    if trimmed == "" or trimmed.starts_with("#") { continue }
+    print("+ " + trimmed)
+    state = run_command(tokenize(trimmed), state)
+  }
+  return 0
+}
+
 # ---- the dispatcher ----
 
 fn run_command(argv, state) {
@@ -244,6 +266,7 @@ fn run_command(argv, state) {
   if cmd == "windows" { cmd_windows(); return state }
   if cmd == "launch" { cmd_launch(rest); return state }
   if cmd == "close" { cmd_close(rest); return state }
+  if cmd == "script" { cmd_script(rest); return state }
   # Any other word is a command: a Larzscript package (built in, or installed via
   # `pkg`) that defines `fn run(args)`, imported and executed in-process. Metered
   # - each run costs 1 cent of compute and fails closed (the money-native OS).
