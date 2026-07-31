@@ -2061,15 +2061,34 @@ static Value bi_ui_window(Interp *ip, Value *a, int n){
   int existing = gfx_window_count();
   int x = 120 + (existing % 5) * 30;
   int y = 90  + (existing % 5) * 30;
-  if(gfx_window_create(a[0].str, x, y, w, h) < 0)
+  int idx = gfx_window_create(a[0].str, x, y, w, h);
+  if(idx < 0)
     runtime_error(ip,"LarzRuntimeError","ui.window(): too many windows open (max %d)", GFX_MAX_WINDOWS);
-  return V_nil();
+  return V_number(idx);
+}
+
+/* ui.window_size() - the CURRENT window's client area [w, h], the same
+ * numbers kernel.c's old bespoke task_terminal() wrapper used to compute by
+ * hand via gfx_window_client_rect() - lets a script size a full-bleed
+ * widget (e.g. a terminal pane) inside its own window without needing its
+ * own index or any C wrapper written for it. */
+static Value bi_ui_window_size(Interp *ip, Value *a, int n){
+  if(n!=0) runtime_error(ip,"LarzTypeError","ui.window_size() expects no arguments");
+  ensure_kernel_gfx();
+  int cx,cy,cw,ch;
+  gfx_window_client_rect(gfx_current_window(), &cx,&cy,&cw,&ch);
+  List *r=list_new(); int tr=ip->ntemp; gc_temp_push(ip,V_list(r));
+  list_push(r, V_number(cw));
+  list_push(r, V_number(ch));
+  gc_temp_pop(ip,tr);
+  return V_list(r);
 }
 
 static Builtin KB_label={"label",bi_ui_label}, KB_button={"button",bi_ui_button},
   KB_set_text={"set_text",bi_ui_set_text}, KB_on={"on",bi_ui_on},
   KB_run={"run",bi_ui_run}, KB_quit={"quit",bi_ui_quit},
-  KB_terminal={"terminal",bi_ui_terminal}, KB_window={"window",bi_ui_window};
+  KB_terminal={"terminal",bi_ui_terminal}, KB_window={"window",bi_ui_window},
+  KB_window_size={"window_size",bi_ui_window_size};
 
 static void register_ui_module(Env *g){
   Env *e = env_new(NULL);
@@ -2081,6 +2100,7 @@ static void register_ui_module(Env *g){
   env_define(e, "quit", V_builtin(&KB_quit));
   env_define(e, "terminal", V_builtin(&KB_terminal));
   env_define(e, "window", V_builtin(&KB_window));
+  env_define(e, "window_size", V_builtin(&KB_window_size));
   env_define(g, "ui", V_module(e, xstrdup("ui")));
 }
 #endif /* kernel-native ui module */

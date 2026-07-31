@@ -129,6 +129,11 @@ void gfx_window_rect(int idx, int *x, int *y, int *w, int *h);
  * land in an identical spot. */
 int gfx_window_count(void);
 
+/* Which window this task's most recent ui.window() call made current, or -1
+ * if this task hasn't created one. Needed by ui.window_size() so a script
+ * can size a widget to fill its OWN window without knowing its index. */
+int gfx_current_window(void);
+
 /* index of the topmost (frontmost) window whose rect contains (x,y), or -1 -
  * searches z-order back-to-front, i.e. checks the FRONT window first, since
  * that's what a real click would actually hit if windows overlap there. */

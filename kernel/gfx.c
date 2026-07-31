@@ -575,6 +575,15 @@ void gfx_window_rect(int idx, int *x, int *y, int *w, int *h){
 
 int gfx_window_count(void){ return g_nwindows; }
 
+/* Which window this task's most recent ui.window() call made current, or -1
+ * - a public getter over the g_current_window[] table above, needed by
+ * ui.window_size() (native/larzscript.c) so a script can size a full-bleed
+ * widget inside its OWN window without knowing its index. */
+int gfx_current_window(void){
+    int tid = current_task_id();
+    return (tid>=0 && tid<GFX_MAX_TASKS) ? g_current_window[tid] : -1;
+}
+
 /* window index whose TITLE BAR SPECIFICALLY (not just its window rect)
  * contains (x,y), or -1 - front-to-back like gfx_window_hit_test, but
  * restricted to the GFX_TITLEBAR_H strip at the top. Distinct from the
