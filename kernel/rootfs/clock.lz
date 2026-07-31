@@ -1,0 +1,14 @@
+# clock.lz - the second real app (task #33): its own window, its own task
+# (kernel.c's task_clock), running concurrently with the terminal (task #31)
+# to prove genuine multitasking - not just two windows drawn once, but two
+# independently updating at the same time. task_clock() (kernel.c) already
+# created the "clock_time" label widget, positioned inside its window,
+# before starting this script - same split as task_terminal/larzsh.lz: this
+# file only touches the widget by id via the kernel-native `ui` module's
+# ui.set_text(), it never needs to know screen coordinates itself.
+let n = 0
+while true {
+  n = n + 1
+  ui.set_text("clock_time", "uptime: " + str(n) + "s")
+  sleep(1)
+}

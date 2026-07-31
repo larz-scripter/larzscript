@@ -42,6 +42,21 @@ static void task_terminal(void){
     larz_main(2, a);
     for(;;) __asm__ volatile("hlt");
 }
+
+/* The second real app (task #33) - a live, independently-updating window
+ * running concurrently alongside the terminal, the actual "looks like
+ * Windows" proof: more than one app genuinely active at once, not a single-
+ * app-at-a-time switcher. Positioned clear of the terminal window and the
+ * taskbar strip along the bottom (gfx.c's draw_taskbar()). */
+static void task_clock(void){
+    int idx = gfx_window_create("Clock", 720, 40, 260, 140);
+    int cx, cy, cw, ch;
+    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);
+    gfx_widget_label("clock_time", cx+4, cy+4, "uptime: 0s");
+    char *a[] = { "larzscript", "/clock.lz", 0 };
+    larz_main(2, a);
+    for(;;) __asm__ volatile("hlt");
+}
 #endif
 
 void kernel_main(uint64_t mb_info){
@@ -131,16 +146,18 @@ void kernel_main(uint64_t mb_info){
     for(;;) __asm__ volatile("hlt");
 #endif
 #ifdef LARZ_DESKTOP
-    /* the real windowed desktop, v1: the terminal (task 1) is the first and
-     * so-far-only app, running in its own window. task 0 becomes idle here -
-     * later stages (taskbar + a 2nd app, task #33) give task 0 real desktop-
-     * level work (redraw-on-demand is already event-driven, not polled). */
+    /* the real windowed desktop: two independently-running real apps (the
+     * terminal + the clock, each its own task/window) plus a taskbar to
+     * switch between them - the actual "looks like Windows" proof, genuine
+     * concurrent multitasking rather than one app at a time. task 0 stays
+     * idle (redraw-on-demand is already event-driven, not polled). */
     ints_init();
     gfx_init();
     sched_init();
-    vfs_init();                    /* task_terminal opens /larzsh.lz - needs the writable FS mounted first */
+    vfs_init();                    /* task_terminal/task_clock open .lz files - FS must be mounted first */
     gfx_windows_redraw_all();
     task_create(task_terminal);
+    task_create(task_clock);
     for(;;) __asm__ volatile("hlt");
 #endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */

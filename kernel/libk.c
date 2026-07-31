@@ -175,20 +175,24 @@ static void idt_set(int n, void *h){
     g_idt[n].mid=(a>>16)&0xFFFF; g_idt[n].hi=(a>>32)&0xFFFFFFFF; g_idt[n].zero=0;
 }
 /* ---- preemptive scheduler: round-robin tasks switched on the timer tick ---- */
-#define NTASK 4
-/* 16 MiB. A spawned task running this interpreter genuinely overflowed the
- * original 64 KiB (a real #GP fault, not a guess) - and empirically, this
- * interpreter's own native C recursion is expensive per Larzscript call
- * level (eval()/call_value() nest several C stack frames per level, each
- * with sizeable locals): binary-searching the real failure point found it
- * between depth 1000 (fine, even at just 8 MiB) and depth 1500 (still
- * faults at 8 MiB) - i.e. even the *main* kernel stack's own 8 MiB size
- * turned out not to be the right number to copy here, contrary to the
- * original assumption; ~6-7 KiB/level, not a few hundred bytes. 16 MiB
- * clears depth 3000 with margin (see kernel/README.md for the before/after
- * numbers). NTASK*TSTK (64 MiB) + the 8 MiB main stack is still a fraction
- * of the 128 MiB QEMU is given. */
-#define TSTK  (16*1024*1024)
+/* 5 slots: task 0 (main/idle), the two toy demo counters (task_a/task_b,
+ * kept for /proc/tasks + the top/ps commands), and 2 real app tasks -
+ * enough for the terminal (task #31) plus one more real app (task #33),
+ * proving genuine concurrent multitasking, not just one app at a time. */
+#define NTASK 5
+/* 10 MiB. A spawned task running this interpreter genuinely overflowed the
+ * original 64 KiB (a real #GP fault, not a guess), and simply copying the
+ * main kernel stack's own 8 MiB wasn't enough either - empirically, this
+ * interpreter's native C recursion costs ~50 KiB of stack per nested
+ * Larzscript call (exec()'s switch alone reserves several KB for its
+ * biggest case), not the low hundreds of bytes a naive estimate suggests.
+ * The real fix was a recursion-depth guard in the interpreter itself
+ * (MAX_CALL_DEPTH=150, native/larzscript.c) rather than an ever-bigger
+ * TSTK - 150 levels tops out at ~7.5 MiB, so 10 MiB gives real margin
+ * without the 16 MiB this needed before that guard existed (freed-up
+ * headroom is exactly what makes a 5th task slot affordable within the
+ * 128 MiB QEMU is given - see kernel/README.md for the measurements). */
+#define TSTK  (10*1024*1024)
 struct task { uint64_t rsp; int used; };
 static struct task g_tasks[NTASK];
 static int g_ntask=0, g_cur=0;
@@ -242,9 +246,13 @@ static void mouse_byte(unsigned char b){
     int left = st & 0x01;
     if(left && !g_mouse_left_prev){               /* press edge, not held-down repeat */
         int cx=gfx_cursor_x(), cy=gfx_cursor_y();
-        int hitw = gfx_window_hit_test(cx, cy);
-        if(hitw>=0) gfx_window_focus(hitw);
-        if(gfx_widget_click(cx, cy)) kbring_push('\n');   /* same path a real Enter takes - see gfx.h */
+        int tbw = gfx_taskbar_hit_test(cx, cy);   /* the taskbar strip is more specific - check first */
+        if(tbw>=0){ gfx_window_focus(tbw); }
+        else {
+            int hitw = gfx_window_hit_test(cx, cy);
+            if(hitw>=0) gfx_window_focus(hitw);
+            if(gfx_widget_click(cx, cy)) kbring_push('\n');   /* same path a real Enter takes - see gfx.h */
+        }
     }
     g_mouse_left_prev = left;
 }

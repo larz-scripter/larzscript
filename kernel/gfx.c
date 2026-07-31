@@ -246,9 +246,46 @@ static void draw_cursor(void){
     }
 }
 
+/* ---- taskbar: a strip along the bottom listing every open window, click
+ * to focus - the launcher half of "taskbar/launcher": apps are launched by
+ * task_create() at boot (kernel/kernel.c's task_terminal/task_clock), and
+ * the taskbar is how you get back to one that's now buried behind others,
+ * the same job a real OS taskbar does. Entries are laid out left-to-right
+ * in the SAME order every redraw (g_window_order at draw time, not window
+ * creation order) only for simplicity - fine for the handful of windows
+ * this desktop supports (GFX_MAX_WINDOWS). */
+#define TASKBAR_H 28
+#define TASKBAR_ENTRY_W 140
+static void draw_taskbar(void){
+    int y = gfx_height() - TASKBAR_H;
+    gfx_fill_rect(0, y, gfx_width(), TASKBAR_H, GFX_MID_GRAY);
+    gfx_hline(0, y, gfx_width(), GFX_BLACK);
+    for(int i=0; i<g_nwindows; i++){
+        int idx = g_window_order[i];
+        int ex = i*TASKBAR_ENTRY_W;
+        int focused = (idx == g_focused_window);
+        gfx_fill_rect(ex, y+2, TASKBAR_ENTRY_W-4, TASKBAR_H-4, focused?GFX_ACCENT:GFX_DARK_GRAY);
+        gfx_draw_text(ex+6, y+(TASKBAR_H-8)/2, g_windows[idx].title, GFX_WHITE, focused?GFX_ACCENT:GFX_DARK_GRAY);
+    }
+}
+
+/* window index whose taskbar entry contains (x,y), or -1. Checked BEFORE
+ * gfx_window_hit_test() by the mouse driver (kernel/libk.c) - the taskbar
+ * strip sits below every window's rect (windows never extend into it), so
+ * there's no ambiguity about which one to check first, but the taskbar is
+ * the more specific target when it's what was actually clicked. */
+int gfx_taskbar_hit_test(int x, int y){
+    int ytop = gfx_height() - TASKBAR_H;
+    if(y < ytop) return -1;
+    int i = x / TASKBAR_ENTRY_W;
+    if(i < 0 || i >= g_nwindows) return -1;
+    return g_window_order[i];
+}
+
 void gfx_windows_redraw_all(void){
     gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_BLACK);   /* desktop background */
     for(int i=0; i<g_nwindows; i++) draw_window_chrome(g_window_order[i]);
+    draw_taskbar();
     draw_cursor();
 }
 

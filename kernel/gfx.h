@@ -91,6 +91,12 @@ void gfx_window_client_rect(int idx, int *x, int *y, int *w, int *h);
  * that's what a real click would actually hit if windows overlap there. */
 int gfx_window_hit_test(int x, int y);
 
+/* window index whose taskbar entry contains (x,y), or -1 if (x,y) isn't
+ * over the taskbar strip at all (see gfx.c's draw_taskbar()) - checked
+ * before gfx_window_hit_test() by the mouse driver (kernel/libk.c), since
+ * the taskbar is the more specific target when it's what was clicked. */
+int gfx_taskbar_hit_test(int x, int y);
+
 /* ---- mouse: a cursor sprite drawn on top of everything, moved by the PS/2
  * mouse driver (kernel/libk.c, IRQ12). Position is authoritative here (not
  * in libk.c) because moving the cursor means repainting - the same
