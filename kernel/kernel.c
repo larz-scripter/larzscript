@@ -36,8 +36,9 @@ static void task_stress(void){
 static void task_terminal(void){
     int idx = gfx_window_create("Terminal", 40, 40, 640, 420);
     int cx, cy, cw, ch;
-    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);
-    gfx_widget_terminal("term1", cx, cy, cw, ch);
+    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);   /* only cw/ch (size) needed now - widgets
+                                                         * are window-relative, see gfx.c */
+    gfx_widget_terminal("term1", 0, 0, cw, ch);
     char *a[] = { "larzscript", "/larzsh.lz", 0 };
     larz_main(2, a);
     for(;;) __asm__ volatile("hlt");
@@ -49,10 +50,8 @@ static void task_terminal(void){
  * app-at-a-time switcher. Positioned clear of the terminal window and the
  * taskbar strip along the bottom (gfx.c's draw_taskbar()). */
 static void task_clock(void){
-    int idx = gfx_window_create("Clock", 720, 40, 260, 140);
-    int cx, cy, cw, ch;
-    gfx_window_client_rect(idx, &cx, &cy, &cw, &ch);
-    gfx_widget_label("clock_time", cx+4, cy+4, "uptime: 0s");
+    gfx_window_create("Clock", 720, 40, 260, 140);
+    gfx_widget_label("clock_time", 4, 4, "uptime: 0s");   /* window-relative offset, see gfx.c */
     char *a[] = { "larzscript", "/clock.lz", 0 };
     larz_main(2, a);
     for(;;) __asm__ volatile("hlt");

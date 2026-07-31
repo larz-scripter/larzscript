@@ -224,6 +224,16 @@ static uint64_t schedule(uint64_t rsp){
     do { g_cur=(g_cur+1)%g_ntask; } while(!g_tasks[g_cur].used);
     return g_tasks[g_cur].rsp;
 }
+/* Which task is CURRENTLY running - gfx.c needs this to key a per-task
+ * "which window do my widgets belong to" table. A single shared global for
+ * that (the first draft) is unsafe: this scheduler is genuinely preemptive,
+ * so two app tasks each calling gfx_window_create() then creating a widget
+ * right after can interleave arbitrarily - confirmed by a real screendump
+ * where the Terminal task's widget ended up owned by the Clock task's
+ * window because the timer tick landed between the two calls and the
+ * Clock task's own gfx_window_create() ran in between, overwriting a
+ * single shared variable. Keying by task avoids that entirely. */
+int current_task_id(void){ return g_cur; }
 void task_create(void (*fn)(void)){
     if(g_ntask>=NTASK) return;
     int i=g_ntask++;
