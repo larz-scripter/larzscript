@@ -8,6 +8,7 @@
 #include "libc/stdio.h"
 #include "console.h"
 #include "net.h"
+#include "gfx.h"
 
 /* the interpreter's main(), renamed via -Dmain=larz_main at compile time */
 int larz_main(int argc, char **argv);
@@ -16,6 +17,20 @@ void kernel_main(void){
     console_init();
 #ifdef LARZ_KBDDIAG
     kbd_diag();                    /* raw keyboard diagnostic (never returns) */
+#endif
+#ifdef LARZ_GFXDIAG
+    /* raw graphics diagnostic (never returns) - draws a test pattern for
+     * `screendump` verification, independent of the Larzscript ui module
+     * built on top of this later. See kernel/README.md. */
+    gfx_init();
+    gfx_fill_rect(0, 0, GFX_W, GFX_H, GFX_DARK_GRAY);
+    gfx_fill_rect(10, 10, 80, 40, GFX_ACCENT);
+    gfx_fill_rect(10, 60, 80, 40, GFX_RED);
+    gfx_hline(10, 110, 280, GFX_WHITE);
+    gfx_vline(10, 110, 60, GFX_WHITE);
+    gfx_draw_text(10, 130, "LARZOS GUI TEST 0123", GFX_WHITE, GFX_DARK_GRAY);
+    gfx_draw_text(10, 145, "$1.00 (buy) - a.b.c?", GFX_ACCENT, GFX_DARK_GRAY);
+    for(;;) __asm__ volatile("hlt");
 #endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */
     sched_init();                  /* preemptive scheduler + background tasks */

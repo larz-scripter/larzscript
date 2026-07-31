@@ -23,7 +23,7 @@ AFLAGS := -m64 -ffreestanding -fno-pie
 LDFLAGS := -m elf_x86_64 -T linker.ld -nostdlib -no-pie -z max-page-size=0x1000
 
 KERNEL := larzkernel.elf
-OBJS   := boot.o setjmp.o interrupt.o kernel.o libk.o net.o ramfs_gen.o larzscript.o
+OBJS   := boot.o setjmp.o interrupt.o kernel.o libk.o net.o gfx.o ramfs_gen.o larzscript.o
 ROOTFS := $(wildcard rootfs/* rootfs/repo/*/*)
 
 QEMU   := qemu-system-x86_64
@@ -42,6 +42,8 @@ libk.o: libk.c console.h
 	$(CC) $(CFLAGS) -c libk.c -o libk.o
 net.o: net.c net.h
 	$(CC) $(CFLAGS) -c net.c -o net.o
+gfx.o: gfx.c gfx.h
+	$(CC) $(CFLAGS) -c gfx.c -o gfx.o
 # bake rootfs/ into an in-kernel RAM filesystem
 ramfs_gen.c: mkramfs.py $(ROOTFS)
 	python3 mkramfs.py rootfs > ramfs_gen.c

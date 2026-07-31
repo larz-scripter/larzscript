@@ -1,0 +1,180 @@
+/* gfx.c - VGA Mode 13h (320x200, 256-color, linear, chain-4) graphics.
+ *
+ * Mode 13h is the classic "easiest real graphics mode" on PC hardware: after
+ * the register sequence in gfx_init(), the framebuffer is one linear byte
+ * per pixel at physical 0xA0000 (already inside the low-1GiB identity map
+ * boot.S sets up - no page-table changes needed here). No BIOS/VESA calls,
+ * no boot-time changes - this is a pure runtime mode switch via outb/inb,
+ * the same style already used for the VGA text cursor in libk.c.
+ *
+ * Register values below are the standard, widely-documented Mode 13h
+ * initialization sequence (Sequencer/CRTC/Graphics-Controller/Attribute
+ * Controller) - the same one nearly every "VGA without BIOS" OS-dev
+ * reference uses. Verify visually via QEMU's monitor `screendump` command
+ * (see kernel/README.md) - this is hardware register programming, so the
+ * real proof is a real captured frame, not just "it compiled."
+ */
+#include "gfx.h"
+
+typedef unsigned char u8;
+typedef unsigned short u16;
+
+static inline void outb(u16 port, u8 val){ __asm__ volatile("outb %0,%1"::"a"(val),"Nd"(port)); }
+static inline u8   inb(u16 port){ u8 r; __asm__ volatile("inb %1,%0":"=a"(r):"Nd"(port)); return r; }
+
+static volatile u8 *const FB = (u8*)0xA0000;
+
+/* ---- mode switch ---- */
+static void vga_write_seq(u8 idx, u8 val){ outb(0x3C4, idx); outb(0x3C5, val); }
+static void vga_write_crtc(u8 idx, u8 val){ outb(0x3D4, idx); outb(0x3D5, val); }
+static void vga_write_gc(u8 idx, u8 val){ outb(0x3CE, idx); outb(0x3CF, val); }
+static void vga_write_attr(u8 idx, u8 val){
+    (void)inb(0x3DA);          /* reset the index/data flip-flop */
+    outb(0x3C0, idx);
+    outb(0x3C0, val);
+}
+
+static const u8 SEQ[5]  = { 0x03, 0x01, 0x0F, 0x00, 0x0E };
+static const u8 CRTC[25] = {
+    0x5F,0x4F,0x50,0x82,0x54,0x80,0xBF,0x1F,0x00,0x41,0x00,0x00,
+    0x00,0x00,0x00,0x00,0x9C,0x8E,0x8F,0x28,0x40,0x96,0xB9,0xA3,0xFF
+};
+static const u8 GC[9]   = { 0x00,0x00,0x00,0x00,0x00,0x40,0x05,0x0F,0xFF };
+static const u8 ATTR[21] = {
+    0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
+    0x41,0x00,0x0F,0x00,0x00
+};
+
+/* fixed palette (index -> RGB, 6-bit-per-channel VGA DAC values 0-63) -
+ * see the GFX_* enum in gfx.h. Set once at init; not meant to be dynamic. */
+static const u8 PALETTE[7][3] = {
+    {0,0,0},        /* GFX_BLACK */
+    {63,63,63},     /* GFX_WHITE */
+    {12,13,17},     /* GFX_DARK_GRAY  - matches larzos.com's #0b0f1a card bg, roughly */
+    {30,32,38},     /* GFX_MID_GRAY */
+    {20,58,48},     /* GFX_ACCENT     - teal/green accent */
+    {12,35,29},     /* GFX_ACCENT_DIM */
+    {50,10,10},     /* GFX_RED */
+};
+
+void gfx_init(void){
+    outb(0x3C2, 0x63);                                   /* misc output */
+    vga_write_seq(0x00, 0x03);                            /* sync reset off */
+    for(int i=1;i<5;i++) vga_write_seq((u8)i, SEQ[i]);
+
+    /* unlock CRTC registers 0-7 (bit 7 of index 0x11 protects them) */
+    outb(0x3D4, 0x11); u8 cur = inb(0x3D5);
+    outb(0x3D4, 0x11); outb(0x3D5, cur & 0x7F);
+    for(int i=0;i<25;i++) vga_write_crtc((u8)i, CRTC[i]);
+
+    for(int i=0;i<9;i++) vga_write_gc((u8)i, GC[i]);
+
+    for(int i=0;i<21;i++) vga_write_attr((u8)i, ATTR[i]);
+    outb(0x3C0, 0x20);                                    /* re-enable video output */
+
+    /* palette: identity-mapped by ATTR[]'s first 16 entries, program the DAC */
+    outb(0x3C8, 0);                                       /* start writing at DAC index 0 */
+    for(int i=0;i<7;i++){ outb(0x3C9, PALETTE[i][0]); outb(0x3C9, PALETTE[i][1]); outb(0x3C9, PALETTE[i][2]); }
+
+    gfx_fill_rect(0, 0, GFX_W, GFX_H, GFX_DARK_GRAY);
+}
+
+void gfx_set_pixel(int x, int y, unsigned char color){
+    if(x<0 || y<0 || x>=GFX_W || y>=GFX_H) return;
+    FB[y*GFX_W + x] = color;
+}
+
+void gfx_fill_rect(int x, int y, int w, int h, unsigned char color){
+    int x0 = x<0?0:x, y0 = y<0?0:y;
+    int x1 = x+w; if(x1>GFX_W) x1=GFX_W;
+    int y1 = y+h; if(y1>GFX_H) y1=GFX_H;
+    for(int yy=y0; yy<y1; yy++) for(int xx=x0; xx<x1; xx++) FB[yy*GFX_W+xx] = color;
+}
+
+void gfx_hline(int x, int y, int w, unsigned char color){ gfx_fill_rect(x,y,w,1,color); }
+void gfx_vline(int x, int y, int h, unsigned char color){ gfx_fill_rect(x,y,1,h,color); }
+
+/* ---- 8x8 bitmap font, 5x7 glyphs left-packed into bits 7..3 of each row
+ * byte (bits 2..0 stay 0 - natural inter-character spacing). Digits +
+ * uppercase A-Z + the punctuation this project's demo text actually uses.
+ * Lowercase letters render as their uppercase glyph (folded in
+ * font_lookup) - an honest v1 limitation, not a bug: caps-only bitmap
+ * fonts are a normal starting point for bare-metal text rendering. */
+typedef struct { char ch; unsigned char rows[8]; } Glyph;
+static const Glyph FONT[] = {
+    {'0', {0b01110000,0b10001000,0b10011000,0b10101000,0b11001000,0b10001000,0b01110000,0}},
+    {'1', {0b00100000,0b01100000,0b00100000,0b00100000,0b00100000,0b00100000,0b01110000,0}},
+    {'2', {0b01110000,0b10001000,0b00001000,0b00010000,0b00100000,0b01000000,0b11111000,0}},
+    {'3', {0b11111000,0b00010000,0b00100000,0b00010000,0b00001000,0b10001000,0b01110000,0}},
+    {'4', {0b00010000,0b00110000,0b01010000,0b10010000,0b11111000,0b00010000,0b00010000,0}},
+    {'5', {0b11111000,0b10000000,0b11110000,0b00001000,0b00001000,0b10001000,0b01110000,0}},
+    {'6', {0b00110000,0b01000000,0b10000000,0b11110000,0b10001000,0b10001000,0b01110000,0}},
+    {'7', {0b11111000,0b00001000,0b00010000,0b00100000,0b01000000,0b01000000,0b01000000,0}},
+    {'8', {0b01110000,0b10001000,0b10001000,0b01110000,0b10001000,0b10001000,0b01110000,0}},
+    {'9', {0b01110000,0b10001000,0b10001000,0b01111000,0b00001000,0b00010000,0b01100000,0}},
+    {'A', {0b01110000,0b10001000,0b10001000,0b11111000,0b10001000,0b10001000,0b10001000,0}},
+    {'B', {0b11110000,0b10001000,0b10001000,0b11110000,0b10001000,0b10001000,0b11110000,0}},
+    {'C', {0b01110000,0b10001000,0b10000000,0b10000000,0b10000000,0b10001000,0b01110000,0}},
+    {'D', {0b11100000,0b10010000,0b10001000,0b10001000,0b10001000,0b10010000,0b11100000,0}},
+    {'E', {0b11111000,0b10000000,0b10000000,0b11110000,0b10000000,0b10000000,0b11111000,0}},
+    {'F', {0b11111000,0b10000000,0b10000000,0b11110000,0b10000000,0b10000000,0b10000000,0}},
+    {'G', {0b01110000,0b10001000,0b10000000,0b10111000,0b10001000,0b10001000,0b01111000,0}},
+    {'H', {0b10001000,0b10001000,0b10001000,0b11111000,0b10001000,0b10001000,0b10001000,0}},
+    {'I', {0b01110000,0b00100000,0b00100000,0b00100000,0b00100000,0b00100000,0b01110000,0}},
+    {'J', {0b00001000,0b00001000,0b00001000,0b00001000,0b00001000,0b10001000,0b01110000,0}},
+    {'K', {0b10001000,0b10010000,0b10100000,0b11000000,0b10100000,0b10010000,0b10001000,0}},
+    {'L', {0b10000000,0b10000000,0b10000000,0b10000000,0b10000000,0b10000000,0b11111000,0}},
+    {'M', {0b10001000,0b11011000,0b10101000,0b10101000,0b10001000,0b10001000,0b10001000,0}},
+    {'N', {0b10001000,0b11001000,0b10101000,0b10101000,0b10011000,0b10001000,0b10001000,0}},
+    {'O', {0b01110000,0b10001000,0b10001000,0b10001000,0b10001000,0b10001000,0b01110000,0}},
+    {'P', {0b11110000,0b10001000,0b10001000,0b11110000,0b10000000,0b10000000,0b10000000,0}},
+    {'Q', {0b01110000,0b10001000,0b10001000,0b10001000,0b10101000,0b10010000,0b01101000,0}},
+    {'R', {0b11110000,0b10001000,0b10001000,0b11110000,0b10100000,0b10010000,0b10001000,0}},
+    {'S', {0b01111000,0b10000000,0b10000000,0b01110000,0b00001000,0b00001000,0b11110000,0}},
+    {'T', {0b11111000,0b00100000,0b00100000,0b00100000,0b00100000,0b00100000,0b00100000,0}},
+    {'U', {0b10001000,0b10001000,0b10001000,0b10001000,0b10001000,0b10001000,0b01110000,0}},
+    {'V', {0b10001000,0b10001000,0b10001000,0b10001000,0b10001000,0b01010000,0b00100000,0}},
+    {'W', {0b10001000,0b10001000,0b10001000,0b10101000,0b10101000,0b10101000,0b01010000,0}},
+    {'X', {0b10001000,0b10001000,0b01010000,0b00100000,0b01010000,0b10001000,0b10001000,0}},
+    {'Y', {0b10001000,0b10001000,0b01010000,0b00100000,0b00100000,0b00100000,0b00100000,0}},
+    {'Z', {0b11111000,0b00001000,0b00010000,0b00100000,0b01000000,0b10000000,0b11111000,0}},
+    {' ', {0,0,0,0,0,0,0,0}},
+    {'!', {0b00100000,0b00100000,0b00100000,0b00100000,0b00100000,0,0b00100000,0}},
+    {'.', {0,0,0,0,0,0b01100000,0b01100000,0}},
+    {',', {0,0,0,0,0b01100000,0b01100000,0b01000000,0}},
+    {':', {0,0b01100000,0b01100000,0,0b01100000,0b01100000,0,0}},
+    {'-', {0,0,0,0b11111000,0,0,0,0}},
+    {'?', {0b01110000,0b10001000,0b00001000,0b00010000,0b00100000,0,0b00100000,0}},
+    {'$', {0b00100000,0b01111000,0b10100000,0b01110000,0b00101000,0b11110000,0b00100000,0}},
+    {'(', {0b00010000,0b00100000,0b01000000,0b01000000,0b01000000,0b00100000,0b00010000,0}},
+    {')', {0b01000000,0b00100000,0b00010000,0b00010000,0b00010000,0b00100000,0b01000000,0}},
+    {'\'',{0b00100000,0b00100000,0b01000000,0,0,0,0,0}},
+    {'+', {0,0b00100000,0b00100000,0b11111000,0b00100000,0b00100000,0,0}},
+};
+#define NFONT (int)(sizeof(FONT)/sizeof(FONT[0]))
+
+static const unsigned char *font_lookup(char c){
+    if(c>='a' && c<='z') c = (char)(c - 32);          /* fold lowercase -> uppercase glyph */
+    for(int i=0;i<NFONT;i++) if(FONT[i].ch==c) return FONT[i].rows;
+    return 0;                                          /* unsupported char: draw nothing */
+}
+
+static void gfx_draw_char(int x, int y, char c, unsigned char fg, unsigned char bg){
+    const unsigned char *rows = font_lookup(c);
+    for(int ry=0; ry<8; ry++){
+        unsigned char bits = rows ? rows[ry] : 0;
+        for(int rx=0; rx<8; rx++){
+            int on = (bits >> (7-rx)) & 1;
+            gfx_set_pixel(x+rx, y+ry, on ? fg : bg);
+        }
+    }
+}
+
+void gfx_draw_text(int x, int y, const char *s, unsigned char fg, unsigned char bg){
+    int cx = x;
+    for(const char *p=s; *p; p++){
+        if(*p=='\n'){ cx=x; y+=8; continue; }
+        gfx_draw_char(cx, y, *p, fg, bg);
+        cx += 8;
+    }
+}
