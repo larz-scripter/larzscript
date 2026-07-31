@@ -33,14 +33,16 @@ void kernel_main(void){
     gfx_widget_button("buy", 10, 70, 100, 24, "buy - $2.00");
     gfx_widget_button("premium", 120, 70, 140, 24, "unlock premium");
     gfx_widget_terminal("term", 10, 100, 220, 60);
-    { const char *lines[] = {
-        "line one", "line two", "a much longer line that should wrap onto the next row for sure",
-        "line four", "line five", "line six", "line seven - should have scrolled by now", 0 };
-      for(int i=0; lines[i]; i++){
-        for(const char *p=lines[i]; *p; p++) gfx_terminal_putc(*p);
-        gfx_terminal_putc('\n');
-      }
-    }
+    /* real printf() calls, not direct gfx_terminal_putc() - proves the
+     * ACTUAL mechanism (the serial_putc hook in libk.c), not just the
+     * widget's own append/wrap/scroll logic in isolation. */
+    printf("line one\n");
+    printf("line two\n");
+    printf("a much longer line that should wrap onto the next row for sure\n");
+    printf("line four\n");
+    printf("line five\n");
+    printf("line six\n");
+    printf("line seven - should have scrolled by now\n");
     int clicks = 0;
     for(;;){
         const char *clicked = gfx_widget_poll();

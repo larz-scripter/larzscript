@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include "console.h"
+#include "gfx.h"
 #include "libc/stdio.h"
 #include "libc/stdlib.h"
 #include "libc/string.h"
@@ -67,6 +68,11 @@ void serial_putc(char c){
     while(!serial_tx_ready()){}
     outb(COM1,(u8)c);
     vga_putc(c);
+    /* Also feed a GUI terminal widget if one exists (a no-op otherwise) -
+     * this is the whole reason a running server's plain print() output can
+     * "reflect" in the GUI: this is the ONE place every std-stream write
+     * already funnels through, same as the vga_putc write just above. */
+    gfx_terminal_putc(c);
 }
 char serial_getc(void){
     while(!serial_can_read()){}
