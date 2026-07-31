@@ -302,8 +302,13 @@ static void mouse_byte(unsigned char b){
                 g_drag_window = tb;
             } else {
                 int hitw = gfx_window_hit_test(cx, cy);
-                if(hitw>=0) gfx_window_focus(hitw);
-                if(gfx_widget_click(cx, cy)) kbring_push('\n');   /* same path a real Enter takes - see gfx.h */
+                if(hitw>=0){
+                    gfx_window_focus(hitw);
+                    if(gfx_widget_click(cx, cy)) kbring_push('\n');   /* same path a real Enter takes - see gfx.h */
+                } else {
+                    int icon = gfx_desktop_icon_hit_test(cx, cy);     /* bare desktop - maybe a launcher icon */
+                    if(icon>=0) desktop_icon_activate(icon);           /* kernel.c owns what each one launches */
+                }
             }
         }
     }

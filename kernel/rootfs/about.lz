@@ -1,0 +1,10 @@
+# about.lz - a desktop-icon-launched app (stage 4): a static info panel,
+# pure Larzscript, no bespoke C wrapper - the "About" entry every real
+# desktop has, launched by clicking its icon on the desktop background.
+ui.window("About", 300, 130)
+ui.label("about_l1", 4, 4, "LarzOS - the money-native operating system")
+ui.label("about_l2", 4, 20, "Larzscript running on bare metal, no Linux")
+ui.label("about_l3", 4, 36, "kernel/CONTRIBUTING.md: how to write an app")
+while true {
+  sleep(1)
+}

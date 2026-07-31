@@ -302,9 +302,66 @@ int gfx_taskbar_hit_test(int x, int y){
     return g_window_order[i];
 }
 
+/* ---- desktop icons: see gfx.h. A vertical strip along the right edge,
+ * clear of where task_terminal's window (40,40,640,420) and every
+ * ui.window()-cascaded app land (x starts at 120), so icons never start
+ * out hidden under a window - though like a real desktop, a window can
+ * still be dragged on top of one later. */
+#define ICON_X 900
+#define ICON_Y0 40
+#define ICON_W 100
+#define ICON_H 50
+#define ICON_GAP 60
+#define ICON_MAX 8
+static const char *g_icon_labels[ICON_MAX];
+static int g_icon_count = 0;
+
+void gfx_desktop_icons_init(const char **labels, int count){
+    if(count > ICON_MAX) count = ICON_MAX;
+    for(int i=0; i<count; i++) g_icon_labels[i] = labels[i];
+    g_icon_count = count;
+}
+
+static void draw_desktop_icons(void){
+    for(int i=0; i<g_icon_count; i++){
+        int iy = ICON_Y0 + i*ICON_GAP;
+        gfx_fill_rect(ICON_X, iy, ICON_W, ICON_H, GFX_DARK_GRAY);
+        gfx_draw_text(ICON_X+6, iy+(ICON_H-8)/2, g_icon_labels[i], GFX_WHITE, GFX_DARK_GRAY);
+    }
+}
+
+int gfx_desktop_icon_hit_test(int x, int y){
+    if(x < ICON_X || x >= ICON_X+ICON_W) return -1;
+    int i = (y - ICON_Y0) / ICON_GAP;
+    if(i < 0 || i >= g_icon_count) return -1;
+    int iy = ICON_Y0 + i*ICON_GAP;
+    if(y >= iy+ICON_H) return -1;   /* in the gap between two icons */
+    return i;
+}
+
+/* Defined once the widget system exists further down this file - forward
+ * declared here so gfx_windows_redraw_all() (which needs to run BEFORE that
+ * section, back-to-front by window) can call it. */
+static void redraw_widgets_owned_by(int win_idx);
+
 void gfx_windows_redraw_all(void){
     gfx_fill_rect(0, 0, gfx_width(), gfx_height(), GFX_BLACK);   /* desktop background */
-    for(int i=0; i<g_nwindows; i++) draw_window_chrome(g_window_order[i]);
+    draw_desktop_icons();
+    /* Each window's chrome AND its own widgets are drawn together, back-to-
+     * front - NOT all chrome first then all widgets after (Stage 4's real,
+     * screendump-caught bug: About opened on top of Terminal, and Terminal's
+     * own terminal widget - which fills its whole client area - was later
+     * redrawn unclipped over the region About's smaller window occupied,
+     * erasing About's already-drawn border/title). Interleaving per window
+     * means a FRONT window's own chrome+widgets always draw strictly after
+     * whatever a BACK window left behind at the same spot, correctly hiding
+     * it - real compositing, not just "redraw everything and hope nothing
+     * overlaps". */
+    for(int i=0; i<g_nwindows; i++){
+        int idx = g_window_order[i];
+        draw_window_chrome(idx);
+        redraw_widgets_owned_by(idx);
+    }
     draw_taskbar();
     draw_cursor();
 }
@@ -315,10 +372,9 @@ void gfx_cursor_move(int x, int y){
     if(y < 0) y = 0;
     if(y >= gfx_height()) y = gfx_height()-1;
     g_cursor_x = x; g_cursor_y = y; g_cursor_ready = 1;
-    gfx_windows_redraw_all();   /* draws the cursor too, but widgets (below) may still cover it */
-    gfx_widget_redraw_all();   /* widgets aren't window-clipped yet (see gfx.h) - without this,
-                                * every mouse move would wipe them along with the black desktop
-                                * repaint above; a no-op when no widgets exist. */
+    gfx_windows_redraw_all();   /* draws each window's chrome AND its own widgets together, in
+                                * z-order (see the comment there) - the cursor too, but that gets
+                                * one more pass below in case a widget's rect sits under it. */
     draw_cursor();             /* redraw on top, LAST - a widget whose rect happens to sit under
                                 * the cursor (e.g. a terminal filling most of its window) would
                                 * otherwise paint back over it, a real bug caught by an actual
@@ -524,7 +580,9 @@ static void redraw_widget(int idx){
     else if(g_widgets[idx].kind==WIDGET_TERMINAL) draw_terminal(idx);
     else draw_label(idx);
 }
-void gfx_widget_redraw_all(void){ for(int i=0;i<g_nwidgets;i++) redraw_widget(i); }
+static void redraw_widgets_owned_by(int win_idx){
+    for(int i=0; i<g_nwidgets; i++) if(g_widgets[i].owner==win_idx) redraw_widget(i);
+}
 
 static int register_widget(const char *id, WidgetKind kind, int x, int y, int w, int h, const char *text){
     int idx = find_widget(id);

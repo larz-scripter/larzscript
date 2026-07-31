@@ -44,23 +44,10 @@ static void task_terminal(void){
     for(;;) __asm__ volatile("hlt");
 }
 
-/* The second real app (task #33) - a live, independently-updating window
- * running concurrently alongside the terminal, the actual "looks like
- * Windows" proof: more than one app genuinely active at once, not a single-
- * app-at-a-time switcher. Positioned clear of the terminal window and the
- * taskbar strip along the bottom (gfx.c's draw_taskbar()). */
-static void task_clock(void){
-    gfx_window_create("Clock", 720, 40, 260, 140);
-    gfx_widget_label("clock_time", 4, 4, "uptime: 0s");   /* window-relative offset, see gfx.c */
-    char *a[] = { "larzscript", "/clock.lz", 0 };
-    larz_main(2, a);
-    for(;;) __asm__ volatile("hlt");
-}
-
 /* A GENERIC app-launch mechanism: turns "add a desktop app" into "write a
  * .lz script that calls ui.window(...)" (native/larzscript.c) - no bespoke
- * C wrapper needed per app, unlike task_terminal/task_clock above (which
- * stay exactly as they are; this is additive). launch_app() stashes which
+ * C wrapper needed per app, unlike task_terminal above (which stays exactly
+ * as it is; this is additive). launch_app() stashes which
  * script to run in a per-SLOT array, indexed by the EXACT slot
  * next_task_slot() (kernel/libk.c) says task_create() is about to assign -
  * safe regardless of what else is running, unlike a single shared "pending
@@ -89,6 +76,23 @@ void launch_app(const char *script){
     g_app_script[slot][i]=0;
     task_create(task_generic_app);
 }
+
+/* Stage 4: a small fixed manifest of real, already-launchable scripts
+ * turned into desktop icons (kernel/gfx.c draws/hit-tests them generically
+ * by label alone). Clock used to be auto-started as its own bespoke task
+ * (task_clock, removed above) - it now creates its own window via
+ * ui.window() like any other generic app and is launched on demand instead,
+ * which is also what frees the one spare NTASK=3 slot for this launcher to
+ * use by default. */
+static const char *g_app_manifest_labels[] = { "Clock", "About", "Files" };
+static const char *g_app_manifest_scripts[] = { "/clock.lz", "/about.lz", "/files.lz" };
+#define APP_MANIFEST_COUNT 3
+
+void desktop_icon_activate(int i){
+    if(i>=0 && i<APP_MANIFEST_COUNT) launch_app(g_app_manifest_scripts[i]);
+}
+#else
+void desktop_icon_activate(int i){ (void)i; }
 #endif
 
 void kernel_main(uint64_t mb_info){
@@ -194,18 +198,19 @@ void kernel_main(uint64_t mb_info){
     for(;;) __asm__ volatile("hlt");
 #endif
 #ifdef LARZ_DESKTOP
-    /* the real windowed desktop: two independently-running real apps (the
-     * terminal + the clock, each its own task/window) plus a taskbar to
-     * switch between them - the actual "looks like Windows" proof, genuine
-     * concurrent multitasking rather than one app at a time. task 0 stays
-     * idle (redraw-on-demand is already event-driven, not polled). */
+    /* the real windowed desktop: the terminal auto-starts (task 1, its own
+     * window) plus a taskbar and a row of desktop-icon launchers (stage 4)
+     * for everything else - Clock/About/Files are launched on demand, not
+     * auto-started, since NTASK=3 only leaves ONE free app-task slot beside
+     * the terminal until stage 5 (window closing) can free others up. task 0
+     * stays idle (redraw-on-demand is already event-driven, not polled). */
     ints_init();
     gfx_init();
     sched_init();
-    vfs_init();                    /* task_terminal/task_clock open .lz files - FS must be mounted first */
+    vfs_init();                    /* task_terminal opens .lz files - FS must be mounted first */
+    gfx_desktop_icons_init(g_app_manifest_labels, APP_MANIFEST_COUNT);
     gfx_windows_redraw_all();
     task_create(task_terminal);
-    task_create(task_clock);
     for(;;) __asm__ volatile("hlt");
 #endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */

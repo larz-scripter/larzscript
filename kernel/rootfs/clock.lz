@@ -1,11 +1,10 @@
-# clock.lz - the second real app (task #33): its own window, its own task
-# (kernel.c's task_clock), running concurrently with the terminal (task #31)
-# to prove genuine multitasking - not just two windows drawn once, but two
-# independently updating at the same time. task_clock() (kernel.c) already
-# created the "clock_time" label widget, positioned inside its window,
-# before starting this script - same split as task_terminal/larzsh.lz: this
-# file only touches the widget by id via the kernel-native `ui` module's
-# ui.set_text(), it never needs to know screen coordinates itself.
+# clock.lz - a desktop-icon-launched app (stage 4): creates its own window
+# via ui.window(), no bespoke C wrapper needed at all (unlike the earlier
+# task_clock() wrapper this replaced). Proves the same generic launch
+# mechanism apptest.lz proved in stage 3, now reachable by clicking the
+# "Clock" icon on the desktop instead of only from a hardcoded boot target.
+ui.window("Clock", 260, 140)
+ui.label("clock_time", 4, 4, "uptime: 0s")
 let n = 0
 while true {
   n = n + 1

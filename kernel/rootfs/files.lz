@@ -1,0 +1,20 @@
+# files.lz - a desktop-icon-launched app (stage 4): a thin wrapper over the
+# existing listdir() VFS builtin (native/larzscript.c) - a real, if simple,
+# Files browser. Uses labels, not ui.terminal(), because only ONE terminal
+# widget can be "active" at a time (kernel/gfx.c's g_active_terminal) -
+# creating a second one here would steal print() output away from the real
+# Terminal app's shell. v1 shows a fixed handful of root-level entries, no
+# scrolling - an honest, stated limitation, same pattern as every other v1
+# limitation in kernel/README.md.
+ui.window("Files", 300, 220)
+ui.label("files_hdr", 4, 4, "/ contains:")
+let names = sorted(listdir("/"))
+let i = 0
+for n in names {
+  if i >= 10 { break }
+  ui.label("files_" + str(i), 4, 20 + i*16, n)
+  i = i + 1
+}
+while true {
+  sleep(1)
+}

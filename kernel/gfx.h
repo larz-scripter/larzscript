@@ -120,6 +120,18 @@ void gfx_window_move(int idx, int x, int y);
  * the taskbar is the more specific target when it's what was clicked. */
 int gfx_taskbar_hit_test(int x, int y);
 
+/* ---- desktop icons: a small fixed strip of launchable-app icons drawn on
+ * the bare desktop background (stage 4) - gfx.c only knows their LABELS,
+ * for drawing/hit-testing; kernel.c owns which script each one launches
+ * (desktop_icon_activate()), the same generic/domain-knowledge split the
+ * taskbar above already uses. Registered once at boot. */
+void gfx_desktop_icons_init(const char **labels, int count);
+
+/* icon index at (x,y), or -1 if (x,y) isn't over any icon - checked by the
+ * mouse driver only after both the taskbar and every window have already
+ * missed, since a window dragged on top of an icon should win. */
+int gfx_desktop_icon_hit_test(int x, int y);
+
 /* ---- mouse: a cursor sprite drawn on top of everything, moved by the PS/2
  * mouse driver (kernel/libk.c, IRQ12). Position is authoritative here (not
  * in libk.c) because moving the cursor means repainting - the same
@@ -145,7 +157,6 @@ int  gfx_cursor_y(void);
 int  gfx_widget_label(const char *id, int x, int y, const char *text);
 int  gfx_widget_button(const char *id, int x, int y, int w, int h, const char *text);
 void gfx_widget_set_text(const char *id, const char *text);
-void gfx_widget_redraw_all(void);
 
 /* A scrolling text pane - the one widget kind that isn't set via
  * gfx_widget_set_text: its content is a running LOG, appended to a
