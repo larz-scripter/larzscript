@@ -157,6 +157,15 @@ import "mathx.lz" as m
 print(m.square(5), m.PI)      # 25 3.14159
 ```
 
+## Browser (WebAssembly)
+
+The same `larzscript.c` also compiles to WebAssembly and runs client-side in a
+real browser tab - `wallet`/`pay`/`capability` plus a small `ui` module
+(`ui.set_text`, `ui.on`, `ui.fetch`, ...) for wiring Larzscript straight to the
+DOM, no JavaScript required for the logic. See **[WEB.md](WEB.md)** for the
+build, the `ui.*` API, and a live example. Try it:
+[larzos.com/larzscript/gui/](https://larzos.com/larzscript/gui/).
+
 ## Memory
 
 A **precise mark-sweep garbage collector** reclaims container objects (lists,
