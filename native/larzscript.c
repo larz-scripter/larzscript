@@ -1982,6 +1982,19 @@ static Value bi_ui_set_text(Interp *ip, Value *a, int n){
   gfx_widget_set_text(a[0].str, a[1].str);
   return V_nil();
 }
+/* A scrolling log pane - not fed via ui.set_text (which replaces, not
+ * appends). No separate "write" builtin: once created, it becomes the
+ * active terminal (kernel/gfx.c) and every plain print() call anywhere -
+ * including from code that has no idea a GUI exists - starts showing up in
+ * it automatically, via the serial_putc hook in kernel/libk.c. */
+static Value bi_ui_terminal(Interp *ip, Value *a, int n){
+  if(n!=5 || a[0].t!=V_STR || !is_num(a[1]) || !is_num(a[2]) || !is_num(a[3]) || !is_num(a[4]))
+    runtime_error(ip,"LarzTypeError","ui.terminal() expects (id, x, y, w, h)");
+  ensure_kernel_gfx();
+  if(gfx_widget_terminal(a[0].str, (int)a[1].num, (int)a[2].num, (int)a[3].num, (int)a[4].num) < 0)
+    runtime_error(ip,"LarzRuntimeError","ui.terminal(): widget table full (max %d)", GFX_MAX_WIDGETS);
+  return V_nil();
+}
 static Value bi_ui_on(Interp *ip, Value *a, int n){
   if(n!=3 || a[0].t!=V_STR || a[1].t!=V_STR || (a[2].t!=V_FUNC && a[2].t!=V_BUILTIN))
     runtime_error(ip,"LarzTypeError","ui.on() expects (id, event, function)");
@@ -2011,7 +2024,8 @@ static Value bi_ui_run(Interp *ip, Value *a, int n){
 
 static Builtin KB_label={"label",bi_ui_label}, KB_button={"button",bi_ui_button},
   KB_set_text={"set_text",bi_ui_set_text}, KB_on={"on",bi_ui_on},
-  KB_run={"run",bi_ui_run}, KB_quit={"quit",bi_ui_quit};
+  KB_run={"run",bi_ui_run}, KB_quit={"quit",bi_ui_quit},
+  KB_terminal={"terminal",bi_ui_terminal};
 
 static void register_ui_module(Env *g){
   Env *e = env_new(NULL);
@@ -2021,6 +2035,7 @@ static void register_ui_module(Env *g){
   env_define(e, "on", V_builtin(&KB_on));
   env_define(e, "run", V_builtin(&KB_run));
   env_define(e, "quit", V_builtin(&KB_quit));
+  env_define(e, "terminal", V_builtin(&KB_terminal));
   env_define(g, "ui", V_module(e, xstrdup("ui")));
 }
 #endif /* kernel-native ui module */

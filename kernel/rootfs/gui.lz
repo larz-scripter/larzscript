@@ -5,6 +5,12 @@
 # the browser demo at larzos.com/larzscript/gui/: a wallet balance, a
 # `pay`-driven buy button, and a `capability`-gated action using
 # `pay ... requires NAME` + try/catch.
+#
+# The "term" pane below is an ordinary ui.terminal() - everything printed
+# below with plain print() (exactly what a running server like
+# ../rootfs/webserver.lz already does - "served 402 /article" and so on)
+# shows up in it live, with no special GUI-aware code in those scripts at
+# all. That's the whole point: this demo's own print() calls prove it.
 wallet buyer = $10.00
 wallet seller = $0.00
 capability premium
@@ -15,31 +21,31 @@ fn render() {
 
 fn buy_coffee() {
   if buyer.balance < $2.00 {
-    ui.set_text("log", "not enough funds")
+    print("buy_coffee: declined - insufficient funds")
     return
   }
   pay $2.00 from buyer to seller
   render()
-  ui.set_text("log", "bought a coffee for $2.00")
+  print("buy_coffee: charged $2.00, seller balance now " + str(seller.balance))
 }
 
 fn unlock() {
   grant premium
-  ui.set_text("log", "premium unlocked")
+  print("unlock: premium capability granted")
 }
 
 fn use_premium() {
   try {
     pay $1.00 from buyer to seller requires premium
     render()
-    ui.set_text("log", "used premium feature for $1.00")
+    print("use_premium: charged $1.00, seller balance now " + str(seller.balance))
   } catch e {
-    ui.set_text("log", "blocked: " + e["type"])
+    print("use_premium: blocked - " + e["type"])
   }
 }
 
 fn do_quit() {
-  ui.set_text("log", "bye")
+  print("shutting down")
   ui.quit()
 }
 
@@ -50,12 +56,14 @@ ui.button("buy", 10, 70, 110, 24, "buy - $2.00")
 ui.button("unlock", 130, 70, 130, 24, "unlock premium")
 ui.button("premium", 10, 100, 180, 24, "use premium - $1.00")
 ui.button("quit", 200, 100, 70, 24, "quit")
+ui.terminal("term", 10, 130, 280, 60)
 
 ui.on("buy", "click", buy_coffee)
 ui.on("unlock", "click", unlock)
 ui.on("premium", "click", use_premium)
 ui.on("quit", "click", do_quit)
 
+print("LarzOS GUI started")
 render()
 ui.run()
 
