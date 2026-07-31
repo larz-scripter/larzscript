@@ -69,6 +69,17 @@ adding `packages/<name>/main.lz`, then a second PR here listing
 maintenance), so reserve it for packages that belong in the standard
 library, not every community package.
 
+## What about LarzOS?
+
+This registry is for the native/hosted interpreter (Linux/Windows/macOS,
+and the browser build) - anywhere with real internet access. LarzOS, the
+bare-metal kernel, can't use it: `kernel/net.c` has no TLS at all, so it
+can't reach GitHub the way `larzpkg install`/`publish` do here. Contributing
+to LarzOS itself (a `pkg`-installable command, or a GUI app using the `ui`
+module) is a real, open, git-native path too - just a PR against the kernel
+source directly rather than a one-line registry entry. See
+[`kernel/CONTRIBUTING.md`](../kernel/CONTRIBUTING.md).
+
 ## Removing or renaming
 
 Nothing to coordinate beyond the registry line - it's just a pointer, not a

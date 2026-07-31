@@ -256,10 +256,16 @@ Larzscript-level API. [`gfx.c`](gfx.c) switches the VGA card into linear
 boot-time/Multiboot changes) and implements a small retained widget model:
 `ui.label`/`ui.button` create widgets (there's no pre-existing markup to
 select into, unlike a real DOM), `Tab` cycles keyboard focus, `Enter` fires
-the focused widget's click handler. [`rootfs/gui.lz`](rootfs/gui.lz) is the
-money-native demo: a wallet balance, a `pay`-driven buy button, and a
-`capability`-gated action (`pay ... requires NAME` + `try`/`catch`) - the
-bare-metal mirror of [larzos.com/larzscript/gui/](https://larzos.com/larzscript/gui/).
+the focused widget's click handler. `ui.terminal(id,x,y,w,h)` adds a
+scrolling log pane - once created, plain `print()` anywhere (this demo,
+`webserver.lz`, `larzsh`, anything) shows up in it live, with no GUI-aware
+code needed in whatever's printing: the mechanism is one hook in
+`libk.c`'s `serial_putc()`, the single sink every std-stream write already
+funnels through. [`rootfs/gui.lz`](rootfs/gui.lz) is the money-native demo:
+a wallet balance, a `pay`-driven buy button, a `capability`-gated action
+(`pay ... requires NAME` + `try`/`catch`), and a terminal pane showing each
+action's outcome live - the bare-metal mirror of
+[larzos.com/larzscript/gui/](https://larzos.com/larzscript/gui/).
 
 ```bash
 make EXTRA=-DLARZ_GUI iso
@@ -285,6 +291,10 @@ Verified this way through a full sequence: initial render, a successful
 purchase, an attempt correctly blocked by the ungranted capability, granting
 it, then a successful capability-gated purchase - five captured frames, real
 wallet arithmetic changing on screen each time, not just a static render.
+The terminal pane was verified the same way, separately: real `print()`
+calls (not a special GUI-only call) from the button handlers showing up
+live after each click, including a wrapped multi-line `CapabilityError`
+message.
 
 ⚠ Keyboard-only in this first pass - no mouse/PS-2-IRQ12 work yet, and Tab
 only cycles forward (the existing scancode table has no distinct shift+tab
@@ -377,10 +387,20 @@ persist` for a two-boot demo (writes a file, reboots, reads it back).
 - 64-bit multiboot kernels can't use QEMU's 32-bit-only `-kernel`; they boot via
   the GRUB ISO — the same path VirtualBox / real hardware use.
 
+## Contributing
+
+Want to add a `pkg`-installable command or a GUI app? See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) - both are plain Larzscript, no C
+needed. Launching a GUI app on demand from `larzsh` (rather than only via a
+dedicated boot target) isn't built yet - see "Next" below.
+
 ## Next
 
 ~~A PS/2 keyboard + framebuffer driver (local, non-serial use)~~ - done (see
 "A GUI on bare metal" above): VGA Mode 13h graphics + a keyboard-driven
 widget model, with the same `ui.*` vocabulary the browser build uses.
 Mouse/PS-2-IRQ12 support and a shift+tab / reverse-focus path are the
-natural next steps there, not yet built.
+natural next steps there, not yet built. Also not yet built: launching a
+GUI app on demand from `larzsh` (would need a "revert VGA to text mode"
+capability so control can hand back to the shell) - today a GUI app is its
+own dedicated boot target, per `CONTRIBUTING.md`.
