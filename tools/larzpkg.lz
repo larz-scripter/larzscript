@@ -164,6 +164,50 @@ fn search(term) {
   if hits == 0 { print("(no matching packages)") }
 }
 
+# A short name from a git URL if the caller didn't give one - strips any
+# @ref/#subpath, the trailing ".git", and a "lz-" prefix (the convention the
+# original 17 pre-monorepo packages used: lz-mathx -> mathx).
+fn derive_name(url) {
+  let clean = url
+  let hpos = clean.find("#"); if hpos >= 0 { clean = clean[0:hpos] }
+  let apos = clean.find("@"); if apos >= 0 { clean = clean[0:apos] }
+  let parts = clean.split("/")
+  let base = parts[len(parts) - 1]
+  if base.ends_with(".git") { base = base[0:len(base) - 4] }
+  if base.starts_with("lz-") { base = base[3:] }
+  return base
+}
+
+# "Publish" in a decentralized registry means "list your own repo," not
+# "push code into ours" - so this never writes anywhere. It sanity-checks
+# the repo is reachable and shaped like a package, then prints the exact
+# line to add and GitHub's own fork+edit+PR URL for registry.txt - no `gh`
+# CLI, no auth, no new dependency, matching the project's zero-dep ethos.
+fn publish(url, name) {
+  if name == "" { name = derive_name(url) }
+  print("checking " + url + " ...")
+  if run("git ls-remote " + url + " >/dev/null 2>&1") != 0 {
+    print("could not reach that repo - check the URL and try again")
+    return
+  }
+  let tmp = "/tmp/larzpkg_publish_check"
+  run("rm -rf " + tmp)
+  let cloned = run("git clone --depth 1 --quiet " + url + " " + tmp + " 2>/dev/null") == 0
+  let has_main = cloned and file_exists(tmp + "/main.lz")
+  run("rm -rf " + tmp)
+  if not has_main {
+    print("warning: no main.lz found at the repo root - if it's in a subdirectory,")
+    print("add #subpath to the URL below, e.g. " + url + "#path/to/pkg")
+  }
+  print("")
+  print("add this line to packages/registry.txt:")
+  print("")
+  print("  " + name + "  " + url)
+  print("")
+  print("then open a PR (GitHub forks + lets you edit + submit, right in the browser):")
+  print("  https://github.com/larz-scripter/larzscript/edit/main/packages/registry.txt")
+}
+
 # ---- dispatch ----
 fn usage() {
   print("larzpkg - the Larzscript package manager")
@@ -173,6 +217,7 @@ fn usage() {
   print("  larzscript larzpkg.lz remove <name>")
   print("  larzscript larzpkg.lz list")
   print("  larzscript larzpkg.lz search [term]")
+  print("  larzscript larzpkg.lz publish <git-url> [as <name>]")
 }
 
 if len(args) == 0 {
@@ -184,5 +229,9 @@ if len(args) == 0 {
   else if cmd == "remove" and len(args) >= 2 { remove_pkg(args[1]) }
   else if cmd == "list" { list_installed() }
   else if cmd == "search" { search(len(args) >= 2 ? args[1] : "") }
+  else if cmd == "publish" and len(args) >= 2 {
+    let name = (len(args) >= 4 and args[2] == "as") ? args[3] : ""
+    publish(args[1], name)
+  }
   else { usage() }
 }
