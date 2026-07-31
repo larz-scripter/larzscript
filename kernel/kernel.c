@@ -19,18 +19,29 @@ void kernel_main(void){
     kbd_diag();                    /* raw keyboard diagnostic (never returns) */
 #endif
 #ifdef LARZ_GFXDIAG
-    /* raw graphics diagnostic (never returns) - draws a test pattern for
-     * `screendump` verification, independent of the Larzscript ui module
-     * built on top of this later. See kernel/README.md. */
+    /* raw graphics+widget diagnostic (never returns) - draws a test pattern
+     * plus two widgets and drives Tab/Enter focus-cycling for `screendump`
+     * verification, independent of the Larzscript ui module built on top of
+     * this later. See kernel/README.md. Needs interrupts on (keyboard is
+     * IRQ-driven) - unlike the plain gfx test, this one calls ints_init(). */
+    ints_init();
     gfx_init();
     gfx_fill_rect(0, 0, GFX_W, GFX_H, GFX_DARK_GRAY);
-    gfx_fill_rect(10, 10, 80, 40, GFX_ACCENT);
-    gfx_fill_rect(10, 60, 80, 40, GFX_RED);
-    gfx_hline(10, 110, 280, GFX_WHITE);
-    gfx_vline(10, 110, 60, GFX_WHITE);
-    gfx_draw_text(10, 130, "LARZOS GUI TEST 0123", GFX_WHITE, GFX_DARK_GRAY);
-    gfx_draw_text(10, 145, "$1.00 (buy) - a.b.c?", GFX_ACCENT, GFX_DARK_GRAY);
-    for(;;) __asm__ volatile("hlt");
+    gfx_draw_text(10, 10, "LARZOS GUI TEST 0123", GFX_WHITE, GFX_DARK_GRAY);
+    gfx_draw_text(10, 25, "$1.00 (buy) - a.b.c?", GFX_ACCENT, GFX_DARK_GRAY);
+    gfx_widget_label("bal", 10, 50, "balance: $10.00");
+    gfx_widget_button("buy", 10, 70, 100, 24, "buy - $2.00");
+    gfx_widget_button("premium", 120, 70, 140, 24, "unlock premium");
+    int clicks = 0;
+    for(;;){
+        const char *clicked = gfx_widget_poll();
+        if(clicked){
+            clicks++;
+            char buf[GFX_TEXT_LEN];
+            snprintf(buf, sizeof buf, "clicked %d (%s)", clicks, clicked);
+            gfx_widget_set_text("bal", buf);
+        }
+    }
 #endif
     ints_init();                   /* IDT + PIC + timer/keyboard interrupts */
     sched_init();                  /* preemptive scheduler + background tasks */

@@ -15,6 +15,8 @@
  * real proof is a real captured frame, not just "it compiled."
  */
 #include "gfx.h"
+#include "console.h"
+#include "libc/string.h"
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -177,4 +179,94 @@ void gfx_draw_text(int x, int y, const char *s, unsigned char fg, unsigned char 
         gfx_draw_char(cx, y, *p, fg, bg);
         cx += 8;
     }
+}
+
+/* ---- widgets ---- */
+typedef enum { WIDGET_LABEL, WIDGET_BUTTON } WidgetKind;
+typedef struct {
+    char id[GFX_ID_LEN];
+    WidgetKind kind;
+    int x, y, w, h;
+    char text[GFX_TEXT_LEN];
+} Widget;
+static Widget g_widgets[GFX_MAX_WIDGETS];
+static int g_nwidgets = 0;
+static int g_focus = -1;               /* index into g_widgets of the focused button, or -1 */
+
+static int find_widget(const char *id){
+    for(int i=0;i<g_nwidgets;i++) if(strcmp(g_widgets[i].id, id)==0) return i;
+    return -1;
+}
+
+static void draw_label(int idx){
+    Widget *w=&g_widgets[idx];
+    gfx_fill_rect(w->x, w->y, (int)strlen(w->text)*8, 8, GFX_DARK_GRAY);   /* clear any longer previous text */
+    gfx_draw_text(w->x, w->y, w->text, GFX_WHITE, GFX_DARK_GRAY);
+}
+static void draw_button(int idx){
+    Widget *w=&g_widgets[idx];
+    int focused = (idx==g_focus);
+    unsigned char fill = focused ? GFX_ACCENT : GFX_ACCENT_DIM;
+    unsigned char border = focused ? GFX_WHITE : GFX_MID_GRAY;
+    gfx_fill_rect(w->x, w->y, w->w, w->h, fill);
+    gfx_hline(w->x, w->y, w->w, border);
+    gfx_hline(w->x, w->y+w->h-1, w->w, border);
+    gfx_vline(w->x, w->y, w->h, border);
+    gfx_vline(w->x+w->w-1, w->y, w->h, border);
+    int tw = (int)strlen(w->text)*8;
+    int tx = w->x + (w->w-tw)/2; if(tx < w->x+2) tx = w->x+2;
+    int ty = w->y + (w->h-8)/2;
+    gfx_draw_text(tx, ty, w->text, GFX_WHITE, fill);
+}
+static void redraw_widget(int idx){
+    if(idx<0 || idx>=g_nwidgets) return;
+    if(g_widgets[idx].kind==WIDGET_BUTTON) draw_button(idx); else draw_label(idx);
+}
+void gfx_widget_redraw_all(void){ for(int i=0;i<g_nwidgets;i++) redraw_widget(i); }
+
+static int register_widget(const char *id, WidgetKind kind, int x, int y, int w, int h, const char *text){
+    int idx = find_widget(id);
+    if(idx<0){
+        if(g_nwidgets>=GFX_MAX_WIDGETS) return -1;
+        idx = g_nwidgets++;
+    }
+    Widget *wi = &g_widgets[idx];
+    strncpy(wi->id, id, GFX_ID_LEN-1); wi->id[GFX_ID_LEN-1]=0;
+    wi->kind=kind; wi->x=x; wi->y=y; wi->w=w; wi->h=h;
+    strncpy(wi->text, text, GFX_TEXT_LEN-1); wi->text[GFX_TEXT_LEN-1]=0;
+    if(kind==WIDGET_BUTTON && g_focus<0) g_focus=idx;   /* first button registered gets initial focus */
+    redraw_widget(idx);
+    return idx;
+}
+int gfx_widget_label(const char *id, int x, int y, const char *text){
+    return register_widget(id, WIDGET_LABEL, x, y, 0, 8, text);
+}
+int gfx_widget_button(const char *id, int x, int y, int w, int h, const char *text){
+    return register_widget(id, WIDGET_BUTTON, x, y, w, h, text);
+}
+void gfx_widget_set_text(const char *id, const char *text){
+    int idx = find_widget(id); if(idx<0) return;
+    strncpy(g_widgets[idx].text, text, GFX_TEXT_LEN-1); g_widgets[idx].text[GFX_TEXT_LEN-1]=0;
+    redraw_widget(idx);
+}
+
+static void focus_next(void){
+    if(g_nwidgets==0) return;
+    int old=g_focus, i=g_focus;
+    for(int step=0; step<g_nwidgets; step++){
+        i=(i+1)%g_nwidgets;
+        if(g_widgets[i].kind==WIDGET_BUTTON){ g_focus=i; break; }
+    }
+    if(old>=0) redraw_widget(old);
+    if(g_focus>=0) redraw_widget(g_focus);
+}
+
+const char *gfx_widget_poll(void){
+    char c = console_getc();
+    if(c=='\t'){ focus_next(); return 0; }
+    if(c=='\n' || c=='\r'){
+        if(g_focus>=0 && g_focus<g_nwidgets) return g_widgets[g_focus].id;
+        return 0;
+    }
+    return 0;
 }
