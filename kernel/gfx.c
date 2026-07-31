@@ -427,6 +427,15 @@ static void draw_desktop_background(void){
         int bh = GFX_GRAD_BAND; if(y+bh>h) bh = h-y;
         gfx_fill_rect(0, y, w, bh, ((uint32_t)r<<16)|((uint32_t)g<<8)|(uint32_t)b);
     }
+    /* A small brand wordmark, top-left - clear of the icon column (ICON_X=900)
+     * and every app's default position (ui.window()'s cascade starts at
+     * x=120; Terminal at x=40,y=40 sits below this row). GFX_ACCENT_DIM is
+     * already this desktop's "dim brand" color (unfocused title bars/taskbar
+     * entries), reused here instead of adding a new color. bg must be an
+     * explicit color (gfx_draw_text isn't transparent) - GFX_GRAD_TOP is the
+     * gradient's own color at y=0, close enough this near the top that the
+     * 4px banding is imperceptible against text this small. */
+    gfx_draw_text(16, 16, "LARZOS", GFX_ACCENT_DIM, GFX_GRAD_TOP);
 }
 
 /* Defined once the widget system exists further down this file - forward
