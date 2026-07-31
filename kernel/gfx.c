@@ -538,6 +538,17 @@ int gfx_window_owner_task(int idx){
     return g_windows[idx].owner_task;
 }
 
+/* Window enumeration - lets a script (ui.windows(), native/larzscript.c)
+ * list every open window without any C-side introspection of its own.
+ * order_pos is a z-order POSITION (0=back, like g_window_order's index),
+ * not a raw window slot index - iterate 0..gfx_window_count()-1. */
+int gfx_window_at(int order_pos){
+    return (order_pos>=0 && order_pos<g_nwindows) ? g_window_order[order_pos] : -1;
+}
+const char *gfx_window_title(int idx){
+    return (idx>=0 && idx<GFX_MAX_WINDOWS && g_windows[idx].used) ? g_windows[idx].title : "";
+}
+
 /* Closes a window: removes it from the z-order (so it stops drawing and
  * disappears from the taskbar) and frees its widgets (see the widget
  * section below) - the SLOT itself (g_windows[idx]) becomes reusable by a

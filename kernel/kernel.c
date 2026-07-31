@@ -55,16 +55,19 @@ static void task_generic_app(void){
 }
 
 /* Launches `script` as a new app task - the script itself creates its own
- * window via ui.window(title,w,h). Silently does nothing if every task
- * slot is already taken (no free app slot to launch into) - matches a real
- * desktop just not opening a new window rather than crashing when you're
- * out of room. */
-void launch_app(const char *script){
+ * window via ui.window(title,w,h). Returns the task slot used, or -1 if
+ * every slot is already taken (no free app slot to launch into) - matches
+ * a real desktop just not opening a new window rather than crashing when
+ * you're out of room; the return value lets a caller (ui.launch(), the
+ * `launch` shell command) tell the user why nothing happened instead of
+ * silently doing nothing. */
+int launch_app(const char *script){
     int slot = next_task_slot();
-    if(slot < 0 || slot >= APP_MAX_SLOTS) return;
+    if(slot < 0 || slot >= APP_MAX_SLOTS) return -1;
     int i=0; for(; script[i] && i<63; i++) g_app_script[slot][i]=script[i];
     g_app_script[slot][i]=0;
     task_create(task_generic_app);
+    return slot;
 }
 
 /* Stage 4: a small fixed manifest of real, already-launchable scripts
@@ -83,6 +86,9 @@ void desktop_icon_activate(int i){
 }
 #else
 void desktop_icon_activate(int i){ (void)i; }
+/* ui.launch()/ui.close() (native/larzscript.c) call launch_app() unconditionally
+ * on every boot target - a no-op stub here so non-desktop targets still link. */
+int launch_app(const char *script){ (void)script; return -1; }
 #endif
 
 void kernel_main(uint64_t mb_info){

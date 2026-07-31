@@ -78,6 +78,12 @@ void gfx_window_focus(int idx);
  * gfx.c has no other notion of tasks. -1 if idx isn't a live window. */
 int gfx_window_owner_task(int idx);
 
+/* Window enumeration for ui.windows() (native/larzscript.c): order_pos is a
+ * z-order POSITION (0=back), not a raw window slot index - a caller
+ * iterates 0..gfx_window_count()-1, not 0..GFX_MAX_WINDOWS. */
+int gfx_window_at(int order_pos);
+const char *gfx_window_title(int idx);   /* "" if idx isn't a live window */
+
 /* Stage 5: closes a window - removes it from the z-order/taskbar and frees
  * its widgets (its slot becomes reusable by a future gfx_window_create()).
  * Does NOT touch the owning task; the caller must also call task_exit() on

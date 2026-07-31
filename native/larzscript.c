@@ -75,6 +75,7 @@
 #endif
 #if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
 #include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
+#include "console.h"          /* task_exit()/launch_app() - needed by ui.close()/ui.launch() below */
 #endif
 
 /* ===================== small helpers ===================== */
@@ -2084,11 +2085,60 @@ static Value bi_ui_window_size(Interp *ip, Value *a, int n){
   return V_list(r);
 }
 
+/* ui.windows() - a list of {"index":N, "title":"...", "focused":bool}
+ * dicts, one per open window, back-to-front - lets a script (the `windows`
+ * shell command) enumerate the desktop without any C-side help beyond the
+ * gfx_window_at()/gfx_window_title() accessors above. */
+static Value bi_ui_windows(Interp *ip, Value *a, int n){
+  if(n!=0) runtime_error(ip,"LarzTypeError","ui.windows() expects no arguments");
+  ensure_kernel_gfx();
+  List *r=list_new(); int tr=ip->ntemp; gc_temp_push(ip,V_list(r));
+  int count = gfx_window_count(), focused = gfx_window_focused();
+  for(int i=0;i<count;i++){
+    int idx = gfx_window_at(i);
+    Dict *d=dict_new();
+    dict_set(d, V_string("index"),   V_number(idx));
+    dict_set(d, V_string("title"),   V_string(gfx_window_title(idx)));
+    dict_set(d, V_string("focused"), V_bool(idx==focused));
+    list_push(r, V_dict(d));
+  }
+  gc_temp_pop(ip,tr);
+  return V_list(r);
+}
+
+/* ui.close(index) - closes a window by index, mirroring exactly what the
+ * mouse-driven close-X does (kernel/libk.c's mouse_byte()): read the
+ * owning task BEFORE closing (closing clears it), task_exit() that task,
+ * then gfx_window_close() the window itself. */
+static Value bi_ui_close(Interp *ip, Value *a, int n){
+  if(n!=1 || !is_num(a[0])) runtime_error(ip,"LarzTypeError","ui.close() expects a window index");
+  ensure_kernel_gfx();
+  int idx=(int)a[0].num;
+  int owner = gfx_window_owner_task(idx);
+  if(owner < 0) runtime_error(ip,"LarzRuntimeError","ui.close(): no such window %d", idx);
+  task_exit(owner);
+  gfx_window_close(idx);
+  return V_nil();
+}
+
+/* ui.launch(script) - a thin wrapper over kernel.c's launch_app(), the same
+ * mechanism a desktop-icon click already uses - lets a script (the `launch`
+ * shell command) open another app on demand. Returns true if a task slot
+ * was actually available, false if every slot was full (so the caller can
+ * report why nothing happened, instead of it silently doing nothing). */
+static Value bi_ui_launch(Interp *ip, Value *a, int n){
+  if(n!=1 || a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ui.launch() expects a script path string");
+  ensure_kernel_gfx();
+  return V_bool(launch_app(a[0].str) >= 0);
+}
+
 static Builtin KB_label={"label",bi_ui_label}, KB_button={"button",bi_ui_button},
   KB_set_text={"set_text",bi_ui_set_text}, KB_on={"on",bi_ui_on},
   KB_run={"run",bi_ui_run}, KB_quit={"quit",bi_ui_quit},
   KB_terminal={"terminal",bi_ui_terminal}, KB_window={"window",bi_ui_window},
-  KB_window_size={"window_size",bi_ui_window_size};
+  KB_window_size={"window_size",bi_ui_window_size},
+  KB_windows={"windows",bi_ui_windows}, KB_close={"close",bi_ui_close},
+  KB_launch={"launch",bi_ui_launch};
 
 static void register_ui_module(Env *g){
   Env *e = env_new(NULL);
@@ -2101,6 +2151,9 @@ static void register_ui_module(Env *g){
   env_define(e, "terminal", V_builtin(&KB_terminal));
   env_define(e, "window", V_builtin(&KB_window));
   env_define(e, "window_size", V_builtin(&KB_window_size));
+  env_define(e, "windows", V_builtin(&KB_windows));
+  env_define(e, "close", V_builtin(&KB_close));
+  env_define(e, "launch", V_builtin(&KB_launch));
   env_define(g, "ui", V_module(e, xstrdup("ui")));
 }
 #endif /* kernel-native ui module */
