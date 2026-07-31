@@ -136,8 +136,11 @@ print(m.mean([1, 2, 3, 4]), m.fib(10))
 ```
 
 Import resolution searches: relative to the file, then `$LARZSCRIPT_PATH`, then
-`~/.larzscript/lib`, then `./lz_modules`. Add a package by PR-ing a line to
-`packages/registry.txt`.
+`~/.larzscript/lib`, then `./lz_modules`. Packages don't have to live in the
+official monorepo — `registry.txt` entries can point straight at anyone's
+own git repo, versioned and owned by them. Publish your own:
+`larzscript tools/larzpkg.lz publish <your-git-url>` — see
+[`../packages/PUBLISHING.md`](../packages/PUBLISHING.md).
 
 **Editor support:** syntax highlighting for VS Code and Vim — see
 [`../editors/`](../editors/).

@@ -81,7 +81,9 @@ Available packages:
 | **greet** | a tiny example package |
 
 They compose — e.g. `json.parse(http.get(url))`, or CSV → list-of-dicts → JSON.
-Add yours by PR-ing a line to [`packages/registry.txt`](packages/registry.txt).
+**Publish your own** — host it yourself, no write access to anything here
+needed: `larzscript tools/larzpkg.lz publish <your-git-url>`. See
+[`packages/PUBLISHING.md`](packages/PUBLISHING.md).
 
 **Larzscript compiles to native code.** `larzscript --emit-c program.lz` emits C; `tools/larzc program.lz` gcc's it into a native binary that runs ~130x faster than the interpreter (a general-purpose subset today). This is the path toward the LarzOS kernel being written in Larzscript itself.
 
