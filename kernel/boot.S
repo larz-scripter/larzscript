@@ -9,7 +9,7 @@
  */
 
 .set MB_MAGIC,    0x1BADB002
-.set MB_FLAGS,    0x00000003
+.set MB_FLAGS,    0x00000007   /* bit0 align modules, bit1 mem map, bit2 video mode request (below) */
 .set MB_CHECKSUM, -(MB_MAGIC + MB_FLAGS)
 
 .section .multiboot
@@ -17,6 +17,29 @@
 .long MB_MAGIC
 .long MB_FLAGS
 .long MB_CHECKSUM
+/* header_addr/load_addr/load_end_addr/bss_end_addr/entry_addr - the
+ * Multiboot1 header is a FIXED byte layout regardless of which flag bits
+ * are set: these 5 fields always occupy offset 12-31, and mode_type/width/
+ * height/depth always come at a fixed offset 32 right after them - flags
+ * bit 16 (not set here) only says whether their VALUES should be trusted,
+ * not whether they're physically present. Getting this wrong doesn't fail
+ * cleanly: GRUB read 20 bytes of real .text instruction bytes as if they
+ * were these fields and choked on a garbage "mode type" - a real, verified
+ * failure (kernel/README.md), not a hypothetical one. Zero is correct here
+ * since bit 16 isn't set, so GRUB ignores their values anyway. */
+.long 0        /* header_addr (unused - bit 16 not set) */
+.long 0        /* load_addr */
+.long 0        /* load_end_addr */
+.long 0        /* bss_end_addr */
+.long 0        /* entry_addr */
+/* Present because flags bit 2 IS set. GRUB honors this on a best-effort
+ * basis and reports what it actually set in the info struct it hands
+ * back - read that back in kernel_main, don't assume these exact numbers
+ * were granted. */
+.long 0        /* mode_type: linear graphics */
+.long 1024     /* width */
+.long 768      /* height */
+.long 32       /* depth (bits per pixel) */
 
 .section .bss
 .align 4096
@@ -27,6 +50,10 @@ pd:    .skip 4096
 stack_bottom:
 .skip 0x800000                         /* 8 MiB kernel stack - the interpreter recurses deeply */
 stack_top:
+.align 4
+mb_info_ptr: .long 0                   /* the Multiboot info pointer GRUB hands in %ebx at entry -
+                                         * preserved here (see _start) before anything else can
+                                         * clobber it, then passed to kernel_main */
 
 .section .rodata
 .align 8
@@ -47,13 +74,20 @@ _start:
     mov $stack_top, %esp
 
     /* zero the BSS now, while paging is off - it holds both the page tables
-     * (below) and the kernel heap, and their globals rely on being zero. */
+     * (below) and the kernel heap, and their globals rely on being zero.
+     * mb_info_ptr lives in .bss too - GRUB's Multiboot info pointer, handed
+     * in %ebx at entry, MUST be saved only AFTER this zeroing, not before
+     * (an earlier draft got this backwards: saving first, then having this
+     * same rep stosl immediately zero it right back out). %ebx itself isn't
+     * touched by rep stosl or anything else between here and long_mode_start
+     * below, so just holding it in the register across all of this is fine. */
     mov $__bss_start, %edi
     mov $__bss_end, %ecx
     sub %edi, %ecx
     shr $2, %ecx                 /* bytes -> dwords */
     xor %eax, %eax
     rep stosl
+    movl %ebx, mb_info_ptr
 
     /* --- page tables: PML4[0] -> PDPT[0] -> PD, identity map 1 GiB --- */
     movl $pdpt, %eax
@@ -122,6 +156,9 @@ long_mode_start:
     orq  $0x600, %rax                /* set CR4.OSFXSR (9) + OSXMMEXCPT (10) */
     movq %rax, %cr4
 
+    /* pass the saved Multiboot info pointer as kernel_main's first (rdi)
+     * argument, System V AMD64 convention. movl zero-extends into rdi. */
+    movl mb_info_ptr, %edi
     call kernel_main
     cli
 1:  hlt

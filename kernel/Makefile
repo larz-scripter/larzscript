@@ -60,7 +60,7 @@ $(KERNEL): $(OBJS) linker.ld
 iso: $(KERNEL)
 	mkdir -p iso/boot/grub
 	cp $(KERNEL) iso/boot/larzkernel.elf
-	printf 'set timeout=0\nset default=0\nmenuentry "LarzOS" {\n  multiboot /boot/larzkernel.elf\n  boot\n}\n' > iso/boot/grub/grub.cfg
+	printf 'set timeout=0\nset default=0\nmenuentry "LarzOS" {\n  insmod vbe\n  insmod video\n  set gfxpayload=1024x768x32\n  multiboot /boot/larzkernel.elf\n  boot\n}\n' > iso/boot/grub/grub.cfg
 	grub-mkrescue -o larzos.iso iso 2>/dev/null
 	@echo "built larzos.iso"
 
