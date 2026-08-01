@@ -29,6 +29,36 @@ Truthiness: `nil`, `false`, `0`, `$0.00`, `""`, `[]`, `{}` are falsy; all else t
 
 ---
 
+## Read it like English
+
+Larzscript's money statements already read like sentences - `pay coffee
+from customer to shop`, `subscribe customer to pro`. The rest of the
+language leans the same way: every natural form below is real syntax
+that desugars to the equivalent symbolic form (`larzscript fmt` preserves
+whichever spelling you wrote), not a different feature - use either, mix
+both, whatever reads best where you're writing it.
+
+```
+if age is 18 { ... }               # ==
+if age is not 18 { ... }           # !=
+if balance is at least $5 { ... }  # >=
+if balance is at most $5 { ... }   # <=
+if score is more than 0 { ... }    # >
+if attempts is less than 3 { ... } # <
+
+unless balance >= price {          # if not (...)
+    throw "not enough funds"
+}
+
+for i from 1 to 10 { ... }         # counts up, 1..10 INCLUSIVE
+for i from 10 to 1 { ... }         # auto-detects direction, counts down
+
+say "hello, " + name               # print(...)
+wait 2                             # sleep(2)
+```
+
+---
+
 ## 2. Variables
 
 ```
@@ -59,17 +89,25 @@ Precedence, lowest to highest:
 division; `**` is power. `in` tests membership in a list, dict (keys) or string
 (substring). `has` tests a wallet subscription.
 
+`==`/`!=`/`>=`/`<=`/`>`/`<` also read as `is`/`is not`/`is at least`/`is at
+most`/`is more than`/`is less than` - see "Read it like English" above.
+The natural phrases bind at the same precedence as their symbols
+(`is at least`/`is at most`/`is more than`/`is less than` as tight as `>=`
+etc.; bare `is`/`is not` as loose as `==`/`!=`).
+
 ---
 
 ## 4. Control flow
 
 ```
 if x > 0 { ... } else if x < 0 { ... } else { ... }
+unless x <= 0 { ... }              # if not (x <= 0) { ... } - see above
 
 while cond { ...; break; continue }
 
 for item in [1, 2, 3] { ... }      # lists, dicts (keys), and strings
 for k in {"a": 1} { ... }
+for i from 1 to 10 { ... }         # a natural counting loop - see above
 
 try { risky() } catch e { print(e["type"], e["message"]) }
 throw "something went wrong"       # or throw {"type": "MyError", "message": "..."}
@@ -194,7 +232,7 @@ and `wallet.debit(m)` adjust it. Run with `--ledger` to print the money ledger.
 
 ## 10. Standard library (builtins)
 
-`print len range str int float bool type abs min max sum sorted reversed
+`print len range range_to str int float bool type abs min max sum sorted reversed
 floor ceil round sqrt pow chr ord assert input keys values push money
 map filter reduce join enumerate zip exit all any count unique hex bin oct
 gcd factorial sign clamp list dict`
@@ -203,6 +241,8 @@ gcd factorial sign clamp list dict`
 sequence** — `for i in range(100000000)` iterates in O(1) space (no list is built),
 and `range` supports `len`, indexing, `in`, and slicing. Use `list(range(...))`
 to materialize one.
+`range_to(from, to)` is `range`'s **inclusive**, direction-auto-detecting sibling -
+what `for i from A to B { ... }` desugars to (see "Read it like English").
 `list(x)` builds a list from a string/dict/list/range; `dict(pairs)` from `[[k, v], ...]`.
 
 `"ab" * 3` and `[0] * 5` repeat strings and lists.

@@ -127,6 +127,12 @@ fn buy(buyer) {
 }
 buy(customer)
 print(f"creator earned: {creator.balance}")        # creator earned: $7.20
+
+# And it reads like English, not just symbols.
+unless customer.balance is at least $1.00 {
+    say "customer is running low"
+}
+for i from 1 to 3 { say "reminder " + str(i) }
 ```
 
 See **[native/README.md](native/README.md)** for the full language reference.

@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.23.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.24.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -320,6 +320,10 @@ typedef struct Node {
   char **params; int nparams;
   struct Node **pdefs;        /* per-param default value expressions (or NULL) */
   char *cop;                  /* compound-assign op ("+", ...) for the formatter, or NULL */
+  char *natural;               /* the natural-language spelling this node was parsed from
+                                 * ("is", "is not", "is at least", "unless", "from_to", "say",
+                                 * "wait"...) so the formatter can print it back instead of the
+                                 * desugared symbolic form, or NULL for ordinary syntax */
   long long gas; int has_gas;
   char *src, *dst;            /* pay / subscribe */
   char *period;               /* paywall */
@@ -343,7 +347,11 @@ static const char *KEYWORDS[] = {
   "price","wallet","pay","from","to","require","gas",
   "paywall","subscribe","has","for","in","break","continue",
   "try","catch","throw","import","as",
-  "capability","grant","revoke","requires","split", NULL
+  "capability","grant","revoke","requires","split",
+  /* natural-language sugar (2026-08): all desugar to existing AST nodes -
+   * see equality()/statement()'s "unless"/"say"/"wait" branches and the
+   * "for ... from ... to" case in the existing "for" branch. */
+  "is","unless","at","least","most","more","less","than","say","wait", NULL
 };
 static int is_keyword(const char *s, int n){
   for(int i=0; KEYWORDS[i]; i++)
@@ -588,7 +596,44 @@ static Node *factor(Parser *p){ const char *o[]={"*","/","%","//"}; return bin_l
 static Node *term(Parser *p){ const char *o[]={"+","-"}; return bin_lvl(p,factor,o,2,0); }
 static Node *comparison(Parser *p){ const char *o[]={"<","<=",">",">="}; return bin_lvl(p,term,o,4,0); }
 static Node *membership(Parser *p){ const char *o[]={"has","in"}; return bin_lvl(p,comparison,o,2,1); }
-static Node *equality(Parser *p){ const char *o[]={"==","!="}; return bin_lvl(p,membership,o,2,0); }
+/* Natural-language comparison phrases ("is"/"is not"/"is at least"/"is at
+ * most"/"is more than"/"is less than") all desugar to an ordinary N_BIN
+ * with a real "=="/"!="/">="/"<="/">"/"<" op - eval()/--emit-c need no new
+ * cases, they already handle those op strings. Hand-written (not the
+ * generic bin_lvl helper) because "is not"/"is at least"/etc need to look
+ * two tokens ahead, and the tighter-binding phrases (at least/at most/more
+ * than/less than) parse their right side at term() - the same level the
+ * real >=/<=/>/< operators use - not membership() like bare is/is not, so
+ * `a is at least b + c` binds exactly like `a >= b + c` already does. */
+static Node *equality(Parser *p){
+  Node *n = membership(p);
+  for(;;){
+    Token *t = pk(p);
+    if(is_op(t,"==")||is_op(t,"!=")){
+      const char *op=t->text; padv(p);
+      Node *b=membership(p);
+      Node *bn=node(N_BIN); bn->op=(char*)op; bn->a=n; bn->b=b; n=bn;
+      continue;
+    }
+    if(is_kw(t,"is")){
+      padv(p);
+      const char *op="==", *nat="is"; int tight=0;
+      if(is_kw(pk(p),"not")){ padv(p); op="!="; nat="is not"; }
+      else if(is_kw(pk(p),"at")){
+        padv(p);
+        if(is_kw(pk(p),"least")){ padv(p); op=">="; nat="is at least"; tight=1; }
+        else if(is_kw(pk(p),"most")){ padv(p); op="<="; nat="is at most"; tight=1; }
+        else fail("expected 'least' or 'most' after 'is at' on line %d", pk(p)->line);
+      } else if(is_kw(pk(p),"more")){ padv(p); expect_kw(p,"than"); op=">"; nat="is more than"; tight=1; }
+      else if(is_kw(pk(p),"less")){ padv(p); expect_kw(p,"than"); op="<"; nat="is less than"; tight=1; }
+      Node *b = tight ? term(p) : membership(p);
+      Node *bn=node(N_BIN); bn->op=(char*)op; bn->natural=(char*)nat; bn->a=n; bn->b=b; n=bn;
+      continue;
+    }
+    break;
+  }
+  return n;
+}
 static Node *logic_and(Parser *p){ const char *o[]={"and"}; return bin_lvl(p,equality,o,1,1); }
 static Node *logic_or(Parser *p){ const char *o[]={"or"}; return bin_lvl(p,logic_and,o,1,1); }
 static Node *ternary(Parser *p){
@@ -708,6 +753,16 @@ static Node *statement(Parser *p){
   if(is_kw(t,"return")){ padv(p); Node *n=node(N_RETURN); if(starts_expr(pk(p))) n->a=expression(p); return n; }
   if(is_kw(t,"if")){ padv(p); Node *n=node(N_IF); n->a=expression(p); n->b=block(p);
       if(is_kw(pk(p),"else")){ padv(p); n->c = is_kw(pk(p),"if") ? statement(p) : block(p); } return n; }
+  if(is_kw(t,"unless")){ padv(p);
+      Node *cond=expression(p); Node *notn=node(N_UN); notn->op="not"; notn->a=cond;
+      Node *n=node(N_IF); n->a=notn; n->natural="unless"; n->b=block(p);
+      if(is_kw(pk(p),"else")){ padv(p); n->c = is_kw(pk(p),"if") ? statement(p) : block(p); } return n; }
+  if(is_kw(t,"say")){ padv(p); Node *n=node(N_CALL); Node *nm=node(N_NAME); nm->name=xstrdup("print"); n->a=nm;
+      push_kid(n, expression(p)); n->natural="say";
+      Node *ex=node(N_EXPR); ex->a=n; return ex; }
+  if(is_kw(t,"wait")){ padv(p); Node *n=node(N_CALL); Node *nm=node(N_NAME); nm->name=xstrdup("sleep"); n->a=nm;
+      push_kid(n, expression(p)); n->natural="wait";
+      Node *ex=node(N_EXPR); ex->a=n; return ex; }
   if(is_kw(t,"while")){ padv(p); Node *n=node(N_WHILE); n->a=expression(p); n->b=block(p); return n; }
   if(is_kw(t,"paywall")){ padv(p); Node *n=node(N_PAYWALL); n->name=padv(p)->text;
       if(!is_op(pk(p),"=")){ fail("expected '=' on line %d",pk(p)->line); }
@@ -719,8 +774,20 @@ static Node *statement(Parser *p){
   if(is_kw(t,"subscribe")){ padv(p); Node *n=node(N_SUBSCRIBE); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text;
       if(is_kw(pk(p),"requires")){ padv(p); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"for")){
-      padv(p); Node *n=node(N_FOR); n->name=padv(p)->text; expect_kw(p,"in");
-      n->a=expression(p); n->b=block(p); return n;
+      padv(p); Node *n=node(N_FOR); n->name=padv(p)->text;
+      if(is_kw(pk(p),"from")){
+        /* "for i from A to B" - a natural counting loop, inclusive of B,
+         * auto-detecting ascending/descending (can't decide direction at
+         * parse time - A/B may be runtime expressions, not literals).
+         * Desugars to `for i in range_to(A, B)` - see bi_range_to. */
+        padv(p); Node *fromE=expression(p); expect_kw(p,"to"); Node *toE=expression(p);
+        Node *call=node(N_CALL); Node *nm=node(N_NAME); nm->name=xstrdup("range_to"); call->a=nm;
+        push_kid(call,fromE); push_kid(call,toE);
+        n->a=call; n->natural="from_to";
+      } else {
+        expect_kw(p,"in"); n->a=expression(p);
+      }
+      n->b=block(p); return n;
   }
   if(is_kw(t,"break")){ padv(p); return node(N_BREAK); }
   if(is_kw(t,"continue")){ padv(p); return node(N_CONTINUE); }
@@ -1516,6 +1583,16 @@ static Value bi_range(Interp *ip, Value *args, int n){
   if(step==0) runtime_error(ip,"LarzRuntimeError","range() step cannot be zero");
   return V_range(start, stop, step);
 }
+/* range_to(from, to): what `for i from A to B { }` desugars to - INCLUSIVE
+ * of `to` (unlike range()'s exclusive stop - more natural for "from 1 to
+ * 10"), auto-detecting ascending vs. descending from from/to themselves.
+ * No step parameter - for custom stepping use range() directly. */
+static Value bi_range_to(Interp *ip, Value *args, int n){
+  if(n!=2) runtime_error(ip,"LarzTypeError","range_to() expects (from, to)");
+  if(!is_num(args[0])||!is_num(args[1])) runtime_error(ip,"LarzTypeError","range_to() expects numbers");
+  long long from=(long long)args[0].num, to=(long long)args[1].num;
+  return from<=to ? V_range(from, to+1, 1) : V_range(from, to-1, -1);
+}
 static const char *type_name(Value v){
   switch(v.t){ case V_NIL:return "nil"; case V_BOOL:return "bool"; case V_NUM:return "number";
     case V_MONEY:return "money"; case V_STR:return "string"; case V_WALLET:return "wallet";
@@ -1818,6 +1895,7 @@ static Builtin B_money = {"money", bi_money};
 static Builtin B_len   = {"len",   bi_len};
 static Builtin B_push  = {"push",  bi_push};
 static Builtin B_range = {"range", bi_range};
+static Builtin B_range_to = {"range_to", bi_range_to};
 static Builtin B_str={"str",bi_str}, B_int={"int",bi_int}, B_float={"float",bi_float}, B_bool={"bool",bi_bool}, B_type={"type",bi_type};
 static Builtin B_abs={"abs",bi_abs}, B_min={"min",bi_min}, B_max={"max",bi_max}, B_sum={"sum",bi_sum};
 static Builtin B_sorted={"sorted",bi_sorted}, B_reversed={"reversed",bi_reversed};
@@ -1893,6 +1971,7 @@ static void define_builtins(Env *g){
   env_define(g, "len",   V_builtin(&B_len));
   env_define(g, "push",  V_builtin(&B_push));
   env_define(g, "range", V_builtin(&B_range));
+  env_define(g, "range_to", V_builtin(&B_range_to));
   env_define(g, "str",   V_builtin(&B_str));
   env_define(g, "int",   V_builtin(&B_int));
   env_define(g, "float", V_builtin(&B_float));
@@ -2407,13 +2486,14 @@ static void fmt_expr(Node *n, int minprec){
     case N_NIL: printf("nil"); break;
     case N_NAME: printf("%s", n->name); break;
     case N_UN: printf("%s", strcmp(n->op,"not")==0?"not ":"-"); fmt_expr(n->a, 10); break;
-    case N_BIN: fmt_expr(n->a, p); printf(" %s ", n->op); fmt_expr(n->b, p+1); break;
+    case N_BIN: fmt_expr(n->a, p); printf(" %s ", n->natural?n->natural:n->op); fmt_expr(n->b, p+1); break;
     case N_TERNARY: fmt_expr(n->a, 2); printf(" ? "); fmt_expr(n->b, 1); printf(" : "); fmt_expr(n->c, 1); break;
     case N_ARRAY: putchar('['); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i], 1); } putchar(']'); break;
     case N_DICT: putchar('{'); for(int i=0;i+1<n->nkids;i+=2){ if(i) printf(", "); fmt_expr(n->kids[i],1); printf(": "); fmt_expr(n->kids[i+1],1); } putchar('}'); break;
     case N_INDEX: fmt_expr(n->a,11); putchar('['); fmt_expr(n->b,1); putchar(']'); break;
     case N_SLICE: fmt_expr(n->a,11); putchar('['); if(n->b) fmt_expr(n->b,1); putchar(':'); if(n->c) fmt_expr(n->c,1); putchar(']'); break;
-    case N_CALL: fmt_expr(n->a,11); putchar('('); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i],1); } putchar(')'); break;
+    case N_CALL: if(n->natural){ printf("%s ", n->natural); fmt_expr(n->kids[0],1); break; }
+                 fmt_expr(n->a,11); putchar('('); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i],1); } putchar(')'); break;
     case N_GET: fmt_expr(n->a,11); printf(".%s", n->name); break;
     case N_METHOD: fmt_expr(n->a,11); printf(".%s(", n->name); for(int i=0;i<n->nkids;i++){ if(i) printf(", "); fmt_expr(n->kids[i],1); } putchar(')'); break;
     case N_FN: printf("fn"); fmt_params(n); if(n->has_gas) printf(" gas %lld", n->gas);
@@ -2457,10 +2537,13 @@ static void fmt_stmt_core(Node *n, int indent){
     case N_EXPR: fmt_expr(n->a,1); break;
     case N_FN: printf("fn %s", n->name?n->name:""); fmt_params(n); if(n->has_gas) printf(" gas %lld", n->gas);
                printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
-    case N_IF: printf("if "); fmt_expr(n->a,1); printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}');
+    case N_IF: if(n->natural){ printf("unless "); fmt_expr(n->a->a,1); } else { printf("if "); fmt_expr(n->a,1); }
+               printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}');
                if(n->c){ printf(" else "); if(n->c->kind==N_IF) fmt_stmt_core(n->c, indent); else { printf("{\n"); for(int i=0;i<n->c->nkids;i++) fmt_stmt(n->c->kids[i], indent+1); fmt_indent(indent); putchar('}'); } } break;
     case N_WHILE: printf("while "); fmt_expr(n->a,1); printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
-    case N_FOR: printf("for %s in ", n->name); fmt_expr(n->a,1); printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
+    case N_FOR: if(n->natural){ printf("for %s from ", n->name); fmt_expr(n->a->kids[0],1); printf(" to "); fmt_expr(n->a->kids[1],1); }
+                else { printf("for %s in ", n->name); fmt_expr(n->a,1); }
+                printf(" {\n"); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
     case N_TRY: printf("try {\n"); for(int i=0;i<n->a->nkids;i++) fmt_stmt(n->a->kids[i], indent+1); fmt_indent(indent); printf("} catch %s {\n", n->name); for(int i=0;i<n->b->nkids;i++) fmt_stmt(n->b->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
     case N_BLOCK: printf("{\n"); for(int i=0;i<n->nkids;i++) fmt_stmt(n->kids[i], indent+1); fmt_indent(indent); putchar('}'); break;
     default: fmt_expr(n, 1); break;
@@ -2632,6 +2715,7 @@ static void ec_expr(Node *n){
       if(n->a->kind==N_NAME){
         const char*fn=n->a->name;
         if(!strcmp(fn,"print")){ printf("lz_print(%d",n->nkids); for(int i=0;i<n->nkids;i++){ printf(","); ec_expr(n->kids[i]); } printf(")"); break; }
+        else if(!strcmp(fn,"sleep")){ printf("lz_sleep("); ec_expr(n->kids[0]); printf(")"); break; }
         else if(!strcmp(fn,"str")){ printf("lz_str_("); ec_expr(n->kids[0]); printf(")"); break; }
         else if(!strcmp(fn,"int")){ printf("lz_int("); ec_expr(n->kids[0]); printf(")"); break; }
         else if(!strcmp(fn,"len")){ printf("lz_len("); ec_expr(n->kids[0]); printf(")"); break; }
@@ -2728,12 +2812,22 @@ static void ec_stmt(Node *n, int d){
         printf("; _i%d<(long long)(", lc); if(a1) ec_expr(a1); else ec_expr(a0); printf(").n; _i%d+=", lc);
         if(a2){ printf("(long long)("); ec_expr(a2); printf(").n"); } else printf("1");
         printf("){\n"); ec_ind(d+1); printf("LZ %s = lznum((double)_i%d);\n", n->name, lc);
+      } else if(it->kind==N_CALL && it->a->kind==N_NAME && !strcmp(it->a->name,"range_to") && it->nkids==2){
+        /* "for i from A to B" - same native-C-loop fast path as range()
+         * above, inclusive of B, direction computed at runtime since A/B
+         * may not be compile-time constants (mirrors bi_range_to). */
+        ec_ind(d); printf("{ long long _f%d=(long long)(", lc); ec_expr(it->kids[0]); printf(").n, _t%d=(long long)(", lc); ec_expr(it->kids[1]); printf(").n;\n");
+        ec_ind(d); printf("long long _s%d = (_f%d<=_t%d) ? 1 : -1;\n", lc, lc, lc);
+        ec_ind(d); printf("for(long long _i%d=_f%d; _s%d>0 ? _i%d<=_t%d : _i%d>=_t%d; _i%d+=_s%d){\n", lc,lc,lc,lc,lc,lc,lc,lc,lc);
+        ec_ind(d+1); printf("LZ %s = lznum((double)_i%d);\n", n->name, lc);
       } else {                                        /* iterate a list (or string) */
         ec_ind(d); printf("LZ _L%d = ", lc); ec_expr(it); printf(";\n");
         ec_ind(d); printf("for(long long _i%d=0; _i%d<lz_lenN(_L%d); _i%d++){\n", lc,lc,lc,lc);
         ec_ind(d+1); printf("LZ %s = lz_index(_L%d, lznum((double)_i%d));\n", n->name, lc, lc);
       }
-      ec_stmt(n->b,d+1); ec_ind(d); printf("}\n"); break;
+      ec_stmt(n->b,d+1); ec_ind(d); printf("}\n");
+      if(it->kind==N_CALL && it->a->kind==N_NAME && !strcmp(it->a->name,"range_to") && it->nkids==2){ ec_ind(d); printf("}\n"); }
+      break;
     }
     case N_IMPORT:
       if(!n->name){ fprintf(stderr,"larzc: dynamic import requires an explicit 'as alias' (line %d)\n", n->line); exit(1); }
@@ -2861,6 +2955,7 @@ static void emit_runtime(void){
   puts("  return lznil();}");
   puts("static void lz_p1(LZ v){char*s=lz_tostr(v);fputs(s,stdout);}");
   puts("static LZ lz_print(int n,...){va_list ap;va_start(ap,n);for(int i=0;i<n;i++){if(i)fputc(' ',stdout);lz_p1(va_arg(ap,LZ));}va_end(ap);fputc('\\n',stdout);return lznil();}");
+  puts("static LZ lz_sleep(LZ secs){ usleep((useconds_t)(secs.n*1e6)); return lznil(); }");
   puts("static LZ lz_len(LZ v){return lznum((double)lz_lenN(v));}");
   puts("static LZ lz_int(LZ v){return v.t==2?lznum((double)atoll(v.s)):lznum((double)(long long)v.n);}");
   puts("static LZ lz_str_(LZ v){return lzstr(lz_tostr(v));}");
