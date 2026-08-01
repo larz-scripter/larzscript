@@ -1,0 +1,46 @@
+# string - string helpers beyond the builtin methods.
+#
+#   import "string" as s
+#   s.center("hi", 8, "-")   # "---hi---"
+#   s.wrap("the quick brown fox", 10)
+
+fn center(str_, w, fill=" ") {
+  let total = w - len(str_)
+  if total <= 0 { return str_ }
+  let left = total // 2
+  return (fill * left) + str_ + (fill * (total - left))
+}
+fn reverse(str_) { let out = ""; for c in str_ { out = c + out } return out }
+fn repeat(str_, n) { return str_ * n }
+fn is_digit(str_) {
+  if len(str_) == 0 { return false }
+  for c in str_ { if not (c >= "0" and c <= "9") { return false } }
+  return true
+}
+fn is_alpha(str_) {
+  if len(str_) == 0 { return false }
+  for c in str_ { if not ((c >= "a" and c <= "z") or (c >= "A" and c <= "Z")) { return false } }
+  return true
+}
+fn wrap(str_, width) {
+  let lines = []
+  let cur = ""
+  for w in str_.split(" ") {
+    if len(cur) == 0 { cur = w }
+    else if len(cur) + 1 + len(w) <= width { cur = cur + " " + w }
+    else { lines.push(cur); cur = w }
+  }
+  if len(cur) > 0 { lines.push(cur) }
+  return lines
+}
+fn snake(str_) {
+  let out = ""
+  for c in str_ {
+    if c >= "A" and c <= "Z" {
+      if len(out) > 0 { out = out + "_" }
+      out = out + c.lower()
+    } else if c == " " or c == "-" { out = out + "_" }
+    else { out = out + c }
+  }
+  return out
+}

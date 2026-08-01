@@ -1,0 +1,21 @@
+# html - build HTML safely, with automatic escaping.
+#
+#   import "html" as html
+#   html.el("a", {"href": "/x"}, html.escape("A & B"))   # <a href="/x">A &amp; B</a>
+#   html.page("Hi", html.tag("h1", "Hello <world>"))
+
+fn escape(s) {
+  return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+}
+fn tag(name, content) { return "<" + name + ">" + escape(content) + "</" + name + ">" }
+fn raw(name, content) { return "<" + name + ">" + content + "</" + name + ">" }
+fn el(name, attrs, content) {
+  let a = ""
+  for k in keys(attrs) { a = a + " " + k + "=\"" + escape(attrs[k]) + "\"" }
+  return "<" + name + a + ">" + content + "</" + name + ">"
+}
+fn link(href, text) { return el("a", {"href": href}, escape(text)) }
+fn ul(items) { return "<ul>" + join([tag("li", it) for it in items], "") + "</ul>" }
+fn page(title, body) {
+  return "<!doctype html><html><head><meta charset=\"utf-8\"><title>" + escape(title) + "</title></head><body>" + body + "</body></html>"
+}

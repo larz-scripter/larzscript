@@ -1,0 +1,139 @@
+# json - parse and stringify JSON, in pure Larzscript.
+#
+#   import "json" as json
+#   let data = json.parse("{\"a\": [1, 2, 3], \"ok\": true}")
+#   print(data["a"][1])                 # 2
+#   print(json.stringify(data))         # {"a":[1,2,3],"ok":true}
+
+fn _err(st, msg) { throw {"type": "JsonError", "message": msg + " at position " + str(st["i"])} }
+
+fn _peek(st) { if st["i"] >= len(st["s"]) { return "" } return st["s"][st["i"]] }
+fn _next(st) { let c = _peek(st); st["i"] = st["i"] + 1; return c }
+
+fn _skip_ws(st) {
+  while st["i"] < len(st["s"]) {
+    let c = st["s"][st["i"]]
+    if c == " " or c == "\n" or c == "\t" or c == "\r" { st["i"] = st["i"] + 1 } else { break }
+  }
+}
+
+fn _parse_string(st) {
+  _next(st)                              # opening quote
+  let out = ""
+  while true {
+    if st["i"] >= len(st["s"]) { _err(st, "unterminated string") }
+    let c = _next(st)
+    if c == "\"" { break }
+    if c == "\\" {
+      let e = _next(st)
+      if e == "n" { out = out + "\n" }
+      else if e == "t" { out = out + "\t" }
+      else if e == "r" { out = out + "\r" }
+      else if e == "\"" { out = out + "\"" }
+      else if e == "\\" { out = out + "\\" }
+      else if e == "/" { out = out + "/" }
+      else { out = out + e }
+    } else { out = out + c }
+  }
+  return out
+}
+
+fn _parse_number(st) {
+  let start = st["i"]
+  while st["i"] < len(st["s"]) {
+    let c = st["s"][st["i"]]
+    if (c >= "0" and c <= "9") or c == "-" or c == "+" or c == "." or c == "e" or c == "E" {
+      st["i"] = st["i"] + 1
+    } else { break }
+  }
+  return float(st["s"][start:st["i"]])
+}
+
+fn _parse_array(st) {
+  _next(st)                              # [
+  let out = []
+  _skip_ws(st)
+  if _peek(st) == "]" { _next(st); return out }
+  while true {
+    out.push(_parse_value(st))
+    _skip_ws(st)
+    let c = _next(st)
+    if c == "]" { break }
+    if c != "," { _err(st, "expected ',' or ']' in array") }
+  }
+  return out
+}
+
+fn _parse_object(st) {
+  _next(st)                              # {
+  let out = {}
+  _skip_ws(st)
+  if _peek(st) == "}" { _next(st); return out }
+  while true {
+    _skip_ws(st)
+    if _peek(st) != "\"" { _err(st, "expected a string key") }
+    let key = _parse_string(st)
+    _skip_ws(st)
+    if _next(st) != ":" { _err(st, "expected ':' after key") }
+    out[key] = _parse_value(st)
+    _skip_ws(st)
+    let c = _next(st)
+    if c == "}" { break }
+    if c != "," { _err(st, "expected ',' or '}' in object") }
+  }
+  return out
+}
+
+fn _parse_value(st) {
+  _skip_ws(st)
+  let c = _peek(st)
+  if c == "{" { return _parse_object(st) }
+  if c == "[" { return _parse_array(st) }
+  if c == "\"" { return _parse_string(st) }
+  if c == "t" { st["i"] = st["i"] + 4; return true }
+  if c == "f" { st["i"] = st["i"] + 5; return false }
+  if c == "n" { st["i"] = st["i"] + 4; return nil }
+  return _parse_number(st)
+}
+
+fn parse(text) {
+  let st = {"s": text, "i": 0}
+  let v = _parse_value(st)
+  _skip_ws(st)
+  return v
+}
+
+fn _quote(s) {
+  let out = "\""
+  for c in str(s) {
+    if c == "\"" { out = out + "\\\"" }
+    else if c == "\\" { out = out + "\\\\" }
+    else if c == "\n" { out = out + "\\n" }
+    else if c == "\t" { out = out + "\\t" }
+    else if c == "\r" { out = out + "\\r" }
+    else { out = out + c }
+  }
+  return out + "\""
+}
+
+fn stringify(v) {
+  let t = type(v)
+  if t == "nil" { return "null" }
+  if t == "bool" { return v ? "true" : "false" }
+  if t == "number" { return str(v) }
+  if t == "string" { return _quote(v) }
+  if t == "list" { return "[" + join([stringify(x) for x in v], ",") + "]" }
+  if t == "dict" { return "{" + join([_quote(str(k)) + ":" + stringify(v[k]) for k in keys(v)], ",") + "}" }
+  return _quote(str(v))
+}
+
+# `json FILE` - pretty-print a JSON file (parse then re-stringify).
+fn run(args) {
+  if len(args) == 0 { print("usage: json FILE"); return }
+  if not file_exists(args[0]) { print("json: no such file: " + args[0]); return }
+  try {
+    print(stringify(parse(read_file(args[0]))))
+  } catch e {
+    print("json: " + str(e["message"]))
+  }
+}

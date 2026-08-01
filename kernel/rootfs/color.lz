@@ -1,0 +1,19 @@
+# color - ANSI terminal colors for Larzscript.
+#
+#   import "color" as c
+#   print(c.green("ok"), c.red("error"), c.bold(c.cyan("title")))
+
+let _ESC = chr(27)
+fn _c(code, s) { return _ESC + "[" + str(code) + "m" + s + _ESC + "[0m" }
+
+fn red(s) { return _c(31, s) }
+fn green(s) { return _c(32, s) }
+fn yellow(s) { return _c(33, s) }
+fn blue(s) { return _c(34, s) }
+fn magenta(s) { return _c(35, s) }
+fn cyan(s) { return _c(36, s) }
+fn gray(s) { return _c(90, s) }
+fn bold(s) { return _c(1, s) }
+fn dim(s) { return _c(2, s) }
+fn underline(s) { return _c(4, s) }
+fn invert(s) { return _c(7, s) }

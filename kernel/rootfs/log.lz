@@ -1,0 +1,26 @@
+# log - simple leveled logging with timestamps.
+#
+#   import "log" as log
+#   log.set_level("info")
+#   log.info("started"); log.warn("careful"); log.error("boom")
+
+import "time" as time
+
+let _level = 1
+let _names = ["DEBUG", "INFO", "WARN", "ERROR"]
+
+fn set_level(name) {
+  let i = 0
+  for nm in _names { if nm == name.upper() { _level = i } i = i + 1 }
+}
+
+fn _log(lvl, msg) {
+  if lvl >= _level {
+    let ts = time.format(time.now(), "%H:%M:%S")
+    print("[" + ts + "] " + _names[lvl].ljust(5) + " " + str(msg))
+  }
+}
+fn debug(msg) { _log(0, msg) }
+fn info(msg) { _log(1, msg) }
+fn warn(msg) { _log(2, msg) }
+fn error(msg) { _log(3, msg) }

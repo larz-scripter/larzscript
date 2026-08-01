@@ -1,0 +1,29 @@
+# random - a small seeded pseudo-random generator (Park-Miller LCG).
+# Deterministic given the seed; exact in double precision. NOT cryptographic.
+#
+#   import "random" as rng
+#   rng.seed(42)
+#   print(rng.randint(1, 6), rng.random(), rng.choice(["a", "b", "c"]))
+
+let _state = 42
+
+fn seed(n) { _state = int(n); if _state <= 0 { _state = 1 } }
+fn _next() { _state = (_state * 16807) % 2147483647; return _state }
+
+fn random() { return _next() / 2147483647.0 }          # 0.0 .. 1.0
+fn randint(lo, hi) { return lo + (_next() % (hi - lo + 1)) }
+fn choice(xs) { return xs[_next() % len(xs)] }
+fn shuffle(xs) {
+  let a = list(xs)
+  let i = len(a) - 1
+  while i > 0 {
+    let j = _next() % (i + 1)
+    let t = a[i]; a[i] = a[j]; a[j] = t
+    i = i - 1
+  }
+  return a
+}
+fn sample(xs, n) {
+  let shuffled = shuffle(xs)
+  return shuffled[:n]
+}

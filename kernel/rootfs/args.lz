@@ -1,0 +1,35 @@
+# args - simple command-line argument parsing for Larzscript.
+#
+#   import "args" as args
+#   let p = args.parse(argv)                  # from the global `args`
+#   p["flags"]["name"]        # --name=value
+#   p["flags"]["verbose"]     # --verbose      -> true
+#   p["positional"]           # everything else
+#
+# Values use the --name=value form (unambiguous); a bare --name or -x is a
+# boolean flag set to true.
+
+fn parse(argv) {
+  let flags = {}
+  let positional = []
+  for a in argv {
+    if a.starts_with("--") {
+      let body = a[2:]
+      if body.contains("=") {
+        let parts = body.split("=")
+        flags[parts[0]] = join(parts[1:], "=")
+      } else {
+        flags[body] = true
+      }
+    } else if a.starts_with("-") and len(a) > 1 {
+      for ch in a[1:] { flags[ch] = true }      # -abc -> a, b, c all true
+    } else {
+      positional.push(a)
+    }
+  }
+  return {"flags": flags, "positional": positional}
+}
+
+fn flag(parsed, name, default=nil) {
+  return parsed["flags"].has(name) ? parsed["flags"][name] : default
+}

@@ -1,0 +1,56 @@
+# csv - parse and write CSV, in pure Larzscript (handles quoted fields).
+#
+#   import "csv" as csv
+#   let rows = csv.parse("a,b\n1,\"x,y\"")     # [["a","b"],["1","x,y"]]
+#   print(csv.to_csv(rows))
+
+import "table" as table
+
+fn parse(text) {
+  let rows = []
+  let row = []
+  let field = ""
+  let i = 0
+  let n = len(text)
+  let in_quotes = false
+  while i < n {
+    let c = text[i]
+    if in_quotes {
+      if c == "\"" {
+        if i + 1 < n and text[i + 1] == "\"" { field = field + "\""; i = i + 2; continue }
+        in_quotes = false
+        i = i + 1
+      } else { field = field + c; i = i + 1 }
+    } else {
+      if c == "\"" { in_quotes = true; i = i + 1 }
+      else if c == "," { row.push(field); field = ""; i = i + 1 }
+      else if c == "\n" { row.push(field); rows.push(row); row = []; field = ""; i = i + 1 }
+      else if c == "\r" { i = i + 1 }
+      else { field = field + c; i = i + 1 }
+    }
+  }
+  if field != "" or len(row) > 0 { row.push(field); rows.push(row) }
+  return rows
+}
+
+fn to_csv(rows) {
+  let lines = []
+  for row in rows {
+    let fields = []
+    for f in row {
+      let s = str(f)
+      if s.contains(",") or s.contains("\"") or s.contains("\n") {
+        fields.push("\"" + s.replace("\"", "\"\"") + "\"")
+      } else { fields.push(s) }
+    }
+    lines.push(join(fields, ","))
+  }
+  return join(lines, "\n")
+}
+
+# `csv FILE` - parse and render as an aligned table (via the `table` pkg).
+fn run(args) {
+  if len(args) == 0 { print("usage: csv FILE"); return }
+  if not file_exists(args[0]) { print("csv: no such file: " + args[0]); return }
+  print(table.render(parse(read_file(args[0]))))
+}

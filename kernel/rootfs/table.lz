@@ -1,0 +1,36 @@
+# table - render tabular data as an aligned ASCII table.
+#
+#   import "table" as table
+#   print(table.render([["Name", "Age"], ["Ada", 36], ["Bob", 8]]))
+
+fn render(rows) {
+  if len(rows) == 0 { return "" }
+  let ncols = 0
+  for row in rows { if len(row) > ncols { ncols = len(row) } }
+  let widths = [0 for _ in range(ncols)]
+  for row in rows {
+    let c = 0
+    for cell in row {
+      let w = len(str(cell))
+      if w > widths[c] { widths[c] = w }
+      c = c + 1
+    }
+  }
+  let out = []
+  let ri = 0
+  for row in rows {
+    let cells = []
+    let c = 0
+    while c < ncols {
+      let v = c < len(row) ? str(row[c]) : ""
+      cells.push(v.ljust(widths[c]))
+      c = c + 1
+    }
+    out.push("| " + join(cells, " | ") + " |")
+    if ri == 0 {
+      out.push("|" + join(["-" * (widths[k] + 2) for k in range(ncols)], "|") + "|")
+    }
+    ri = ri + 1
+  }
+  return join(out, "\n")
+}

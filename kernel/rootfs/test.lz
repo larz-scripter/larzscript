@@ -1,0 +1,40 @@
+# test - a tiny test framework for Larzscript.
+#
+#   import "test" as t
+#   t.assert_eq(add(2, 3), 5, "adds")
+#   t.assert(is_valid(x), "x should be valid")
+#   t.report()                 # prints a summary; exits 1 if anything failed
+
+let _passed = 0
+let _failed = 0
+let _failures = []
+
+fn assert(cond, msg="assertion failed") {
+  if cond { _passed = _passed + 1 }
+  else { _failed = _failed + 1; _failures.push(msg) }
+}
+
+fn assert_eq(actual, expected, msg="") {
+  if actual == expected { _passed = _passed + 1 }
+  else {
+    _failed = _failed + 1
+    let prefix = msg == "" ? "" : msg + ": "
+    _failures.push(prefix + "expected " + str(expected) + " but got " + str(actual))
+  }
+}
+
+fn assert_true(x, msg="expected true") { assert(x, msg) }
+fn assert_false(x, msg="expected false") { assert(not x, msg) }
+
+fn passed() { return _passed }
+fn failed() { return _failed }
+
+fn report() {
+  if _failed == 0 {
+    print("ok - " + str(_passed) + " passed")
+  } else {
+    for f in _failures { print("  FAIL: " + f) }
+    print(str(_failed) + " failed, " + str(_passed) + " passed")
+    exit(1)
+  }
+}

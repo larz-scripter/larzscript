@@ -1,0 +1,51 @@
+# base64 - encode and decode base64, in pure Larzscript.
+#
+#   import "base64" as b64
+#   b64.encode("hello")        # "aGVsbG8="
+#   b64.decode("aGVsbG8=")     # "hello"
+
+let _ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+fn encode(s) {
+  let out = ""
+  let i = 0
+  let n = len(s)
+  while i < n {
+    let b0 = ord(s[i])
+    let b1 = i + 1 < n ? ord(s[i + 1]) : 0
+    let b2 = i + 2 < n ? ord(s[i + 2]) : 0
+    let triple = b0 * 65536 + b1 * 256 + b2
+    out = out + _ALPHA[(triple // 262144) % 64]
+    out = out + _ALPHA[(triple // 4096) % 64]
+    out = out + (i + 1 < n ? _ALPHA[(triple // 64) % 64] : "=")
+    out = out + (i + 2 < n ? _ALPHA[triple % 64] : "=")
+    i = i + 3
+  }
+  return out
+}
+
+fn _idx(c) {
+  let i = 0
+  while i < 64 { if _ALPHA[i] == c { return i } i = i + 1 }
+  return -1
+}
+
+fn decode(s) {
+  let out = ""
+  let buf = 0
+  let bits = 0
+  for c in s {
+    if c == "=" { break }
+    let v = _idx(c)
+    if v < 0 { continue }
+    buf = buf * 64 + v
+    bits = bits + 6
+    if bits >= 8 {
+      bits = bits - 8
+      let m = int(pow(2, bits))
+      out = out + chr((buf // m) % 256)
+      buf = buf % m
+    }
+  }
+  return out
+}

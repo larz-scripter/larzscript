@@ -1,0 +1,48 @@
+# cli - build command-line tools with subcommands and help.
+#
+#   import "cli" as cli
+#   let app = cli.new("todo", "a tiny todo tool")
+#   cli.command(app, "add", "add an item", fn(a) { print("added " + a["positional"][0]) })
+#   cli.run(app, args)          # dispatches on the first argument
+
+fn new(name, description) {
+  return {"name": name, "desc": description, "commands": {}, "help": {}}
+}
+
+fn command(app, name, help, handler) {
+  app["commands"][name] = handler
+  app["help"][name] = help
+}
+
+fn _usage(app) {
+  print(app["name"] + " - " + app["desc"])
+  print("")
+  print("commands:")
+  for name in sorted(keys(app["commands"])) {
+    print("  " + name.ljust(12) + app["help"][name])
+  }
+}
+
+fn run(app, argv) {
+  if len(argv) == 0 or argv[0] == "help" or argv[0] == "--help" {
+    _usage(app)
+    return
+  }
+  let cmd = argv[0]
+  if not app["commands"].has(cmd) {
+    print("unknown command: " + cmd)
+    _usage(app)
+    return
+  }
+  let flags = {}
+  let positional = []
+  for a in argv[1:] {
+    if a.starts_with("--") {
+      let body = a[2:]
+      if body.contains("=") { let p = body.split("="); flags[p[0]] = join(p[1:], "=") }
+      else { flags[body] = true }
+    } else { positional.push(a) }
+  }
+  let handler = app["commands"][cmd]
+  handler({"flags": flags, "positional": positional})
+}

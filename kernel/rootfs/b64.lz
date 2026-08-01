@@ -1,0 +1,15 @@
+# b64 - shell command for the `base64` package's encode/decode.
+#
+#   b64 encode TEXT
+#   b64 decode TEXT
+
+import "base64" as base64
+
+fn run(args) {
+  if len(args) < 2 or (args[0] != "encode" and args[0] != "decode") {
+    print("usage: b64 encode|decode TEXT")
+    return
+  }
+  let text = join(args[1:], " ")
+  if args[0] == "encode" { print(base64.encode(text)) } else { print(base64.decode(text)) }
+}

@@ -1,0 +1,4 @@
+# greet - friendly greetings (a tiny Larzscript package)
+fn hello(name) { return "Hello, " + name + "!" }
+fn shout(name) { return hello(name).upper() }
+let VERSION = "1.0"

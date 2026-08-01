@@ -1,0 +1,79 @@
+# time - time and duration helpers (built on the time()/clock() builtins).
+#
+#   import "time" as time
+#   let start = time.stopwatch(); ...; print(time.elapsed(start))
+#   print(time.humanize(93784))     # "1d 2h 3m 4s"
+#   print(time.format(time.now(), "%Y-%m-%d %H:%M:%S"))
+
+fn now() { return time() }
+fn stopwatch() { return clock() }
+fn elapsed(start) { return clock() - start }
+
+fn humanize(secs) {
+  let s = int(secs)
+  if s < 0 { return "-" + humanize(-s) }
+  let parts = []
+  let d = s // 86400
+  if d > 0 { parts.push(str(d) + "d"); s = s % 86400 }
+  let h = s // 3600
+  if h > 0 { parts.push(str(h) + "h"); s = s % 3600 }
+  let m = s // 60
+  if m > 0 { parts.push(str(m) + "m"); s = s % 60 }
+  if s > 0 or len(parts) == 0 { parts.push(str(s) + "s") }
+  return join(parts, " ")
+}
+
+fn _pad(n, width) {
+  let s = str(n)
+  while len(s) < width { s = "0" + s }
+  return s
+}
+
+# Howard Hinnant's civil_from_days: days-since-epoch -> {y, m, d}. Pure
+# integer math, no OS date command needed - portable everywhere, not
+# just the kernel (where `date` doesn't exist at all).
+fn _civil_from_days(z) {
+  z = z + 719468
+  let era = (z >= 0 ? z : z - 146096) // 146097
+  let doe = z - era * 146097
+  let yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+  let y = yoe + era * 400
+  let doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+  let mp = (5 * doy + 2) // 153
+  let d = doy - (153 * mp + 2) // 5 + 1
+  let m = mp + (mp < 10 ? 3 : -9)
+  y = y + (m <= 2 ? 1 : 0)
+  return {"y": y, "m": m, "d": d}
+}
+
+# Format a unix timestamp. Supports %Y %m %d %H %M %S (zero-padded except
+# %Y); any other char (including unknown % tokens) passes through as-is.
+fn format(ts, fmt) {
+  let t = int(ts)
+  let days = t // 86400
+  let secs_of_day = t % 86400
+  if secs_of_day < 0 { secs_of_day = secs_of_day + 86400; days = days - 1 }
+  let civil = _civil_from_days(days)
+  let h = secs_of_day // 3600
+  let mi = (secs_of_day % 3600) // 60
+  let s = secs_of_day % 60
+  let out = ""
+  let i = 0
+  while i < len(fmt) {
+    if fmt[i] == "%" and i + 1 < len(fmt) {
+      let tok = fmt[i + 1]
+      if tok == "Y" { out = out + str(civil["y"]) }
+      else if tok == "m" { out = out + _pad(civil["m"], 2) }
+      else if tok == "d" { out = out + _pad(civil["d"], 2) }
+      else if tok == "H" { out = out + _pad(h, 2) }
+      else if tok == "M" { out = out + _pad(mi, 2) }
+      else if tok == "S" { out = out + _pad(s, 2) }
+      else { out = out + "%" + tok }
+      i = i + 2
+    } else {
+      out = out + fmt[i]
+      i = i + 1
+    }
+  }
+  return out
+}
