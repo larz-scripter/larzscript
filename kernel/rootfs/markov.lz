@@ -1,0 +1,42 @@
+# markov - a small Markov-chain text generator, pure Larzscript. Zero
+# network, zero deps - runs even on the bare-metal kernel with no libc.
+#
+#   import "markov" as markov
+#   let chain = markov.train(["the quick brown fox", "the lazy dog sleeps"])
+#   print(markov.generate(chain, 12))
+
+import "random" as rng
+
+fn train(corpus) {
+  let chain = {}
+  for line in corpus {
+    let words = line.split(" ")
+    let i = 0
+    while i < len(words) - 1 {
+      let w = words[i]
+      let nxt = words[i + 1]
+      if not chain.has(w) { chain[w] = [] }
+      chain[w].push(nxt)
+      i = i + 1
+    }
+  }
+  return chain
+}
+
+fn generate(chain, n_words) {
+  rng.seed(int(clock() * 1000000) % 2147483646 + 1)
+  let keys_list = keys(chain)
+  if len(keys_list) == 0 { return "" }
+  let word = keys_list[rng.randint(0, len(keys_list) - 1)]
+  let out = [word]
+  let i = 0
+  while i < n_words - 1 {
+    if not chain.has(word) or len(chain[word]) == 0 { break }
+    let options = chain[word]
+    word = options[rng.randint(0, len(options) - 1)]
+    out.push(word)
+    i = i + 1
+  }
+  return join(out, " ")
+}
+

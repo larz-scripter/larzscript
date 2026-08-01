@@ -1,0 +1,20 @@
+# talk - shell command wrapper for `markov`'s text generator: generative
+# text running with no network, no Linux, nothing underneath.
+#
+#   talk [N]     - generate N words (default 12) from a small built-in corpus
+
+import "markov" as markov
+
+let _SEED_CORPUS = [
+  "larzos is a bare metal kernel with no linux underneath",
+  "larzscript makes money a first class citizen in the language",
+  "the wallet holds cents and pay moves funds between wallets",
+  "this kernel runs a real windowed desktop with a taskbar and icons",
+  "gas metering keeps every function call honest and bounded",
+  "markov chains generate new sentences from old ones one word at a time"
+]
+
+fn run(args) {
+  let n = len(args) > 0 ? int(args[0]) : 12
+  print(markov.generate(markov.train(_SEED_CORPUS), n))
+}

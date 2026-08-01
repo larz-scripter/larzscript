@@ -1,0 +1,54 @@
+# invoice - build and format invoices from Money line items.
+#
+#   import "invoice" as invoice
+#   let inv = invoice.new("INV-001", "Acme Co")
+#   invoice.add(inv, "Widget", 3, $9.99)
+#   invoice.set_tax_rate(inv, 0.08)
+#   print(invoice.render(inv))
+#   print(invoice.to_json(inv))
+
+import "table" as table
+import "json" as json
+
+fn new(number, bill_to) {
+  return {"number": number, "bill_to": bill_to, "items": [], "tax_rate": 0}
+}
+
+fn add(inv, desc, qty, unit_price) {
+  inv["items"].push({"desc": desc, "qty": qty, "unit_price": unit_price, "amount": unit_price * qty})
+}
+
+fn set_tax_rate(inv, rate) { inv["tax_rate"] = rate }
+
+fn subtotal(inv) {
+  let total = $0.00
+  for item in inv["items"] { total = total + item["amount"] }
+  return total
+}
+
+fn tax(inv) { return subtotal(inv) * inv["tax_rate"] }
+
+fn total(inv) { return subtotal(inv) + tax(inv) }
+
+fn render(inv) {
+  let rows = [["Item", "Qty", "Unit", "Amount"]]
+  for item in inv["items"] {
+    rows.push([item["desc"], str(item["qty"]), str(item["unit_price"]), str(item["amount"])])
+  }
+  let out = "Invoice " + inv["number"] + " - " + inv["bill_to"] + "\n"
+  out = out + table.render(rows) + "\n"
+  out = out + "Subtotal: " + str(subtotal(inv)) + "\n"
+  if inv["tax_rate"] > 0 { out = out + "Tax: " + str(tax(inv)) + "\n" }
+  out = out + "Total: " + str(total(inv))
+  return out
+}
+
+fn to_json(inv) {
+  let items_json = []
+  for item in inv["items"] {
+    items_json.push({"desc": item["desc"], "qty": item["qty"],
+                      "unit_price": str(item["unit_price"]), "amount": str(item["amount"])})
+  }
+  return json.stringify({"number": inv["number"], "bill_to": inv["bill_to"], "items": items_json,
+                          "subtotal": str(subtotal(inv)), "tax": str(tax(inv)), "total": str(total(inv))})
+}

@@ -1,0 +1,41 @@
+# loan - interest and amortization calculations, Money-aware.
+#
+#   import "loan" as loan
+#   loan.simple_interest($1000.00, 0.05, 2)          # 5%/yr for 2 years
+#   loan.compound_interest($1000.00, 0.05, 12, 2)    # monthly compounding
+#   let schedule = loan.amortize($10000.00, 0.06, 12)  # 12 monthly payments
+#   for row in schedule { print(row["payment"]) }
+
+fn simple_interest(principal, annual_rate, years) {
+  return principal * (annual_rate * years)
+}
+
+fn compound_interest(principal, annual_rate, periods_per_year, years) {
+  let n = periods_per_year * years
+  let factor = pow(1 + annual_rate / periods_per_year, n)
+  return principal * factor - principal
+}
+
+fn monthly_payment(principal, annual_rate, n_months) {
+  let r = annual_rate / 12
+  if r == 0 { return principal / n_months }
+  let factor = pow(1 + r, n_months)
+  return principal * (r * factor / (factor - 1))
+}
+
+fn amortize(principal, annual_rate, n_months) {
+  let payment = monthly_payment(principal, annual_rate, n_months)
+  let balance = principal
+  let r = annual_rate / 12
+  let schedule = []
+  let i = 1
+  while i <= n_months {
+    let interest_part = balance * r
+    let principal_part = payment - interest_part
+    balance = balance - principal_part
+    schedule.push({"period": i, "payment": payment, "interest": interest_part,
+                   "principal": principal_part, "balance": balance})
+    i = i + 1
+  }
+  return schedule
+}

@@ -1,0 +1,29 @@
+# fx - currency conversion with a settable rate table. Works fully offline
+# (kernel-safe); on hosted builds you can refresh rates via the `http`
+# package + a real FX API if you want (not built in here, keeps this
+# package dependency-free). ⚠ this language's Money type isn't
+# currency-tagged (it's just cents) - `convert()` returns a Money value
+# scaled by the rate, it doesn't attach a currency label to it.
+#
+#   import "fx" as fx
+#   fx.set_rate("USD", "NGN", 1550.0)
+#   fx.convert($10.00, "USD", "NGN")   # $15500.00 (scaled, see note above)
+
+let _rates = {}
+
+fn _key(ccy_a, ccy_b) { return ccy_a + ">" + ccy_b }
+
+fn set_rate(ccy_a, ccy_b, r) {
+  _rates[_key(ccy_a, ccy_b)] = r
+  _rates[_key(ccy_b, ccy_a)] = 1.0 / r
+}
+
+fn rate(ccy_a, ccy_b) {
+  if ccy_a == ccy_b { return 1.0 }
+  if not _rates.has(_key(ccy_a, ccy_b)) {
+    throw {"type": "FxError", "message": "no rate set for " + ccy_a + " -> " + ccy_b}
+  }
+  return _rates[_key(ccy_a, ccy_b)]
+}
+
+fn convert(amount, ccy_a, ccy_b) { return amount * rate(ccy_a, ccy_b) }

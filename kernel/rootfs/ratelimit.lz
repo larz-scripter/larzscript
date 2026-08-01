@@ -1,0 +1,26 @@
+# ratelimit - token-bucket rate limiting for Larzscript, in ~20 lines.
+# Caller owns the state (a plain dict passed in every call) - no hidden
+# global, no file I/O, works the same on the kernel as anywhere else.
+#
+#   import "ratelimit" as ratelimit
+#   let buckets = {}
+#   if ratelimit.allow(buckets, "user:42", 10, 1.0) { ... }   # 10 tokens, refill 1/sec
+#   else { print("rate limited") }
+
+fn allow(buckets, key, capacity, refill_per_sec) {
+  let now = clock()
+  if not buckets.has(key) {
+    buckets[key] = {"tokens": capacity - 1, "last": now}
+    return true
+  }
+  let b = buckets[key]
+  let elapsed = now - b["last"]
+  let tokens = b["tokens"] + elapsed * refill_per_sec
+  if tokens > capacity { tokens = capacity }
+  b["last"] = now
+  if tokens < 1 { b["tokens"] = tokens; return false }
+  b["tokens"] = tokens - 1
+  return true
+}
+
+fn reset(buckets, key) { if buckets.has(key) { buckets.remove(key) } }

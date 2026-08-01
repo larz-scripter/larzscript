@@ -26,4 +26,15 @@ table   packages/table
 log     packages/log
 cli     packages/cli
 html    packages/html
+crypto      packages/crypto
+webhook     packages/webhook
+apikey      packages/apikey
+ratelimit   packages/ratelimit
+invoice     packages/invoice
+escrow      packages/escrow
+fx          packages/fx
+loan        packages/loan
+markov      packages/markov
+sentiment   packages/sentiment
+ai          packages/ai
 example-external  https://github.com/larz-scripter/lz-example-external

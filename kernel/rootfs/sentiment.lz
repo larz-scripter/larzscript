@@ -1,0 +1,48 @@
+# sentiment - a small lexicon-based sentiment scorer + bag-of-words
+# similarity, pure Larzscript. Zero network, zero deps.
+#
+#   import "sentiment" as sentiment
+#   sentiment.score("this is great and wonderful")     # positive number
+#   sentiment.label("this is terrible")                # "negative"
+#   sentiment.similarity("the cat sat", "a cat sits")   # 0.0 .. 1.0
+
+let _POSITIVE = ["good", "great", "excellent", "amazing", "wonderful", "love",
+                 "best", "happy", "awesome", "fantastic", "nice", "positive",
+                 "win", "success", "beautiful", "perfect"]
+let _NEGATIVE = ["bad", "terrible", "awful", "hate", "worst", "sad", "angry",
+                 "negative", "fail", "failure", "ugly", "wrong", "broken",
+                 "poor", "horrible", "disappointing"]
+
+fn _words(text) {
+  let out = []
+  for w in text.lower().split(" ") {
+    let cleaned = w.strip()
+    if len(cleaned) > 0 { out.push(cleaned) }
+  }
+  return out
+}
+
+fn score(text) {
+  let s = 0
+  for w in _words(text) {
+    if w in _POSITIVE { s = s + 1 }
+    if w in _NEGATIVE { s = s - 1 }
+  }
+  return s
+}
+
+fn label(text) {
+  let s = score(text)
+  if s > 0 { return "positive" }
+  if s < 0 { return "negative" }
+  return "neutral"
+}
+
+fn similarity(a, b) {
+  let wa = _words(a)
+  let wb = _words(b)
+  if len(wa) == 0 or len(wb) == 0 { return 0.0 }
+  let shared = 0
+  for w in wa { if w in wb { shared = shared + 1 } }
+  return (2.0 * shared) / (len(wa) + len(wb))
+}

@@ -1,0 +1,18 @@
+# escrow - hold funds from a payer, release to a payee (or refund back) -
+# a small showcase of the language's own `wallet`/`pay` primitives, no new
+# runtime support needed. The caller owns the holding wallet (declare it,
+# pass it in) - this package is just the open/release/refund vocabulary.
+#
+#   import "escrow" as escrow
+#   wallet buyer = $100.00
+#   wallet seller
+#   wallet held
+#   escrow.open($40.00, buyer, held)
+#   # ...later, once the condition is met...
+#   escrow.release($40.00, held, seller)     # or: escrow.refund($40.00, held, buyer)
+
+fn open(amount, payer, holding) { pay amount from payer to holding }
+
+fn release(amount, holding, payee) { pay amount from holding to payee }
+
+fn refund(amount, holding, payer) { pay amount from holding to payer }
