@@ -1,0 +1,92 @@
+# url - URL parsing/building and query-string encode/decode. Pure
+# Larzscript, no dependency on the `http` package's curl - safe to use
+# anywhere, including the kernel.
+#
+#   import "url" as url
+#   let u = url.parse("https://example.com/path?a=1&b=two words")
+#   print(u["scheme"], u["host"], u["path"], u["query"]["b"])
+#   print(url.encode("two words"))          # "two%20words"
+#   print(url.decode("two%20words"))        # "two words"
+#   print(url.build_query({"a": 1, "b": "x y"}))  # "a=1&b=x%20y"
+
+fn encode(s) {
+  let out = ""
+  for c in s {
+    let safe = (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "-" or c == "_" or c == "." or c == "~"
+    if safe { out = out + c }
+    else if c == " " { out = out + "%20" }
+    else {
+      let code = ord(c)
+      let hi = code // 16
+      let lo = code % 16
+      let hexd = "0123456789ABCDEF"
+      out = out + "%" + hexd[hi:hi+1] + hexd[lo:lo+1]
+    }
+  }
+  return out
+}
+
+fn _hexval(c) {
+  if c >= "0" and c <= "9" { return ord(c) - ord("0") }
+  if c >= "A" and c <= "F" { return ord(c) - ord("A") + 10 }
+  if c >= "a" and c <= "f" { return ord(c) - ord("a") + 10 }
+  return 0
+}
+
+fn decode(s) {
+  let out = ""
+  let i = 0
+  while i < len(s) {
+    if s[i:i+1] == "%" and i + 2 < len(s) {
+      let v = _hexval(s[i+1:i+2]) * 16 + _hexval(s[i+2:i+3])
+      out = out + chr(v)
+      i = i + 3
+    } else if s[i:i+1] == "+" {
+      out = out + " "
+      i = i + 1
+    } else {
+      out = out + s[i:i+1]
+      i = i + 1
+    }
+  }
+  return out
+}
+
+# Parse a query string ("a=1&b=two") into a dict. Repeated keys keep the last value.
+fn parse_query(qs) {
+  let out = {}
+  if len(qs) == 0 { return out }
+  for pair in qs.split("&") {
+    if len(pair) == 0 { continue }
+    let eq = pair.find("=")
+    if eq < 0 { out[decode(pair)] = "" }
+    else { out[decode(pair[0:eq])] = decode(pair[eq+1:]) }
+  }
+  return out
+}
+
+# Build a query string from a dict.
+fn build_query(params) {
+  let parts = []
+  for k in keys(params) { parts.push(encode(str(k)) + "=" + encode(str(params[k]))) }
+  return join(parts, "&")
+}
+
+# Parse a URL into {scheme, host, port, path, query (dict), fragment}.
+fn parse(u) {
+  let out = {"scheme": "", "host": "", "port": nil, "path": "/", "query": {}, "fragment": ""}
+  let rest = u
+  let scheme_end = rest.find("://")
+  if scheme_end >= 0 { out["scheme"] = rest[0:scheme_end]; rest = rest[scheme_end+3:] }
+  let frag_at = rest.find("#")
+  if frag_at >= 0 { out["fragment"] = rest[frag_at+1:]; rest = rest[0:frag_at] }
+  let q_at = rest.find("?")
+  if q_at >= 0 { out["query"] = parse_query(rest[q_at+1:]); rest = rest[0:q_at] }
+  let path_at = rest.find("/")
+  let hostport = path_at >= 0 ? rest[0:path_at] : rest
+  out["path"] = path_at >= 0 ? rest[path_at:] : "/"
+  let port_at = hostport.find(":")
+  if port_at >= 0 { out["host"] = hostport[0:port_at]; out["port"] = int(hostport[port_at+1:]) }
+  else { out["host"] = hostport }
+  return out
+}

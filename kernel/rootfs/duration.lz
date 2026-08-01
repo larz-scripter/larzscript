@@ -1,0 +1,44 @@
+# duration - parse compact duration strings ("1d2h3m4s", "90s", "2h") into
+# seconds, and back. The reverse direction of `time`'s humanize() (which
+# turns seconds into a spaced "1d 2h 3m 4s" string for reading) - this
+# package's format() is compact/no-spaces so parse(format(n)) round-trips.
+#
+#   import "duration" as duration
+#   print(duration.parse("1d2h3m4s"))    # 93784
+#   print(duration.parse("90s"))         # 90
+#   print(duration.format(93784))        # "1d2h3m4s"
+
+fn parse(s) {
+  let total = 0
+  let num = ""
+  for c in s.strip() {
+    if c >= "0" and c <= "9" { num = num + c }
+    else if c == "d" or c == "h" or c == "m" or c == "s" {
+      if len(num) == 0 { throw {"type": "LarzValueError", "message": "duration.parse(): missing a number before '" + c + "' in '" + s + "'"} }
+      let n = int(num)
+      if c == "d" { total = total + n * 86400 }
+      else if c == "h" { total = total + n * 3600 }
+      else if c == "m" { total = total + n * 60 }
+      else { total = total + n }
+      num = ""
+    } else if c != " " {
+      throw {"type": "LarzValueError", "message": "duration.parse(): unexpected '" + c + "' in '" + s + "'"}
+    }
+  }
+  if len(num) > 0 { throw {"type": "LarzValueError", "message": "duration.parse(): trailing number with no unit in '" + s + "'"} }
+  return total
+}
+
+fn format(secs) {
+  let s = int(secs)
+  if s < 0 { return "-" + format(-s) }
+  let out = ""
+  let d = s // 86400
+  if d > 0 { out = out + str(d) + "d"; s = s % 86400 }
+  let h = s // 3600
+  if h > 0 { out = out + str(h) + "h"; s = s % 3600 }
+  let m = s // 60
+  if m > 0 { out = out + str(m) + "m"; s = s % 60 }
+  if s > 0 or len(out) == 0 { out = out + str(s) + "s" }
+  return out
+}

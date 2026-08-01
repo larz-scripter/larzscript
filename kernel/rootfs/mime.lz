@@ -1,0 +1,35 @@
+# mime - look up a MIME type from a filename/extension. A curated common
+# subset (~50 types), not the full IANA registry.
+#
+#   import "mime" as mime
+#   print(mime.type_of("photo.jpg"))     # "image/jpeg"
+#   print(mime.type_of("data.json"))     # "application/json"
+#   print(mime.type_of("weird.xyz"))     # "application/octet-stream" (fallback)
+
+let TYPES = {
+  "html": "text/html", "htm": "text/html", "css": "text/css",
+  "js": "application/javascript", "mjs": "application/javascript",
+  "json": "application/json", "xml": "application/xml", "csv": "text/csv",
+  "txt": "text/plain", "md": "text/markdown", "yaml": "application/yaml", "yml": "application/yaml",
+  "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif",
+  "svg": "image/svg+xml", "webp": "image/webp", "ico": "image/x-icon", "bmp": "image/bmp",
+  "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg",
+  "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime",
+  "pdf": "application/pdf", "zip": "application/zip", "gz": "application/gzip", "tar": "application/x-tar",
+  "woff": "font/woff", "woff2": "font/woff2", "ttf": "font/ttf", "otf": "font/otf",
+  "wasm": "application/wasm", "lz": "text/plain", "py": "text/x-python", "c": "text/x-c", "sh": "application/x-sh"
+}
+
+fn type_of(filename) {
+  let dot = -1
+  let i = len(filename) - 1
+  while i >= 0 { if filename[i:i+1] == "." { dot = i; break } i = i - 1 }
+  if dot < 0 { return "application/octet-stream" }
+  let ext = filename[dot+1:].lower()
+  return TYPES.get(ext, "application/octet-stream")
+}
+
+fn is_text(filename) {
+  let t = type_of(filename)
+  return t.starts_with("text/") or t == "application/json" or t == "application/xml" or t == "application/javascript" or t == "application/yaml" or t == "image/svg+xml"
+}

@@ -1,0 +1,53 @@
+# semver - semantic version (major.minor.patch) parse and compare.
+# No pre-release/build-metadata suffixes (1.2.3-beta.1+build) - a
+# deliberately small subset covering the common case.
+#
+#   import "semver" as semver
+#   let v = semver.parse("1.24.0")
+#   print(v["major"], v["minor"], v["patch"])
+#   print(semver.compare("1.2.0", "1.10.0"))    # -1 (1.2.0 < 1.10.0)
+#   print(semver.gt("2.0.0", "1.9.9"))          # true
+#   print(semver.satisfies("1.5.0", ">=1.0.0"))  # true
+
+fn parse(v) {
+  let parts = v.strip().split(".")
+  if len(parts) != 3 { throw {"type": "LarzValueError", "message": "not a major.minor.patch version: '" + v + "'"} }
+  return {"major": int(parts[0]), "minor": int(parts[1]), "patch": int(parts[2])}
+}
+
+# -1 if a < b, 0 if equal, 1 if a > b.
+fn compare(a, b) {
+  let va = parse(a)
+  let vb = parse(b)
+  if va["major"] != vb["major"] { return va["major"] < vb["major"] ? -1 : 1 }
+  if va["minor"] != vb["minor"] { return va["minor"] < vb["minor"] ? -1 : 1 }
+  if va["patch"] != vb["patch"] { return va["patch"] < vb["patch"] ? -1 : 1 }
+  return 0
+}
+
+fn eq(a, b) { return compare(a, b) == 0 }
+fn gt(a, b) { return compare(a, b) > 0 }
+fn lt(a, b) { return compare(a, b) < 0 }
+fn gte(a, b) { return compare(a, b) >= 0 }
+fn lte(a, b) { return compare(a, b) <= 0 }
+
+# satisfies(v, ">=1.0.0") / satisfies(v, "^1.2.0") (same-major, >= given) /
+# satisfies(v, "~1.2.0") (same-major.minor, >= given patch).
+fn satisfies(v, constraint) {
+  let c = constraint.strip()
+  if c[0:2] == ">=" { return gte(v, c[2:]) }
+  if c[0:2] == "<=" { return lte(v, c[2:]) }
+  if c[0:1] == ">" { return gt(v, c[1:]) }
+  if c[0:1] == "<" { return lt(v, c[1:]) }
+  if c[0:1] == "^" {
+    let base = parse(c[1:])
+    let pv = parse(v)
+    return pv["major"] == base["major"] and gte(v, c[1:])
+  }
+  if c[0:1] == "~" {
+    let base = parse(c[1:])
+    let pv = parse(v)
+    return pv["major"] == base["major"] and pv["minor"] == base["minor"] and gte(v, c[1:])
+  }
+  return eq(v, c)
+}

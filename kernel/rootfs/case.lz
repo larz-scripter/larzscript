@@ -1,0 +1,44 @@
+# case - naming-convention converters (camelCase, PascalCase, kebab-case).
+# Pairs with the `string` package's snake() - together they cover the
+# common set. All go through a shared word-split step, so "hello_world",
+# "hello-world", "hello world" and "helloWorld" all normalize the same way.
+#
+#   import "case" as case
+#   print(case.camel("hello world"))    # "helloWorld"
+#   print(case.pascal("hello-world"))   # "HelloWorld"
+#   print(case.kebab("Hello World"))    # "hello-world"
+
+fn _words(s) {
+  let out = []
+  let cur = ""
+  for c in s {
+    let is_upper = c >= "A" and c <= "Z"
+    let is_sep = c == " " or c == "_" or c == "-"
+    if is_sep {
+      if len(cur) > 0 { out.push(cur); cur = "" }
+    } else if is_upper and len(cur) > 0 {
+      out.push(cur); cur = c.lower()
+    } else {
+      cur = cur + c.lower()
+    }
+  }
+  if len(cur) > 0 { out.push(cur) }
+  return out
+}
+
+fn camel(s) {
+  let words = _words(s)
+  if len(words) == 0 { return "" }
+  let out = words[0]
+  for w in words[1:] { out = out + w.capitalize() }
+  return out
+}
+
+fn pascal(s) {
+  let words = _words(s)
+  let out = ""
+  for w in words { out = out + w.capitalize() }
+  return out
+}
+
+fn kebab(s) { return join(_words(s), "-") }

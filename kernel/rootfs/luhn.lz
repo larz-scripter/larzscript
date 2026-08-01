@@ -1,0 +1,48 @@
+# luhn - the Luhn checksum algorithm: validates card-number-shaped strings
+# (credit/debit cards, some ID numbers) and generates a valid check digit.
+# This checks the NUMBER IS WELL-FORMED, not that a card is real, active,
+# or authorized - never treat a Luhn pass as proof of a valid payment
+# method (pairs with `validate` for the surrounding input hygiene).
+#
+#   import "luhn" as luhn
+#   print(luhn.is_valid("4111111111111111"))   # true (a well-known test number)
+#   print(luhn.is_valid("4111111111111112"))   # false
+#   print(luhn.check_digit("411111111111111"))  # 1 - appending it makes it valid
+
+fn _digits_only(s) {
+  for c in s { if not (c >= "0" and c <= "9") { return false } }
+  return len(s) > 0
+}
+
+fn _luhn_sum(digits_str, start_doubled) {
+  let total = 0
+  let n = len(digits_str)
+  let i = n - 1
+  let double_it = start_doubled
+  while i >= 0 {
+    let d = int(digits_str[i:i+1])
+    if double_it {
+      d = d * 2
+      if d > 9 { d = d - 9 }
+    }
+    total = total + d
+    double_it = not double_it
+    i = i - 1
+  }
+  return total
+}
+
+fn is_valid(number) {
+  let cleaned = number.replace(" ", "").replace("-", "")
+  if not _digits_only(cleaned) { return false }
+  if len(cleaned) < 2 { return false }
+  return _luhn_sum(cleaned, false) % 10 == 0
+}
+
+# The check digit that, appended to `partial_number`, makes it Luhn-valid.
+fn check_digit(partial_number) {
+  let cleaned = partial_number.replace(" ", "").replace("-", "")
+  if not _digits_only(cleaned) { throw {"type": "LarzValueError", "message": "check_digit() expects digits only"} }
+  let sum = _luhn_sum(cleaned, true)
+  return (10 - (sum % 10)) % 10
+}

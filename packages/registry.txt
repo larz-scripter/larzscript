@@ -57,4 +57,11 @@ stack            packages/stack
 queue            packages/queue
 stats            packages/stats
 template         packages/template
+slugify          packages/slugify
+case             packages/case
+url              packages/url
+semver           packages/semver
+mime             packages/mime
+duration         packages/duration
+luhn             packages/luhn
 example-external  https://github.com/larz-scripter/lz-example-external
