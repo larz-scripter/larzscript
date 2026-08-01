@@ -428,15 +428,86 @@ int gfx_desktop_icon_hit_test(int x, int y){
 #define GFX_GRAD_TOP    0x0a0c14
 #define GFX_GRAD_BOTTOM 0x1c2030
 #define GFX_GRAD_BAND   4
-static void draw_desktop_background(void){
-    int h = gfx_height(), w = gfx_width();
+
+/* The vertical gradient's own color at a given y, factored out so the
+ * corner glow below can blend against the TRUE underlying background
+ * color at each point rather than a flat guess - keeps the glow looking
+ * like a tint on the existing wallpaper, not a separate layer painted
+ * over it. */
+static uint32_t grad_color_at(int y, int h){
     int tr=(GFX_GRAD_TOP>>16)&0xff, tg=(GFX_GRAD_TOP>>8)&0xff, tb=GFX_GRAD_TOP&0xff;
     int br=(GFX_GRAD_BOTTOM>>16)&0xff, bg=(GFX_GRAD_BOTTOM>>8)&0xff, bb=GFX_GRAD_BOTTOM&0xff;
-    for(int y=0; y<h; y+=GFX_GRAD_BAND){
-        int r = tr + (br-tr)*y/h, g = tg + (bg-tg)*y/h, b = tb + (bb-tb)*y/h;
-        int bh = GFX_GRAD_BAND; if(y+bh>h) bh = h-y;
-        gfx_fill_rect(0, y, w, bh, ((uint32_t)r<<16)|((uint32_t)g<<8)|(uint32_t)b);
+    int r = tr + (br-tr)*y/h, g = tg + (bg-tg)*y/h, b = tb + (bb-tb)*y/h;
+    return ((uint32_t)r<<16)|((uint32_t)g<<8)|(uint32_t)b;
+}
+
+/* Integer square root (Newton's method) - only ever called once per glow
+ * block below (a few thousand times per redraw at most, not per-pixel),
+ * so the handful of iterations to converge is cheap. Needed for a true
+ * LINEAR-by-real-distance falloff rather than falloff by squared distance
+ * (which is skewed: nearly flat near the center, then drops steeply right
+ * at the radius edge - looks like a visible solid patch with a hard rim,
+ * not a soft glow, confirmed by an actual screendump before this fix). */
+static int isqrt(int n){
+    if(n<=0) return 0;
+    int x=n, y=(x+1)/2;
+    while(y<x){ x=y; y=(x+n/x)/2; }
+    return x;
+}
+
+/* A soft accent-tinted "glow" anchored near the bottom-right corner, like
+ * the soft corner light source real OS wallpapers often use - real
+ * designed depth, not just a flat linear gradient. Bounded to a small
+ * region (not full-screen) and computed in GLOW_BLOCK-sized tiles, not
+ * per-pixel, since this runs on EVERY redraw (including every mouse move,
+ * via gfx_cursor_move()) - keeps the added cost small and localized; the
+ * existing full-width gradient pass above is untouched. Kept deliberately
+ * subtle (12% peak blend, right at the anchor point only) after an
+ * earlier, stronger version (30% blend, squared-distance falloff) read as
+ * an obvious visible patch rather than ambient depth - caught via a real
+ * screendump, not assumed correct from the numbers alone. Confirmed clear
+ * of the icon column (y<=280), the top-left wordmark, and every default
+ * window position (cluster in the upper-left) - purely background depth
+ * that windows/icons already draw over regardless of where they sit. */
+#define GLOW_RADIUS 420
+#define GLOW_BLOCK  10
+#define GLOW_MAX_BLEND_NUM 12   /* peak blend = GLOW_MAX_BLEND_NUM/100 = 12% */
+static void draw_desktop_glow(int w, int h){
+    int gx = w - 60, gy = h - TASKBAR_H - 60;
+    int ar=(GFX_ACCENT>>16)&0xff, ag=(GFX_ACCENT>>8)&0xff, ab=GFX_ACCENT&0xff;
+    int y0 = gy-GLOW_RADIUS; if(y0<0) y0=0;
+    int y1 = gy+GLOW_RADIUS; if(y1>h) y1=h;
+    int x0 = gx-GLOW_RADIUS; if(x0<0) x0=0;
+    int x1 = gx+GLOW_RADIUS; if(x1>w) x1=w;
+    for(int by=y0; by<y1; by+=GLOW_BLOCK){
+        int bh = GLOW_BLOCK; if(by+bh>y1) bh = y1-by;
+        int cy = by + bh/2;
+        for(int bx=x0; bx<x1; bx+=GLOW_BLOCK){
+            int bw = GLOW_BLOCK; if(bx+bw>x1) bw = x1-bx;
+            int cx = bx + bw/2;
+            int dx = cx-gx, dy = cy-gy;
+            int dist2 = dx*dx + dy*dy;
+            if(dist2 >= GLOW_RADIUS*GLOW_RADIUS) continue;
+            int dist = isqrt(dist2);
+            int t1000 = 1000 - dist*1000/GLOW_RADIUS;        /* 0..1000, TRUE linear-distance falloff */
+            int blend1000 = t1000 * GLOW_MAX_BLEND_NUM / 100; /* 0..120 (0..12%) */
+            uint32_t base = grad_color_at(cy, h);
+            int br=(base>>16)&0xff, bgc=(base>>8)&0xff, bb=base&0xff;
+            int r = br + (ar-br)*blend1000/1000;
+            int g = bgc + (ag-bgc)*blend1000/1000;
+            int b = bb + (ab-bb)*blend1000/1000;
+            gfx_fill_rect(bx, by, bw, bh, ((uint32_t)r<<16)|((uint32_t)g<<8)|(uint32_t)b);
+        }
     }
+}
+
+static void draw_desktop_background(void){
+    int h = gfx_height(), w = gfx_width();
+    for(int y=0; y<h; y+=GFX_GRAD_BAND){
+        int bh = GFX_GRAD_BAND; if(y+bh>h) bh = h-y;
+        gfx_fill_rect(0, y, w, bh, grad_color_at(y, h));
+    }
+    draw_desktop_glow(w, h);
     /* A small brand wordmark, top-left - clear of the icon column (ICON_X=900)
      * and every app's default position (ui.window()'s cascade starts at
      * x=120; Terminal at x=40,y=40 sits below this row). GFX_ACCENT_DIM is
