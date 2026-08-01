@@ -242,6 +242,21 @@ static int g_current_window[GFX_MAX_TASKS] = {-1,-1,-1,-1,-1,-1,-1,-1};
  * Drawn as three diagonal notches (classic bottom-right-corner grip look),
  * distinct enough from the plain border to read as "grab here". */
 #define GFX_RESIZE_GRIP 14
+
+/* A subtle offset "hard shadow" - real depth without any transparency
+ * primitive (none exists anywhere in this compositor). Drawn BEFORE the
+ * window's own chrome, in the SAME per-window back-to-front turn (see
+ * gfx_windows_redraw_all()) - the window itself paints over the near edge
+ * of its own shadow, giving a clean offset-outline look, and z-order stays
+ * automatically correct (a shadow can never incorrectly cover a FRONT
+ * window, since it's drawn in that window's own turn, same as its chrome -
+ * no separate shadow pass to get the ordering wrong). */
+#define WINDOW_SHADOW_OFFSET 4
+static void draw_window_shadow(int idx){
+    Window *win = &g_windows[idx];
+    gfx_fill_rect(win->x+WINDOW_SHADOW_OFFSET, win->y+WINDOW_SHADOW_OFFSET, win->w, win->h, GFX_BLACK);
+}
+
 static void draw_window_chrome(int idx){
     Window *win = &g_windows[idx];
     int focused = (idx == g_focused_window);
@@ -600,6 +615,7 @@ void gfx_windows_redraw_all(void){
      * overlaps". */
     for(int i=0; i<g_nwindows; i++){
         int idx = g_window_order[i];
+        draw_window_shadow(idx);
         draw_window_chrome(idx);
         redraw_widgets_owned_by(idx);
     }
