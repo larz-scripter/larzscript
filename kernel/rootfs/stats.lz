@@ -1,0 +1,61 @@
+# stats - basic descriptive statistics on a list of numbers. Complements
+# `mathx` (number theory: fib/primes) rather than overlapping it - this is
+# data-analysis, not number-theory.
+#
+#   import "stats" as stats
+#   let xs = [4, 8, 15, 16, 23, 42]
+#   print(stats.mean(xs))       # 18
+#   print(stats.median(xs))     # 15.5
+#   print(stats.stddev(xs))     # population standard deviation
+#   print(stats.percentile(xs, 90))
+
+fn mean(xs) {
+  if len(xs) == 0 { throw {"type": "LarzValueError", "message": "mean() of an empty list"} }
+  return sum(xs) / len(xs)
+}
+
+fn median(xs) {
+  if len(xs) == 0 { throw {"type": "LarzValueError", "message": "median() of an empty list"} }
+  let s = sorted(xs)
+  let n = len(s)
+  let mid = n // 2
+  if n % 2 == 1 { return s[mid] }
+  return (s[mid - 1] + s[mid]) / 2
+}
+
+fn mode(xs) {
+  if len(xs) == 0 { throw {"type": "LarzValueError", "message": "mode() of an empty list"} }
+  let counts = {}
+  for x in xs { counts[x] = counts.get(x, 0) + 1 }
+  let best = xs[0]
+  let best_n = 0
+  for k in keys(counts) { if counts[k] > best_n { best = k; best_n = counts[k] } }
+  return best
+}
+
+fn variance(xs) {
+  if len(xs) == 0 { throw {"type": "LarzValueError", "message": "variance() of an empty list"} }
+  let m = mean(xs)
+  let sq = [(x - m) * (x - m) for x in xs]
+  return sum(sq) / len(xs)
+}
+
+fn stddev(xs) { return sqrt(variance(xs)) }
+
+fn percentile(xs, p) {
+  if len(xs) == 0 { throw {"type": "LarzValueError", "message": "percentile() of an empty list"} }
+  let s = sorted(xs)
+  let n = len(s)
+  if n == 1 { return s[0] }
+  let rank = (p / 100) * (n - 1)
+  let lo = int(floor(rank))
+  let hi = int(ceil(rank))
+  if lo == hi { return s[lo] }
+  let frac = rank - lo
+  return s[lo] + (s[hi] - s[lo]) * frac
+}
+
+fn range_of(xs) {
+  if len(xs) == 0 { throw {"type": "LarzValueError", "message": "range_of() of an empty list"} }
+  return max(xs) - min(xs)
+}

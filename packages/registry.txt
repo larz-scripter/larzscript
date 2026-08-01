@@ -51,4 +51,10 @@ budget           packages/budget
 tax              packages/tax
 fetch            packages/fetch
 regex            packages/regex
+markdown         packages/markdown
+set              packages/set
+stack            packages/stack
+queue            packages/queue
+stats            packages/stats
+template         packages/template
 example-external  https://github.com/larz-scripter/lz-example-external

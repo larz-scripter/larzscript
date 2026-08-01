@@ -1,0 +1,83 @@
+# template - simple {{var}} string templating (Mustache-lite): variable
+# substitution, {{#each field}}...{{/each}} loops, {{#if field}}...{{/if}}
+# conditionals. No nesting (an #each inside an #each, or #if inside #each,
+# isn't supported - a deliberately small, single-pass subset), no dotted
+# paths (context lookup is one level).
+#
+#   import "template" as template
+#   let t = "Hi {{name}}!\n{{#each items}}- {{this}}\n{{/each}}{{#if vip}}VIP!\n{{/if}}"
+#   print(template.render(t, {"name": "Sam", "items": ["a", "b"], "vip": true}))
+
+fn _lookup(ctx, key) { return ctx.get(key, "") }
+
+fn _process_vars(tmpl, ctx) {
+  let out = ""
+  let i = 0
+  while i < len(tmpl) {
+    if tmpl[i:i+2] == "{{" {
+      let close = tmpl[i+2:].find("}}")
+      if close >= 0 {
+        let key = tmpl[i+2:i+2+close].strip()
+        if key[0:1] != "#" and key[0:1] != "/" {
+          out = out + str(_lookup(ctx, key))
+          i = i + 2 + close + 2
+          continue
+        }
+      }
+    }
+    out = out + tmpl[i:i+1]
+    i = i + 1
+  }
+  return out
+}
+
+# Finds the first {{#TAG ...}} ... {{/TAG}} block. Returns
+# [whole_start, whole_end, arg, inner] or nil if none found.
+fn _find_block(tmpl, tag) {
+  let open_marker = "{{#" + tag + " "
+  let start = tmpl.find(open_marker)
+  if start < 0 { return nil }
+  let open_close = tmpl[start:].find("}}")
+  if open_close < 0 { return nil }
+  let arg = tmpl[start+len(open_marker):start+open_close].strip()
+  let inner_start = start + open_close + 2
+  let close_marker = "{{/" + tag + "}}"
+  let close_at = tmpl[inner_start:].find(close_marker)
+  if close_at < 0 { return nil }
+  let inner = tmpl[inner_start:inner_start+close_at]
+  let whole_end = inner_start + close_at + len(close_marker)
+  return [start, whole_end, arg, inner]
+}
+
+fn _process_each(tmpl, ctx) {
+  let blk = _find_block(tmpl, "each")
+  while blk != nil {
+    let items = ctx.get(blk[2], [])
+    let rendered = ""
+    for item in items {
+      let item_ctx = dict([[k, ctx[k]] for k in keys(ctx)])
+      item_ctx["this"] = item
+      if type(item) == "dict" { for k in keys(item) { item_ctx[k] = item[k] } }
+      rendered = rendered + _process_vars(blk[3], item_ctx)
+    }
+    tmpl = tmpl[0:blk[0]] + rendered + tmpl[blk[1]:]
+    blk = _find_block(tmpl, "each")
+  }
+  return tmpl
+}
+
+fn _process_if(tmpl, ctx) {
+  let blk = _find_block(tmpl, "if")
+  while blk != nil {
+    let shown = ctx.get(blk[2], false) ? blk[3] : ""
+    tmpl = tmpl[0:blk[0]] + shown + tmpl[blk[1]:]
+    blk = _find_block(tmpl, "if")
+  }
+  return tmpl
+}
+
+fn render(tmpl, ctx) {
+  tmpl = _process_each(tmpl, ctx)
+  tmpl = _process_if(tmpl, ctx)
+  return _process_vars(tmpl, ctx)
+}

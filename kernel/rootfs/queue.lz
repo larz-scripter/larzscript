@@ -1,0 +1,27 @@
+# queue - a FIFO queue, built on a plain list. dequeue() is O(n) (a plain
+# list shift, via slicing) - fine for the small, script-sized queues this
+# language is meant for; not a ring-buffer for a million-item hot loop.
+#
+#   import "queue" as queue
+#   let q = queue.new()
+#   queue.enqueue(q, 1); queue.enqueue(q, 2)
+#   print(queue.dequeue(q))    # 1
+#   print(queue.peek(q))       # 2
+#   print(queue.is_empty(q))   # false
+
+fn new() { return [] }
+fn enqueue(q, x) { q.push(x); return q }
+fn dequeue(q) {
+  if len(q) == 0 { throw {"type": "LarzRuntimeError", "message": "dequeue from an empty queue"} }
+  let x = q[0]
+  let rest = q[1:]
+  q.clear()
+  for item in rest { q.push(item) }
+  return x
+}
+fn peek(q) {
+  if len(q) == 0 { throw {"type": "LarzRuntimeError", "message": "peek on an empty queue"} }
+  return q[0]
+}
+fn is_empty(q) { return len(q) == 0 }
+fn size(q) { return len(q) }

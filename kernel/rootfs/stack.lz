@@ -1,0 +1,22 @@
+# stack - a LIFO stack, built on a plain list (built-in push/pop already do
+# the work - this package just names the pattern so intent reads clearly).
+#
+#   import "stack" as stack
+#   let s = stack.new()
+#   stack.push(s, 1); stack.push(s, 2)
+#   print(stack.pop(s))     # 2
+#   print(stack.peek(s))    # 1
+#   print(stack.is_empty(s))  # false
+
+fn new() { return [] }
+fn push(s, x) { s.push(x); return s }
+fn pop(s) {
+  if len(s) == 0 { throw {"type": "LarzRuntimeError", "message": "pop from an empty stack"} }
+  return s.pop()
+}
+fn peek(s) {
+  if len(s) == 0 { throw {"type": "LarzRuntimeError", "message": "peek on an empty stack"} }
+  return s[len(s) - 1]
+}
+fn is_empty(s) { return len(s) == 0 }
+fn size(s) { return len(s) }

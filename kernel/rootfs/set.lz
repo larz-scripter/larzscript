@@ -1,0 +1,42 @@
+# set - a real set type, built on a dict-as-membership-map (keys only, values
+# unused). Every function takes/returns a plain dict so sets stay easy to
+# inspect/print - there's no opaque Set class to unwrap.
+#
+#   import "set" as set
+#   let a = set.from_list([1, 2, 3])
+#   let b = set.from_list([2, 3, 4])
+#   print(set.to_list(set.union(a, b)))          # [1, 2, 3, 4]
+#   print(set.to_list(set.intersect(a, b)))       # [2, 3]
+#   print(set.to_list(set.difference(a, b)))      # [1]
+#   print(set.has(a, 2))                          # true
+
+fn from_list(xs) { let s = {}; for x in xs { s[x] = true } return s }
+fn to_list(s) { return keys(s) }
+fn has(s, x) { return s.has(x) }
+fn add(s, x) { s[x] = true; return s }
+fn remove(s, x) { s.remove(x); return s }
+fn size(s) { return len(s) }
+
+fn union(a, b) {
+  let r = {}
+  for k in keys(a) { r[k] = true }
+  for k in keys(b) { r[k] = true }
+  return r
+}
+fn intersect(a, b) {
+  let r = {}
+  for k in keys(a) { if b.has(k) { r[k] = true } }
+  return r
+}
+fn difference(a, b) {
+  let r = {}
+  for k in keys(a) { if not b.has(k) { r[k] = true } }
+  return r
+}
+fn symmetric_difference(a, b) {
+  return union(difference(a, b), difference(b, a))
+}
+fn is_subset(a, b) {
+  for k in keys(a) { if not b.has(k) { return false } }
+  return true
+}

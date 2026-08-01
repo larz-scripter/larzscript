@@ -1,0 +1,86 @@
+# markdown - a small Markdown-to-HTML converter, built on the `regex` and
+# `html` packages. Supports the common subset: # / ## / ### headings,
+# **bold**, `code`, [text](href) links, ``` fenced code blocks, - / * bullet
+# lists, and paragraphs. No tables, no nested lists, no blockquotes - a
+# deliberately small, correct subset (same spirit as `regex` itself), not a
+# full CommonMark implementation.
+#
+#   import "markdown" as markdown
+#   print(markdown.to_html("# Hi\n\nSome **bold** text and a [link](/x)."))
+#   # "<h1>Hi</h1>\n<p>Some <strong>bold</strong> text and a <a href=\"/x\">link</a>.</p>"
+
+import "regex" as regex
+import "html" as html
+
+fn _inline(s) {
+  let escaped = html.escape(s)
+  let out = ""
+  let i = 0
+  while i < len(escaped) {
+    let bold = regex.find("\\*\\*[^*]+\\*\\*", escaped, i)
+    let code = regex.find("`[^`]+`", escaped, i)
+    let link = regex.find("\\[[^\\]]+\\]\\([^)]+\\)", escaped, i)
+    if bold != nil and bold[0] == i {
+      out = out + "<strong>" + escaped[i+2:bold[1]-2] + "</strong>"
+      i = bold[1]
+    } else if code != nil and code[0] == i {
+      out = out + "<code>" + escaped[i+1:code[1]-1] + "</code>"
+      i = code[1]
+    } else if link != nil and link[0] == i {
+      let full = escaped[i:link[1]]
+      let close_bracket = full.find("]")
+      let text = full[1:close_bracket]
+      let href = full[close_bracket+2:len(full)-1]
+      out = out + "<a href=\"" + href + "\">" + text + "</a>"
+      i = link[1]
+    } else {
+      out = out + escaped[i:i+1]
+      i = i + 1
+    }
+  }
+  return out
+}
+
+fn _heading_level(line) {
+  let i = 0
+  while i < len(line) and i < 6 and line[i:i+1] == "#" { i = i + 1 }
+  if i > 0 and i < len(line) and line[i:i+1] == " " { return i }
+  return 0
+}
+
+# Convert a Markdown string to an HTML string.
+fn to_html(md) {
+  let out = []
+  let in_ul = false
+  let in_code = false
+  let code_buf = []
+  for line in md.split("\n") {
+    if line.strip()[0:3] == "```" {
+      if in_code {
+        out.push("<pre><code>" + html.escape(join(code_buf, "\n")) + "</code></pre>")
+        code_buf = []
+        in_code = false
+      } else {
+        if in_ul { out.push("</ul>"); in_ul = false }
+        in_code = true
+      }
+      continue
+    }
+    if in_code { code_buf.push(line); continue }
+    let level = _heading_level(line)
+    if level > 0 {
+      if in_ul { out.push("</ul>"); in_ul = false }
+      out.push("<h" + str(level) + ">" + _inline(line[level+1:]) + "</h" + str(level) + ">")
+    } else if line[0:2] == "- " or line[0:2] == "* " {
+      if not in_ul { out.push("<ul>"); in_ul = true }
+      out.push("<li>" + _inline(line[2:]) + "</li>")
+    } else if line.strip() == "" {
+      if in_ul { out.push("</ul>"); in_ul = false }
+    } else {
+      if in_ul { out.push("</ul>"); in_ul = false }
+      out.push("<p>" + _inline(line) + "</p>")
+    }
+  }
+  if in_ul { out.push("</ul>") }
+  return join(out, "\n")
+}
