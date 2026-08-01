@@ -1,0 +1,128 @@
+# yaml - a lightweight YAML-subset parser/serializer, pure Larzscript.
+# Supports: nested mappings (indentation-based), simple lists of scalars
+# (`- item`), scalar strings/numbers/booleans/null, and `#` comments.
+# NOT full YAML - no anchors, no flow style ({}/[]), no multi-document
+# files, no lists-of-mappings. Pairs with `json`/`csv`/`table` as another
+# common data format.
+#
+#   import "yaml" as yaml
+#   let data = yaml.parse("name: Ada\nage: 36\ntags:\n  - dev\n  - admin\n")
+#   print(yaml.stringify(data))
+
+fn _scalar(s) {
+  let t = s.strip()
+  if t == "" or t == "~" or t.lower() == "null" { return nil }
+  if t.lower() == "true" { return true }
+  if t.lower() == "false" { return false }
+  if len(t) >= 2 and ((t[0] == "\"" and t[len(t) - 1] == "\"") or (t[0] == "'" and t[len(t) - 1] == "'")) {
+    return t[1:len(t) - 1]
+  }
+  let is_num = len(t) > 0
+  let seen_dot = false
+  let i = 0
+  while i < len(t) and is_num {
+    let c = t[i]
+    if c == "-" and i == 0 { }
+    else if c == "." and not seen_dot { seen_dot = true }
+    else if not (c >= "0" and c <= "9") { is_num = false }
+    i = i + 1
+  }
+  if is_num { return seen_dot ? float(t) : int(t) }
+  return t
+}
+
+fn _indent(line) {
+  let n = 0
+  while n < len(line) and line[n] == " " { n = n + 1 }
+  return n
+}
+
+# Returns [value, next_line_index].
+fn _parse_lines(lines, start, indent) {
+  let i = start
+  while i < len(lines) and lines[i].strip() == "" { i = i + 1 }
+  if i >= len(lines) or _indent(lines[i]) < indent { return [nil, i] }
+  let first = lines[i].strip()
+  if first.starts_with("- ") or first == "-" {
+    let out = []
+    while i < len(lines) {
+      let t = lines[i].strip()
+      if t == "" { i = i + 1; continue }
+      if _indent(lines[i]) != indent or not (t.starts_with("- ") or t == "-") { break }
+      out.push(_scalar(t == "-" ? "" : t[2:]))
+      i = i + 1
+    }
+    return [out, i]
+  }
+  let out = {}
+  while i < len(lines) {
+    let t = lines[i].strip()
+    if t == "" { i = i + 1; continue }
+    if _indent(lines[i]) != indent { break }
+    let ci = t.find(":")
+    if ci < 0 { i = i + 1; continue }
+    let key = t[0:ci].strip()
+    let rest = t[ci + 1:].strip()
+    if rest == "" {
+      let j = i + 1
+      while j < len(lines) and lines[j].strip() == "" { j = j + 1 }
+      if j < len(lines) and _indent(lines[j]) > indent {
+        let result = _parse_lines(lines, j, _indent(lines[j]))
+        out[key] = result[0]
+        i = result[1]
+      } else {
+        out[key] = nil
+        i = i + 1
+      }
+    } else {
+      out[key] = _scalar(rest)
+      i = i + 1
+    }
+  }
+  return [out, i]
+}
+
+fn parse(text) {
+  let lines = []
+  for l in text.split("\n") {
+    if not l.strip().starts_with("#") { lines.push(l) }
+  }
+  return _parse_lines(lines, 0, 0)[0]
+}
+
+fn _scalar_str(v) {
+  let t = type(v)
+  if t == "nil" { return "null" }
+  if t == "bool" { return v ? "true" : "false" }
+  if t == "string" {
+    if v == "" or v.contains(":") or v.contains("#") { return "\"" + v.replace("\"", "\\\"") + "\"" }
+    return v
+  }
+  return str(v)
+}
+
+fn _stringify_value(v, indent) {
+  let pad = " " * indent
+  let t = type(v)
+  if t == "dict" {
+    let out = ""
+    for k in keys(v) {
+      let val = v[k]
+      let vt = type(val)
+      if vt == "dict" or vt == "list" {
+        out = out + pad + str(k) + ":\n" + _stringify_value(val, indent + 2)
+      } else {
+        out = out + pad + str(k) + ": " + _scalar_str(val) + "\n"
+      }
+    }
+    return out
+  }
+  if t == "list" {
+    let out = ""
+    for item in v { out = out + pad + "- " + _scalar_str(item) + "\n" }
+    return out
+  }
+  return pad + _scalar_str(v) + "\n"
+}
+
+fn stringify(data) { return _stringify_value(data, 0) }

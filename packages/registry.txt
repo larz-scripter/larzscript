@@ -44,4 +44,10 @@ validate         packages/validate
 password_strength  packages/password_strength
 totp             packages/totp
 jwt              packages/jwt
+uuid             packages/uuid
+yaml             packages/yaml
+diff             packages/diff
+budget           packages/budget
+tax              packages/tax
+fetch            packages/fetch
 example-external  https://github.com/larz-scripter/lz-example-external

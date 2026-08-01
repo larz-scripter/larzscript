@@ -1,0 +1,30 @@
+# budget - category-based budget tracking on the Money type, pure
+# Larzscript.
+#
+#   import "budget" as budget
+#   let b = budget.new()
+#   budget.set_limit(b, "groceries", $300.00)
+#   budget.spend(b, "groceries", $45.00, "weekly shop")
+#   budget.status(b, "groceries")   # {limit, spent, remaining, over}
+
+fn new() { return {"limits": {}, "spent": {}, "history": []} }
+
+fn set_limit(b, category, amount) { b["limits"][category] = amount }
+
+fn spend(b, category, amount, note="") {
+  if not b["spent"].has(category) { b["spent"][category] = $0.00 }
+  b["spent"][category] = b["spent"][category] + amount
+  b["history"].push({"category": category, "amount": amount, "note": note})
+}
+
+fn status(b, category) {
+  let limit = b["limits"].has(category) ? b["limits"][category] : $0.00
+  let spent = b["spent"].has(category) ? b["spent"][category] : $0.00
+  return {"limit": limit, "spent": spent, "remaining": limit - spent, "over": spent > limit}
+}
+
+fn total_spent(b) {
+  let total = $0.00
+  for category in keys(b["spent"]) { total = total + b["spent"][category] }
+  return total
+}

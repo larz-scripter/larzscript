@@ -1,0 +1,24 @@
+# tax - flat-rate and progressive-bracket tax calculators, Money-aware.
+#
+#   import "tax" as tax
+#   tax.flat($50000.00, 0.2)                 # 20% flat
+#   let brackets = [[$0.00, $10000.00, 0.1], [$10000.00, $40000.00, 0.2], [$40000.00, nil, 0.3]]
+#   tax.progressive($55000.00, brackets)
+
+fn flat(income, rate) { return income * rate }
+
+# brackets: list of [lower, upper_or_nil, rate] - lower bound inclusive,
+# upper bound exclusive, sorted ascending; upper=nil means "no ceiling".
+fn progressive(income, brackets) {
+  let total = $0.00
+  for b in brackets {
+    let lower = b[0]
+    let upper = b[1]
+    let rate = b[2]
+    if income <= lower { continue }
+    let taxable_top = (upper == nil or income < upper) ? income : upper
+    let taxable = taxable_top - lower
+    if taxable > $0.00 { total = total + taxable * rate }
+  }
+  return total
+}

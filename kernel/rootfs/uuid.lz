@@ -1,0 +1,28 @@
+# uuid - RFC 4122 version 4 (random) UUID generation, built on `random`.
+#
+#   import "uuid" as uuid
+#   uuid.v4()   # e.g. "3f8a1c2e-9b4d-4f7a-8c1e-2b6d9f0a1234"
+
+import "random" as rng
+
+let _HEX = "0123456789abcdef"
+
+fn _hx(b) { return _HEX[b // 16] + _HEX[b % 16] }
+
+fn v4() {
+  rng.seed(int(clock() * 1000000) % 2147483646 + 1)
+  let bytes_ = []
+  let i = 0
+  while i < 16 { bytes_.push(rng.randint(0, 255)); i = i + 1 }
+  bytes_[6] = (bytes_[6] % 16) + 64    # version 4 -> high nibble 0100
+  bytes_[8] = (bytes_[8] % 64) + 128   # variant   -> high 2 bits 10
+
+  let out = ""
+  i = 0
+  while i < 16 {
+    out = out + _hx(bytes_[i])
+    if i == 3 or i == 5 or i == 7 or i == 9 { out = out + "-" }
+    i = i + 1
+  }
+  return out
+}

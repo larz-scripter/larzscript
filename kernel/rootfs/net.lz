@@ -33,7 +33,12 @@ fn resolve(host) {
 fn get(addr, port, path) {
   let target = addr + (port == 80 ? "" : ":" + str(port)) + path
   let body = read_file("/net/get/" + target)
-  return body == "ERR" ? nil : body
+  # kernel/net.c's failure sentinel is literally "ERR\n" (trailing newline,
+  # confirmed by reading net_vfile's C source) - a bare `body == "ERR"`
+  # never matches, so the raw error text was leaking through as if it were
+  # a real response body instead of becoming nil. Found by a real `fetch`
+  # call actually failing and printing "ERR" instead of a clean error.
+  return body.strip() == "ERR" ? nil : body
 }
 
 fn accept() { return read_file("/net/http/accept") }

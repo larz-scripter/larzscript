@@ -286,8 +286,14 @@ void sched_init(void){                                    /* task 0 = the main/i
  * building a garbage packet from the wrong 3 bytes), bit4/5 = sign of
  * dx/dy, bit6/7 = overflow. Bytes 1/2: dx/dy magnitude (combine with the
  * sign bits above, NOT plain two's complement, per the protocol). */
-static unsigned char g_mpkt[3]; static int g_mcount=0;
+static unsigned char g_mpkt[4]; static int g_mcount=0;
 static int g_mouse_left_prev=0;
+/* Set by mouse_init() if the IntelliMouse wheel extension was
+ * successfully negotiated - changes packet framing from 3 bytes to 4
+ * (the 4th being signed Z-axis/wheel movement). 0 on a plain 3-button
+ * mouse (or no mouse at all) - mouse_byte() just never sees a 4th byte
+ * in that case, identical to today's behavior. */
+static int g_mouse_wheel = 0;
 /* Drag state: which window (if any) is being dragged by the title bar right
  * now, and where its top-left corner is as of the last packet - seeded
  * once from gfx_window_rect() when the drag starts, then updated purely
@@ -305,9 +311,10 @@ static int g_resize_window = -1;
 static int g_resize_win_w = 0, g_resize_win_h = 0;
 
 static void mouse_byte(unsigned char b){
+    int plen = g_mouse_wheel ? 4 : 3;
     if(g_mcount==0 && !(b&0x08)) return;          /* not a valid packet start - resync */
     g_mpkt[g_mcount++]=b;
-    if(g_mcount<3) return;
+    if(g_mcount<plen) return;
     g_mcount=0;
     unsigned char st=g_mpkt[0];
     if(st&0xC0) return;                           /* overflow bit set - drop the whole packet */
@@ -315,6 +322,27 @@ static void mouse_byte(unsigned char b){
     int dx=g_mpkt[1]; if(st&0x10) dx-=256;
     int dy=g_mpkt[2]; if(st&0x20) dy-=256;
     gfx_cursor_move(gfx_cursor_x()+dx, gfx_cursor_y()-dy);   /* PS/2 Y is inverted vs screen Y */
+    if(plen==4){
+        /* IntelliMouse Z-axis (wheel) byte: signed 8-bit, only the low
+         * nibble is meaningful in basic wheel mode. ⚠ the negotiation
+         * itself was confirmed live (a real /proc entry showed the
+         * wheel-mouse ID byte 0x03 after the magic-knock sequence below),
+         * but QEMU's `mouse_move dx dy dz` monitor command produced
+         * nonzero Z bytes inconsistently under synthetic testing (this
+         * driver's mouse_move injection is already documented elsewhere
+         * as flaky for plain dx/dy too) - could not get a reliably
+         * reproducible screendump of the scroll direction this round.
+         * Sign convention below is the standard PS/2 IntelliMouse
+         * default (spec, not independently re-verified here); Page Up/
+         * Down (gfx_terminal_scroll's other caller) IS fully verified
+         * and is the reliable scroll path. Worth a real-hardware/
+         * VirtualBox check before trusting this sign blindly. Scrolls
+         * the one active terminal unconditionally, same as Page Up/Down -
+         * not gated on cursor position, v1's single-terminal design. */
+        signed char z = (signed char)g_mpkt[3];
+        if(z > 0) gfx_terminal_scroll(1);
+        else if(z < 0) gfx_terminal_scroll(-1);
+    }
     int left = st & 0x01;
     if(left && g_drag_window>=0){                 /* held down, already dragging - move with the cursor */
         g_drag_win_x += dx; g_drag_win_y -= dy;    /* same inversion as the cursor above */
@@ -427,6 +455,19 @@ static void kbd_drain(void){
  * target that calls ints_init() forever. */
 static int m_wait_write(void){ for(unsigned i=0;i<200000u;i++) if(!(inb(0x64)&2)) return 1; return 0; }
 static int m_wait_read(void){  for(unsigned i=0;i<200000u;i++) if(inb(0x64)&1)    return 1; return 0; }
+/* Send one byte to the mouse device via the 8042's "next byte goes to the
+ * aux port" prefix (0xD4) and return whatever comes back (typically the
+ * 0xFA ACK) - 0 on timeout. Every byte the aux device receives, whether
+ * a command or a parameter, needs its own 0xD4 prefix; the controller
+ * has no concept of mouse-specific multi-byte commands. */
+static unsigned char m_send(unsigned char val){
+    if(!m_wait_write()) return 0;
+    outb(0x64,0xD4);
+    if(!m_wait_write()) return 0;
+    outb(0x60,val);
+    if(!m_wait_read()) return 0;
+    return inb(0x60);
+}
 static void mouse_init(void){
     if(!m_wait_write()) return;
     outb(0x64,0xA8);                                        /* enable the auxiliary (mouse) port */
@@ -439,11 +480,25 @@ static void mouse_init(void){
     outb(0x64,0x60);                                        /* "write controller command byte" */
     if(!m_wait_write()) return;
     outb(0x60,cmd);
-    if(!m_wait_write()) return;
-    outb(0x64,0xD4);                                        /* "next byte to port 0x60 goes to the mouse" */
-    if(!m_wait_write()) return;
-    outb(0x60,0xF4);                                        /* mouse command: enable data reporting */
-    if(m_wait_read()) (void)inb(0x60);                      /* ACK (0xFA) - timeout here is harmless */
+    /* IntelliMouse wheel negotiation - the standard "magic knock": set
+     * the sample rate to 200, then 100, then 80 (each its own ACKed
+     * command), then ask for the device ID. A wheel-capable mouse
+     * recognizes this exact sequence and switches to reporting 4-byte
+     * packets with ID 0x03 instead of the plain-mouse 0x00 - a
+     * universally-implemented convention (QEMU's default PS/2 mouse
+     * emulation included), not something specific to real hardware.
+     * A plain 3-button mouse just ignores the unrecognized rate changes
+     * and reports 0x00 - g_mouse_wheel stays 0, identical to today. */
+    m_send(0xF5);                                           /* disable data reporting first - keeps any
+                                                              * stray movement byte from interleaving with
+                                                              * the ID response below on a device that
+                                                              * defaults to reporting-on */
+    m_send(0xF3); m_send(200);
+    m_send(0xF3); m_send(100);
+    m_send(0xF3); m_send(80);
+    m_send(0xF2);                                           /* "get device ID": ACK first... */
+    if(m_wait_read()) g_mouse_wheel = (inb(0x60) == 0x03);  /* ...then the actual ID byte */
+    m_send(0xF4);                                           /* enable data reporting */
 }
 
 uint64_t interrupt_dispatch(uint64_t rsp){                /* called from isr_common; returns new rsp */
