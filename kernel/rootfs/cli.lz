@@ -18,8 +18,11 @@ fn _usage(app) {
   print(app["name"] + " - " + app["desc"])
   print("")
   print("commands:")
-  for name in sorted(keys(app["commands"])) {
-    print("  " + name.ljust(12) + app["help"][name])
+  let names = sorted(keys(app["commands"]))
+  let width = 8
+  for name in names { if len(name) + 2 > width { width = len(name) + 2 } }
+  for name in names {
+    print("  " + name.ljust(width) + app["help"][name])
   }
 }
 
