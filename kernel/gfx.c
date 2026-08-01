@@ -109,10 +109,12 @@ void gfx_vline(int x, int y, int h, uint32_t color){ gfx_fill_rect(x,y,1,h,color
 
 /* ---- 8x8 bitmap font, 5x7 glyphs left-packed into bits 7..3 of each row
  * byte (bits 2..0 stay 0 - natural inter-character spacing). Digits +
- * uppercase A-Z + the punctuation this project's demo text actually uses.
- * Lowercase letters render as their uppercase glyph (folded in
- * font_lookup) - an honest v1 limitation, not a bug: caps-only bitmap
- * fonts are a normal starting point for bare-metal text rendering. */
+ * uppercase A-Z + lowercase a-z + the punctuation this project's demo text
+ * actually uses. Lowercase glyphs share the uppercase letters' baseline
+ * (row 6): x-height letters (a c e m n o r s u v w x z) occupy rows 2-6,
+ * ascenders (b d f h k l t) occupy rows 0-6 like the uppercase set, and
+ * descenders (g j p q y) extend one row below the shared baseline into
+ * row 7 - the one row every other glyph in this font leaves blank. */
 typedef struct { char ch; unsigned char rows[8]; } Glyph;
 static const Glyph FONT[] = {
     {'0', {0b01110000,0b10001000,0b10011000,0b10101000,0b11001000,0b10001000,0b01110000,0}},
@@ -163,11 +165,36 @@ static const Glyph FONT[] = {
     {')', {0b01000000,0b00100000,0b00010000,0b00010000,0b00010000,0b00100000,0b01000000,0}},
     {'\'',{0b00100000,0b00100000,0b01000000,0,0,0,0,0}},
     {'+', {0,0b00100000,0b00100000,0b11111000,0b00100000,0b00100000,0,0}},
+    {'a', {0,0,0b01110000,0b00001000,0b01111000,0b10001000,0b01111000,0}},
+    {'b', {0b10000000,0b10000000,0b11110000,0b10001000,0b10001000,0b10001000,0b11110000,0}},
+    {'c', {0,0,0b01111000,0b10000000,0b10000000,0b10000000,0b01111000,0}},
+    {'d', {0b00001000,0b00001000,0b01111000,0b10001000,0b10001000,0b10001000,0b01111000,0}},
+    {'e', {0,0,0b01110000,0b10001000,0b11111000,0b10000000,0b01111000,0}},
+    {'f', {0b00110000,0b01000000,0b11110000,0b01000000,0b01000000,0b01000000,0b01000000,0}},
+    {'g', {0,0,0b01111000,0b10001000,0b10001000,0b01111000,0b00001000,0b11110000}},
+    {'h', {0b10000000,0b10000000,0b11110000,0b10001000,0b10001000,0b10001000,0b10001000,0}},
+    {'i', {0b01000000,0,0b11000000,0b01000000,0b01000000,0b01000000,0b11100000,0}},
+    {'j', {0b00100000,0,0b00110000,0b00010000,0b00010000,0b00010000,0b00010000,0b01100000}},
+    {'k', {0b10000000,0b10000000,0b10010000,0b10100000,0b11000000,0b10100000,0b10010000,0}},
+    {'l', {0b11000000,0b01000000,0b01000000,0b01000000,0b01000000,0b01000000,0b11100000,0}},
+    {'m', {0,0,0b11110000,0b10101000,0b10101000,0b10101000,0b10101000,0}},
+    {'n', {0,0,0b11110000,0b10001000,0b10001000,0b10001000,0b10001000,0}},
+    {'o', {0,0,0b01110000,0b10001000,0b10001000,0b10001000,0b01110000,0}},
+    {'p', {0,0,0b11110000,0b10001000,0b10001000,0b11110000,0b10000000,0b10000000}},
+    {'q', {0,0,0b01111000,0b10001000,0b10001000,0b01111000,0b00001000,0b00001000}},
+    {'r', {0,0,0b10110000,0b11000000,0b10000000,0b10000000,0b10000000,0}},
+    {'s', {0,0,0b01111000,0b10000000,0b01110000,0b00001000,0b11110000,0}},
+    {'t', {0,0b01000000,0b11100000,0b01000000,0b01000000,0b01000000,0b00110000,0}},
+    {'u', {0,0,0b10001000,0b10001000,0b10001000,0b10001000,0b01111000,0}},
+    {'v', {0,0,0b10001000,0b10001000,0b10001000,0b01010000,0b00100000,0}},
+    {'w', {0,0,0b10001000,0b10001000,0b10101000,0b10101000,0b01010000,0}},
+    {'x', {0,0,0b10001000,0b01010000,0b00100000,0b01010000,0b10001000,0}},
+    {'y', {0,0,0b10001000,0b10001000,0b01010000,0b00100000,0b00100000,0b01100000}},
+    {'z', {0,0,0b11111000,0b00010000,0b00100000,0b01000000,0b11111000,0}},
 };
 #define NFONT (int)(sizeof(FONT)/sizeof(FONT[0]))
 
 static const unsigned char *font_lookup(char c){
-    if(c>='a' && c<='z') c = (char)(c - 32);          /* fold lowercase -> uppercase glyph */
     for(int i=0;i<NFONT;i++) if(FONT[i].ch==c) return FONT[i].rows;
     return 0;                                          /* unsupported char: draw nothing */
 }
