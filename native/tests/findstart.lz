@@ -1,0 +1,9 @@
+let s = "abcabcabc"
+print(s.find("abc"))
+print(s.find("abc", 1))
+print(s.find("abc", 4))
+print(s.find("abc", 7))
+print(s.find("zzz"))
+print(s.find("abc", -3))
+print(s.contains("abc", 4))
+print(s.contains("abc", 8))

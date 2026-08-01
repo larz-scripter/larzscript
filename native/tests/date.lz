@@ -1,0 +1,5 @@
+print(date(1785605601))
+print(datetime(1785605601))
+print(date(0))
+print(date(-86400))
+print(date(86399))

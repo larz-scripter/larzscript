@@ -1,0 +1,36 @@
+# regex - pattern matching, built on the native regex_match/regex_find/
+# regex_replace/regex_split primitives (a minimal backtracking engine).
+#
+# Supported syntax: literal characters, `.` (any char), `^` `$` (anchors,
+# `^` only meaningful at the start, `$` only at the end), `*` `+` `?`
+# (greedy quantifiers on the preceding atom), `[...]` / `[^...]` character
+# classes with `a-z` ranges, and `\d \D \w \W \s \S` shorthand classes plus
+# `\`-escaped literals.
+#
+# NOT supported: capture groups, alternation (`|`), lookaround. This is a
+# deliberately small subset - correct and fast for the kind of fixed,
+# hand-written patterns this language is meant for (validation, cleanup,
+# slugifying), not a full PCRE-class engine. Like any classic backtracking
+# regex it has exponential worst case on pathological patterns - don't feed
+# it untrusted patterns.
+#
+#   import "regex" as regex
+#   regex.test("[0-9]+", "abc123")                      # true
+#   regex.find("[0-9]+", "abc123")                       # [3, 6]
+#   regex.matched_text("[0-9]+", "abc123")                # "123"
+#   regex.replace("[^a-z0-9]+", "Hello, World!".lower(), "-")  # "hello-world-"
+#   regex.split("\\s+", "a   b\tc")                      # ["a", "b", "c"]
+
+fn test(pattern, text) { return regex_match(pattern, text) }
+
+fn find(pattern, text, start=0) { return regex_find(pattern, text, start) }
+
+fn matched_text(pattern, text, start=0) {
+  let m = regex_find(pattern, text, start)
+  if m == nil { return nil }
+  return text[m[0]:m[1]]
+}
+
+fn replace(pattern, text, replacement) { return regex_replace(pattern, text, replacement) }
+
+fn split(pattern, text) { return regex_split(pattern, text) }

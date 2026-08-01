@@ -50,4 +50,5 @@ diff             packages/diff
 budget           packages/budget
 tax              packages/tax
 fetch            packages/fetch
+regex            packages/regex
 example-external  https://github.com/larz-scripter/lz-example-external

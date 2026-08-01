@@ -910,6 +910,7 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
     if(bm) return V_money(a.cents+b.cents);
     if(bn) return V_number(a.num+b.num);
     if(bs){ size_t la=strlen(a.str), lb=strlen(b.str); char *s=xmalloc(la+lb+1); memcpy(s,a.str,la); memcpy(s+la,b.str,lb+1); return V_take(s); }
+    if(a.t==V_LIST && b.t==V_LIST){ List *r=list_new(); for(int i=0;i<a.list->n;i++) list_push(r,a.list->items[i]); for(int i=0;i<b.list->n;i++) list_push(r,b.list->items[i]); return V_list(r); }
     runtime_error(ip,"LarzTypeError","cannot add those values");
   }
   if(strcmp(op,"-")==0){ if(bm) return V_money(a.cents-b.cents); if(bn) return V_number(a.num-b.num); runtime_error(ip,"LarzTypeError","cannot subtract those values"); }
@@ -1028,7 +1029,17 @@ static Value method_call(Interp *ip, Value obj, const char *name, Value *args, i
         const char *s=obj.str; const char *m=name; int na=nargs;
         if(strcmp(m,"upper")==0||strcmp(m,"lower")==0){ int up=m[0]=='u'; char *r=xstrdup(s); for(char *p=r;*p;p++) *p= up?toupper((unsigned char)*p):tolower((unsigned char)*p); return V_take(r); }
         if(strcmp(m,"strip")==0){ int a=0,b=(int)strlen(s); while(a<b&&isspace((unsigned char)s[a])) a++; while(b>a&&isspace((unsigned char)s[b-1])) b--; return mkstr_n(s+a, b-a); }
-        if(strcmp(m,"contains")==0||strcmp(m,"find")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","%s expects a string",m); const char *f=strstr(s,args[0].str); if(m[0]=='c') return V_bool(f!=NULL); return V_number(f?(double)(f-s):-1); }
+        if(strcmp(m,"contains")==0||strcmp(m,"find")==0){
+          if((na!=1&&na!=2)||args[0].t!=V_STR||(na==2&&!is_num(args[1]))) runtime_error(ip,"LarzTypeError","%s expects a string and an optional start index",m);
+          int slen=(int)strlen(s);
+          int start = na==2 ? (int)args[1].num : 0;
+          if(start<0) start+=slen;
+          if(start<0) start=0;
+          if(start>slen) start=slen;
+          const char *f=strstr(s+start,args[0].str);
+          if(m[0]=='c') return V_bool(f!=NULL);
+          return V_number(f?(double)(f-s):-1);
+        }
         if(strcmp(m,"starts_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","starts_with expects a string"); size_t ln=strlen(args[0].str); return V_bool(strncmp(s,args[0].str,ln)==0); }
         if(strcmp(m,"ends_with")==0){ if(na!=1||args[0].t!=V_STR) runtime_error(ip,"LarzTypeError","ends_with expects a string"); size_t ls=strlen(s), le=strlen(args[0].str); return V_bool(ls>=le && strcmp(s+ls-le,args[0].str)==0); }
         if(strcmp(m,"replace")==0){ if(na!=2||args[0].t!=V_STR||args[1].t!=V_STR) runtime_error(ip,"LarzTypeError","replace expects two strings"); const char *from=args[0].str,*to=args[1].str; size_t lf=strlen(from); if(lf==0) return V_string(s); SB b; b.s=NULL;b.n=0;b.cap=0; const char *p=s; while(*p){ if(strncmp(p,from,lf)==0){ sb_puts(&b,to); p+=lf; } else sb_putc(&b,*p++); } sb_putc(&b,0); return V_take(b.s?b.s:xstrdup("")); }
@@ -1603,6 +1614,181 @@ static Value bi_all(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); i
 static Value bi_any(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","any() expects a list"); for(int i=0;i<a[0].list->n;i++) if(truthy(a[0].list->items[i])) return V_bool(1); return V_bool(0); }
 static Value bi_count(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=2) runtime_error(ip,"LarzTypeError","count() expects a list/string and a value"); long long c=0; if(a[0].t==V_LIST){ for(int i=0;i<a[0].list->n;i++) if(values_equal(a[0].list->items[i],a[1])) c++; } else if(a[0].t==V_STR&&a[1].t==V_STR&&a[1].str[0]){ const char *p=a[0].str,*q; size_t l=strlen(a[1].str); while((q=strstr(p,a[1].str))){ c++; p=q+l; } } else runtime_error(ip,"LarzTypeError","count() expects a list, or two strings"); return V_number((double)c); }
 static Value bi_unique(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","unique() expects a list"); List *r=list_new(); for(int i=0;i<a[0].list->n;i++){ int seen=0; for(int j=0;j<r->n;j++) if(values_equal(r->items[j],a[0].list->items[i])){ seen=1; break; } if(!seen) list_push(r,a[0].list->items[i]); } return V_list(r); }
+/* ---- minimal regex engine: literals, ., ^, $, *, +, ?, [...], [^...],
+   \d \D \w \W \s \S, \-escaped literals. No capture groups, no alternation,
+   no lookaround - a deliberately small backtracking subset (classic
+   Kernighan-style matcher, extended for +/?/classes), not a full PCRE-class
+   engine. Exponential worst case on pathological patterns like any
+   classic backtracking regex - fine for the short, fixed patterns this
+   language is meant for (validation/cleanup), not for untrusted input. */
+static int re_atom_len(const char *p){
+  if(!*p) return 0;
+  if(*p=='\\' && p[1]) return 2;
+  if(*p=='['){
+    const char *q=p+1;
+    if(*q=='^') q++;
+    if(*q==']') q++;                       /* a leading ] is a literal member, not the terminator */
+    while(*q && *q!=']'){
+      if(*q=='\\' && q[1]) q+=2;           /* \] or \\ inside a class doesn't end it early */
+      else q++;
+    }
+    return (int)(q-p) + (*q==']'?1:0);
+  }
+  return 1;
+}
+static int re_shorthand(char cls, char c){
+  switch(cls){
+    case 'd': return isdigit((unsigned char)c);
+    case 'D': return !isdigit((unsigned char)c);
+    case 'w': return isalnum((unsigned char)c)||c=='_';
+    case 'W': return !(isalnum((unsigned char)c)||c=='_');
+    case 's': return isspace((unsigned char)c);
+    case 'S': return !isspace((unsigned char)c);
+  }
+  return 0;
+}
+static int re_class_has(const char *p, int plen, char c){
+  const char *q=p+1, *end=p+plen-1; /* p='[' .. end=']' */
+  int neg=0; if(q<end && *q=='^'){ neg=1; q++; }
+  int found=0;
+  while(q<end){
+    char lo;
+    if(*q=='\\' && q+1<end){ lo=q[1]; q+=2; } else { lo=*q; q++; }
+    if(q<end && *q=='-' && q+1<end){
+      q++;                                          /* consume '-' */
+      char hi;
+      if(*q=='\\' && q+1<end){ hi=q[1]; q+=2; } else { hi=*q; q++; }
+      if((unsigned char)c>=(unsigned char)lo && (unsigned char)c<=(unsigned char)hi) found=1;
+    } else if(lo==c) found=1;
+  }
+  return neg?!found:found;
+}
+static int re_atom_matches(const char *p, int alen, char c){
+  if(alen==0) return 0;
+  if(*p=='\\'){ char e=p[1]; if(strchr("dDwWsS",e)) return re_shorthand(e,c); return e==c; }
+  if(*p=='[') return re_class_has(p, alen, c);
+  if(*p=='.') return 1;
+  return *p==c;
+}
+static const char *re_match_seq(const char *re, const char *text);
+static const char *re_match_star(const char *atom, int alen, char quant, const char *re_rest, const char *text){
+  int minrep = (quant=='+') ? 1 : 0;
+  int maxrun = 0;
+  while(text[maxrun] && re_atom_matches(atom, alen, text[maxrun])) maxrun++;
+  for(int k=maxrun;k>=minrep;k--){
+    const char *r = re_match_seq(re_rest, text+k);
+    if(r) return r;
+  }
+  return NULL;
+}
+static const char *re_match_seq(const char *re, const char *text){
+  if(*re==0) return text;
+  if(*re=='$' && re[1]==0) return (*text==0) ? text : NULL;
+  int alen = re_atom_len(re);
+  char quant = re[alen];
+  if(quant=='*' || quant=='+' || quant=='?'){
+    if(quant=='?'){
+      if(*text && re_atom_matches(re, alen, *text)){
+        const char *r = re_match_seq(re+alen+1, text+1);
+        if(r) return r;
+      }
+      return re_match_seq(re+alen+1, text);
+    }
+    return re_match_star(re, alen, quant, re+alen+1, text);
+  }
+  if(*text==0) return NULL;
+  if(!re_atom_matches(re, alen, *text)) return NULL;
+  return re_match_seq(re+alen, text+1);
+}
+static int re_search(const char *pattern, const char *text, int from, int *out_start, int *out_end){
+  const char *re = pattern;
+  int anchored = (*re=='^');
+  if(anchored) re++;
+  int tlen = (int)strlen(text);
+  if(from<0) from=0;
+  for(int i=from; i<=tlen; i++){
+    const char *end = re_match_seq(re, text+i);
+    if(end){ *out_start=i; *out_end=(int)(end-text); return 1; }
+    if(anchored) break;
+  }
+  return 0;
+}
+static Value bi_regex_match(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","regex_match() expects (pattern, text)");
+  int s,e; return V_bool(re_search(a[0].str,a[1].str,0,&s,&e));
+}
+static Value bi_regex_find(Interp *ip, Value *a, int n){
+  if(n<2||n>3||a[0].t!=V_STR||a[1].t!=V_STR||(n==3&&!is_num(a[2]))) runtime_error(ip,"LarzTypeError","regex_find() expects (pattern, text, start=0)");
+  int from = n==3 ? (int)a[2].num : 0;
+  int s,e;
+  if(re_search(a[0].str,a[1].str,from,&s,&e)){ List *r=list_new(); list_push(r,V_number(s)); list_push(r,V_number(e)); return V_list(r); }
+  return V_nil();
+}
+static Value bi_regex_replace(Interp *ip, Value *a, int n){
+  if(n!=3||a[0].t!=V_STR||a[1].t!=V_STR||a[2].t!=V_STR) runtime_error(ip,"LarzTypeError","regex_replace() expects (pattern, text, replacement)");
+  const char *text=a[1].str; SB b; b.s=NULL;b.n=0;b.cap=0;
+  int pos=0, tlen=(int)strlen(text), s,e;
+  while(pos<=tlen && re_search(a[0].str,text,pos,&s,&e)){
+    for(int i=pos;i<s;i++) sb_putc(&b,text[i]);
+    sb_puts(&b,a[2].str);
+    if(e==s){ if(s<tlen) sb_putc(&b,text[s]); pos=s+1; } else pos=e;
+  }
+  for(int i=pos;i<tlen;i++) sb_putc(&b,text[i]);
+  sb_putc(&b,0);
+  return V_take(b.s?b.s:xstrdup(""));
+}
+static Value bi_regex_split(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","regex_split() expects (pattern, text)");
+  const char *text=a[1].str; List *r=list_new();
+  int pos=0, tlen=(int)strlen(text), s,e, last=0;
+  while(pos<=tlen && re_search(a[0].str,text,pos,&s,&e)){
+    if(e==s){ pos=s+1; continue; }
+    list_push(r, mkstr_n(text+last, s-last));
+    last=e; pos=e;
+  }
+  list_push(r, V_string(text+last));
+  return V_list(r);
+}
+
+/* ---- date/datetime: pure integer epoch->calendar, no libc <time.h>
+   gmtime/strftime dependency (those aren't guaranteed to exist in the
+   freestanding kernel build that shares this file) - Howard Hinnant's
+   civil_from_days algorithm, proleptic Gregorian, correct for any epoch
+   including negative (pre-1970). UTC only. */
+static void civil_from_days(long long z, int *y, int *m, int *d){
+  z += 719468;
+  long long era = (z>=0?z:z-146096) / 146097;
+  unsigned doe = (unsigned)(z - era*146097);
+  unsigned yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+  long long yr = (long long)yoe + era*400;
+  unsigned doy = doe - (365*yoe + yoe/4 - yoe/100);
+  unsigned mp = (5*doy + 2)/153;
+  unsigned dd = doy - (153*mp+2)/5 + 1;
+  unsigned mm = mp + (mp<10?3:(unsigned)-9);
+  *y = (int)(yr + (mm<=2?1:0));
+  *m = (int)mm; *d=(int)dd;
+}
+static void epoch_parts(double ts, int *y, int *mo, int *d, int *hh, int *mi, int *ss){
+  long long total=(long long)ts;
+  long long days = total>=0 ? total/86400 : (total-86399)/86400;
+  long long rem = total - days*86400;
+  *hh=(int)(rem/3600); *mi=(int)((rem%3600)/60); *ss=(int)(rem%60);
+  civil_from_days(days,y,mo,d);
+}
+static Value bi_date(Interp *ip, Value *a, int n){
+  if(n>1 || (n==1&&!is_num(a[0]))) runtime_error(ip,"LarzTypeError","date() expects an optional unix timestamp");
+  double ts = n==1 ? a[0].num : (double)time(NULL);
+  int y,mo,d,hh,mi,ss; epoch_parts(ts,&y,&mo,&d,&hh,&mi,&ss);
+  char buf[16]; snprintf(buf,sizeof buf,"%04d-%02d-%02d",y,mo,d);
+  return V_string(buf);
+}
+static Value bi_datetime(Interp *ip, Value *a, int n){
+  if(n>1 || (n==1&&!is_num(a[0]))) runtime_error(ip,"LarzTypeError","datetime() expects an optional unix timestamp");
+  double ts = n==1 ? a[0].num : (double)time(NULL);
+  int y,mo,d,hh,mi,ss; epoch_parts(ts,&y,&mo,&d,&hh,&mi,&ss);
+  char buf[24]; snprintf(buf,sizeof buf,"%04d-%02d-%02dT%02d:%02d:%02dZ",y,mo,d,hh,mi,ss);
+  return V_string(buf);
+}
 static Value _base_str(long long v, int base, const char *prefix){ char buf[80]; int neg=v<0; unsigned long long u=neg?(unsigned long long)(-v):(unsigned long long)v; int k=0; if(u==0) buf[k++]='0'; while(u){ int d=u%base; buf[k++]= d<10 ? '0'+d : 'a'+(d-10); u/=base; } SB b; b.s=NULL;b.n=0;b.cap=0; if(neg) sb_putc(&b,'-'); sb_puts(&b,prefix); for(int i=k-1;i>=0;i--) sb_putc(&b,buf[i]); sb_putc(&b,0); return V_take(b.s?b.s:xstrdup("")); }
 static Value bi_hex(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","hex() expects a number"); return _base_str((long long)a[0].num,16,"0x"); }
 static Value bi_bin(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","bin() expects a number"); return _base_str((long long)a[0].num,2,"0b"); }
@@ -1643,6 +1829,8 @@ static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_w
 static Builtin B_all={"all",bi_all}, B_any={"any",bi_any}, B_count={"count",bi_count}, B_unique={"unique",bi_unique};
 static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct}, B_gcd={"gcd",bi_gcd}, B_factorial={"factorial",bi_factorial}, B_sign={"sign",bi_sign}, B_clamp={"clamp",bi_clamp}, B_list={"list",bi_list}, B_dict={"dict",bi_dict};
 static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
+static Builtin B_regex_match={"regex_match",bi_regex_match}, B_regex_find={"regex_find",bi_regex_find}, B_regex_replace={"regex_replace",bi_regex_replace}, B_regex_split={"regex_split",bi_regex_split};
+static Builtin B_date={"date",bi_date}, B_datetime={"datetime",bi_datetime};
 
 /* ===================== REPL ===================== */
 /* net open brackets in s, ignoring string contents and comments (for the REPL) */
@@ -1763,6 +1951,12 @@ static void define_builtins(Env *g){
   env_define(g, "time",   V_builtin(&B_time));
   env_define(g, "clock",  V_builtin(&B_clock));
   env_define(g, "sleep",  V_builtin(&B_sleep));
+  env_define(g, "regex_match",   V_builtin(&B_regex_match));
+  env_define(g, "regex_find",    V_builtin(&B_regex_find));
+  env_define(g, "regex_replace", V_builtin(&B_regex_replace));
+  env_define(g, "regex_split",   V_builtin(&B_regex_split));
+  env_define(g, "date",     V_builtin(&B_date));
+  env_define(g, "datetime", V_builtin(&B_datetime));
 #ifdef __EMSCRIPTEN__
   register_ui_module(g);
 #endif
