@@ -214,6 +214,13 @@ void gfx_widget_set_text(const char *id, const char *text);
  * be active at a time in v1 - the most recently created one. */
 int  gfx_widget_terminal(const char *id, int x, int y, int w, int h);
 void gfx_terminal_putc(char c);   /* no-op if no terminal widget exists yet */
+/* Scroll the active terminal's history by `delta` viewport-fuls (negative =
+ * up/back in time, positive = down/toward the live tail) - called directly
+ * from kernel/libk.c's kbd_drain() when it sees a raw Page Up/Down scancode,
+ * entirely outside the normal character pipeline (so scrolling never types
+ * stray bytes into whatever program currently has the console read-loop
+ * blocked waiting for a line of input). No-op if no terminal exists. */
+void gfx_terminal_scroll(int delta);
 
 /* index of the widget with this id, or -1 - lets a caller (the kernel-native
  * `ui` Larzscript module) key its own per-widget storage (click closures) by

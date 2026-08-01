@@ -852,16 +852,81 @@ static void widget_abs_xy(int idx, int *ax, int *ay, int *right_edge, int *botto
 }
 
 /* Terminal state, parallel to g_widgets by index (only populated for
- * WIDGET_TERMINAL widgets) - a real scrolling line buffer, unlike the fixed
- * GFX_TEXT_LEN text every other widget kind uses. Statically zero-init'd,
- * so `lines==NULL` reliably means "not yet initialized" (see
+ * WIDGET_TERMINAL widgets) - a real scrolling HISTORY buffer, unlike the
+ * fixed GFX_TEXT_LEN text every other widget kind uses. `rows`/`cols` is
+ * the VIEWPORT size (what's visible at once); `hist_cap` is how many lines
+ * are actually retained (bigger than the viewport, so scrolling back is
+ * possible - "remember the visible terminal texts", not just the last
+ * screenful) - a fixed-size circular buffer, oldest line overwritten once
+ * full rather than growing forever. Statically zero-init'd, so
+ * `hist_lines==NULL` reliably means "not yet initialized" (see
  * gfx_widget_terminal()/draw_terminal()). */
 typedef struct {
-    char **lines;              /* rows malloc'd buffers, each cols+1 bytes */
-    int rows, cols;
-    int cur_row, cur_col;
+    char **hist_lines;          /* hist_cap malloc'd buffers, each cols+1 bytes, circular */
+    uint32_t *hist_color;       /* hist_cap entries, parallel to hist_lines - the color active
+                                  * when each line STARTED (see gfx_terminal_putc's ANSI
+                                  * handling below); whole-line granularity, not per-character -
+                                  * the right complexity for a bitmap-font terminal (colored
+                                  * prompt/error/success LINES is the real use case, not
+                                  * mid-line multi-color text) */
+    int hist_cap;                /* total retained history depth, fixed at creation */
+    int hist_count;               /* total lines ever written (can exceed hist_cap once wrapped);
+                                    * the line currently being composed is always slot
+                                    * (hist_count-1) % hist_cap */
+    int rows, cols;               /* viewport size */
+    int cur_col;                   /* column within the line currently being written */
+    int scroll_offset;             /* 0 = viewing the live tail; >0 = scrolled back N lines,
+                                     * via Page Up/Down - see gfx_terminal_scroll() */
+    uint32_t cur_color;             /* color new characters/lines are drawn in right now */
+    int esc_state;                   /* 0=normal, 1=saw ESC (expect '['), 2=inside CSI, parsing digits */
+    int esc_num;                      /* the SGR code accumulated so far in the current CSI param */
 } Terminal;
 static Terminal g_terminals[GFX_MAX_WIDGETS];
+
+static char *terminal_cur_line(Terminal *t){ return t->hist_lines[(t->hist_count-1) % t->hist_cap]; }
+
+/* First visible history line index for the CURRENT scroll position -
+ * shared by draw_terminal()'s full repaint and gfx_terminal_putc()'s
+ * cheap single-character incremental draw, so both agree on where the
+ * newest line actually lands in the viewport (which is NOT always the
+ * bottom row - e.g. right after the terminal is created, with less
+ * history than the viewport is tall, content starts at the top and grows
+ * down, same as any real terminal). */
+static int terminal_view_start(Terminal *t){
+    int oldest = t->hist_count > t->hist_cap ? t->hist_count - t->hist_cap : 0;
+    int vs = t->hist_count - t->rows - t->scroll_offset;
+    if(vs < oldest) vs = oldest;
+    return vs;
+}
+
+/* Standard ANSI SGR foreground codes (30-37, 90-97 bright) mapped to this
+ * project's dark theme - not raw neon, picked to sit alongside GFX_ACCENT/
+ * GFX_RED the way the rest of the UI already does. `code` 0 (or anything
+ * unrecognized) means "reset to the default terminal color" (GFX_WHITE). */
+static uint32_t ansi_sgr_color(int code){
+    switch(code){
+        case 30: return 0x555555;   /* black -> visible dark gray, not literally invisible */
+        case 31: return GFX_RED;
+        case 32: return GFX_ACCENT;      /* green - reuses the theme's own accent */
+        case 33: return 0xd4a017;        /* yellow/amber */
+        case 34: return 0x3a7bd5;        /* blue */
+        case 35: return 0xb05ad5;        /* magenta */
+        case 36: return 0x30b8c8;        /* cyan */
+        case 37: return GFX_WHITE;
+        case 90: return GFX_MID_GRAY;    /* bright black -> gray */
+        case 91: return 0xe04040;
+        case 92: return 0x4fe0c0;
+        case 93: return 0xf0c040;
+        case 94: return 0x5f9bf5;
+        case 95: return 0xd080f0;
+        case 96: return 0x50d8e8;
+        case 97: return GFX_WHITE;
+        default: return GFX_WHITE;       /* includes 0/reset and any other SGR attribute
+                                           * (bold/dim/underline/...) this font can't render
+                                           * distinctly - consumed, not shown as garbage,
+                                           * but has no color effect of its own */
+    }
+}
 static int g_active_terminal = -1;     /* index into g_widgets/g_terminals, or -1 - the ONE
                                          * widget gfx_terminal_putc() feeds; v1 supports just one */
 
@@ -927,12 +992,28 @@ static void draw_terminal(int idx){
     int dw = w->w; if(ax+dw > right_edge) dw = right_edge-ax; if(dw<0) dw=0;
     int dh = w->h; if(ay+dh > bottom_edge) dh = bottom_edge-ay; if(dh<0) dh=0;
     gfx_fill_rect(ax, ay, dw, dh, GFX_BLACK);
-    gfx_hline(ax, ay, dw, GFX_MID_GRAY);
-    gfx_hline(ax, ay+dh-1, dw, GFX_MID_GRAY);
-    gfx_vline(ax, ay, dh, GFX_MID_GRAY);
-    gfx_vline(ax+dw-1, ay, dh, GFX_MID_GRAY);
-    if(!t->lines) return;   /* first redraw, triggered from inside register_widget - not initialized yet */
-    for(int r=0; r<t->rows && ay+2+r*8 < bottom_edge; r++) gfx_draw_text(ax+2, ay+2+r*8, t->lines[r], GFX_WHITE, GFX_BLACK);
+    /* Focus-accent border, same hover/focus convention every other beauty-
+     * pass round already established for icons/taskbar entries - a
+     * terminal that's actually the active input target now looks it. */
+    int focused = (w->owner >= 0 && w->owner == g_focused_window);
+    uint32_t border = focused ? GFX_ACCENT : GFX_MID_GRAY;
+    gfx_hline(ax, ay, dw, border);
+    gfx_hline(ax, ay+dh-1, dw, border);
+    gfx_vline(ax, ay, dh, border);
+    gfx_vline(ax+dw-1, ay, dh, border);
+    if(!t->hist_lines) return;   /* first redraw, triggered from inside register_widget - not initialized yet */
+    int view_start = terminal_view_start(t);
+    for(int r=0; r<t->rows && ay+4+r*8 < bottom_edge; r++){
+        int logical = view_start + r;
+        if(logical < 0 || logical >= t->hist_count) continue;
+        int slot = logical % t->hist_cap;
+        gfx_draw_text(ax+4, ay+4+r*8, t->hist_lines[slot], t->hist_color[slot], GFX_BLACK);
+    }
+    if(t->scroll_offset == 0){   /* cursor only makes sense while viewing the live tail */
+        int cur_view_row = (t->hist_count-1) - view_start;
+        if(cur_view_row >= 0 && cur_view_row < t->rows)
+            gfx_fill_rect(ax+4+t->cur_col*8, ay+4+cur_view_row*8+6, 6, 2, GFX_ACCENT);
+    }
 }
 static void redraw_widget(int idx){
     if(idx<0 || idx>=g_nwidgets || !g_widgets[idx].used) return;
@@ -953,10 +1034,11 @@ static void redraw_widgets_owned_by(int win_idx){
 static void free_widgets_owned_by(int win_idx){
     for(int i=0; i<g_nwidgets; i++){
         if(!g_widgets[i].used || g_widgets[i].owner!=win_idx) continue;
-        if(g_widgets[i].kind==WIDGET_TERMINAL && g_terminals[i].lines){
-            for(int r=0;r<g_terminals[i].rows;r++) free(g_terminals[i].lines[r]);
-            free(g_terminals[i].lines);
-            g_terminals[i].lines = 0;
+        if(g_widgets[i].kind==WIDGET_TERMINAL && g_terminals[i].hist_lines){
+            for(int r=0;r<g_terminals[i].hist_cap;r++) free(g_terminals[i].hist_lines[r]);
+            free(g_terminals[i].hist_lines);
+            free(g_terminals[i].hist_color);
+            g_terminals[i].hist_lines = 0;
         }
         if(g_focus==i) g_focus = -1;
         if(g_active_terminal==i) g_active_terminal = -1;
@@ -999,14 +1081,21 @@ void gfx_widget_set_text(const char *id, const char *text){
 int gfx_widget_terminal(const char *id, int x, int y, int w, int h){
     int idx = register_widget(id, WIDGET_TERMINAL, x, y, w, h, "");
     if(idx < 0) return -1;
-    int cols = (w - 4) / 8; if(cols < 1) cols = 1;
-    int rows = (h - 4) / 8; if(rows < 1) rows = 1;
+    int cols = (w - 8) / 8; if(cols < 1) cols = 1;
+    int rows = (h - 8) / 8; if(rows < 1) rows = 1;
     Terminal *t = &g_terminals[idx];
-    t->lines = (char**)malloc(sizeof(char*) * (size_t)rows);
-    for(int i=0; i<rows; i++){ t->lines[i] = (char*)malloc((size_t)cols + 1); t->lines[i][0] = 0; }
-    t->rows = rows; t->cols = cols; t->cur_row = 0; t->cur_col = 0;
+    int cap = rows * 6; if(cap < 200) cap = 200;   /* real scrollback depth - cheap at this
+                                                     * size (a few tens of KB) against the
+                                                     * kernel's 8MB heap, one-time allocation */
+    t->hist_lines = (char**)malloc(sizeof(char*) * (size_t)cap);
+    t->hist_color = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)cap);
+    for(int i=0; i<cap; i++){ t->hist_lines[i] = (char*)malloc((size_t)cols + 1); t->hist_lines[i][0] = 0; t->hist_color[i] = GFX_WHITE; }
+    t->hist_cap = cap;
+    t->hist_count = 1;      /* slot 0 is the current, empty, being-written line */
+    t->rows = rows; t->cols = cols; t->cur_col = 0;
+    t->scroll_offset = 0; t->cur_color = GFX_WHITE; t->esc_state = 0; t->esc_num = 0;
     g_active_terminal = idx;
-    redraw_widget(idx);   /* the redraw triggered inside register_widget ran before t->lines existed */
+    redraw_widget(idx);   /* the redraw triggered inside register_widget ran before t->hist_lines existed */
     return idx;
 }
 
@@ -1018,30 +1107,89 @@ int gfx_widget_terminal(const char *id, int x, int y, int w, int h){
 void gfx_terminal_putc(char c){
     if(g_active_terminal < 0) return;
     Terminal *t = &g_terminals[g_active_terminal];
-    if(!t->lines) return;
+    if(!t->hist_lines) return;
     if(c == '\r') return;         /* serial_putc already treats \n as the one newline signal */
-    if(c == '\n'){
-        t->cur_row++; t->cur_col = 0;
-        if(t->cur_row >= t->rows){
-            for(int i=0; i<t->rows-1; i++){ char *tmp=t->lines[i]; t->lines[i]=t->lines[i+1]; t->lines[i+1]=tmp; }
-            t->lines[t->rows-1][0] = 0;
-            t->cur_row = t->rows - 1;
-            redraw_widget(g_active_terminal);   /* every line moved - a full repaint, not an append */
-            return;
-        }
-        t->lines[t->cur_row][0] = 0;
+
+    /* ANSI SGR color state machine - consumes ESC[...m sequences instead of
+     * either dropping just the ESC byte (old behavior - the printable bytes
+     * that followed showed up as literal "[31m" garbage) or drawing them.
+     * Whole-line color only (see the Terminal struct comment above). */
+    if(t->esc_state == 0 && c == 27){ t->esc_state = 1; return; }
+    if(t->esc_state == 1){
+        if(c == '['){ t->esc_state = 2; t->esc_num = 0; return; }
+        t->esc_state = 0;   /* not a CSI sequence after all - bail out quietly, drop this byte too */
         return;
     }
-    if(c < 32 || c > 126) return;  /* other control chars (e.g. a raw \b/\t) - skip, not meaningful here */
+    if(t->esc_state == 2){
+        if(c >= '0' && c <= '9'){ t->esc_num = t->esc_num*10 + (c-'0'); return; }
+        if(c == ';'){ t->cur_color = ansi_sgr_color(t->esc_num); t->esc_num = 0; return; }
+        if(c == 'm'){ t->cur_color = ansi_sgr_color(t->esc_num); t->esc_state = 0; return; }
+        t->esc_state = 0;   /* unrecognized CSI final byte - stop parsing, drop it */
+        return;
+    }
+
+    if(c == '\n'){
+        t->hist_color[(t->hist_count-1) % t->hist_cap] = t->cur_color;
+        t->hist_count++;
+        int slot = (t->hist_count-1) % t->hist_cap;
+        t->hist_lines[slot][0] = 0;
+        t->hist_color[slot] = t->cur_color;
+        t->cur_col = 0;
+        t->scroll_offset = 0;   /* new output always snaps the view back to the live tail */
+        redraw_widget(g_active_terminal);   /* the viewport's window into history just shifted - full repaint */
+        return;
+    }
+    if(c == 0x7F || c == 0x08){   /* backspace/delete - the actual reported bug: this used to be
+                                    * silently dropped here, so line-editing's "\b \b" erase
+                                    * sequence lost both \b bytes and only the SPACE landed,
+                                    * which got APPENDED instead of erasing anything */
+        if(t->cur_col > 0){
+            t->cur_col--;
+            terminal_cur_line(t)[t->cur_col] = 0;
+            if(t->scroll_offset != 0){ t->scroll_offset = 0; redraw_widget(g_active_terminal); return; }
+            int ax, ay; widget_abs_xy(g_active_terminal, &ax, &ay, 0, 0);
+            int cur_view_row = (t->hist_count-1) - terminal_view_start(t);
+            gfx_fill_rect(ax+4+t->cur_col*8, ay+4+cur_view_row*8, 8, 8, GFX_BLACK);
+        }
+        return;
+    }
+    if(c < 32 || c > 126) return;  /* other control chars (e.g. raw \t) - skip, not meaningful here */
     if(t->cur_col >= t->cols){ gfx_terminal_putc('\n'); gfx_terminal_putc(c); return; }
-    char *line = t->lines[t->cur_row];
+    char *line = terminal_cur_line(t);
     line[t->cur_col] = c;
     line[t->cur_col + 1] = 0;
+    t->hist_color[(t->hist_count-1) % t->hist_cap] = t->cur_color;
     t->cur_col++;
+    int was_scrolled = (t->scroll_offset != 0);
+    t->scroll_offset = 0;
+    if(was_scrolled){ redraw_widget(g_active_terminal); return; }
     int ax, ay;
     widget_abs_xy(g_active_terminal, &ax, &ay, 0, 0);
+    int cur_view_row = (t->hist_count-1) - terminal_view_start(t);
     char buf[2] = { c, 0 };
-    gfx_draw_text(ax + 2 + (t->cur_col - 1) * 8, ay + 2 + t->cur_row * 8, buf, GFX_WHITE, GFX_BLACK);
+    gfx_draw_text(ax + 4 + (t->cur_col - 1) * 8, ay + 4 + cur_view_row * 8, buf, t->cur_color, GFX_BLACK);
+    gfx_fill_rect(ax + 4 + t->cur_col*8, ay + 4 + cur_view_row*8 + 6, 6, 2, GFX_ACCENT);   /* cursor, new position */
+}
+
+/* Page Up/Down, wired directly from kernel/libk.c's kbd_drain() - see
+ * gfx.h's declaration for why this is a separate side channel instead of
+ * going through the normal character pipeline. */
+void gfx_terminal_scroll(int delta){
+    if(g_active_terminal < 0) return;
+    Terminal *t = &g_terminals[g_active_terminal];
+    if(!t->hist_lines) return;
+    int oldest = t->hist_count > t->hist_cap ? t->hist_count - t->hist_cap : 0;
+    int max_scroll = t->hist_count - t->rows - oldest;
+    if(max_scroll < 0) max_scroll = 0;
+    /* delta<0 (Page Up) means "go back in time" - AWAY from the live tail,
+     * so scroll_offset must INCREASE; delta>0 (Page Down) moves back
+     * toward it, decreasing scroll_offset - the inverse of a naive
+     * `+= delta*rows`, which a real Page Up/Down test caught immediately
+     * (the view visibly didn't move the way the key pressed implied). */
+    t->scroll_offset -= delta * t->rows;
+    if(t->scroll_offset < 0) t->scroll_offset = 0;
+    if(t->scroll_offset > max_scroll) t->scroll_offset = max_scroll;
+    redraw_widget(g_active_terminal);
 }
 
 static void focus_next(void){

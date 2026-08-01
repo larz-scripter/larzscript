@@ -383,12 +383,39 @@ static void mouse_byte(unsigned char b){
  * still race in and steal a byte meant for the other device's packet
  * framing. Routing every byte through the SAME status-bit-5 check here,
  * regardless of who called it, is what keeps that safe. */
+/* Set when the previous byte was the 0xE0 extended-scancode prefix (arrow
+ * keys, Page Up/Down, Home/End, ...) - kbd_translate()'s base table only
+ * covers scancodes < 0x40 (the un-prefixed key block), so extended keys
+ * need their own handling here, one prefix byte ahead. */
+static int g_kbd_ext = 0;
 static void kbd_drain(void){
     for(int g=0; g<32; g++){
         unsigned char st=inb(0x64);
         if(!(st&1)) break;                                /* output buffer empty */
         unsigned char sc=inb(0x60);                       /* read clears the byte */
         if(st&0x20){ mouse_byte(sc); continue; }          /* bit5 = mouse (aux) byte */
+        if(sc==0xE0){ g_kbd_ext=1; continue; }
+        {
+            unsigned char base = sc & 0x7F;
+            /* Page Up/Down scroll the active GUI terminal's scrollback
+             * directly - a side channel entirely outside the normal
+             * character pipeline (kbring), so scrolling never types a
+             * stray byte into whatever program is currently blocked
+             * reading a line of input. No-op (via gfx_terminal_scroll's
+             * own guard) on every non-GUI boot target. Accepts BOTH the
+             * dedicated key's extended form (E0 49/51) and the bare
+             * numpad-equivalent scancode some emulated keyboards send
+             * for the same physical key when NumLock is off - bare
+             * 0x49/0x51 were already unreachable as text input anyway
+             * (kbd_translate() drops every scancode >= 0x40), so this
+             * costs nothing and covers whichever form actually arrives. */
+            if(!(sc&0x80) && (base==0x49 || base==0x51)){
+                g_kbd_ext=0;
+                gfx_terminal_scroll(base==0x49 ? -1 : 1);
+                continue;
+            }
+        }
+        if(g_kbd_ext){ g_kbd_ext=0; continue; }   /* consume the rest of an unhandled extended key */
         int c=kbd_translate(sc); if(c>0) kbring_push((char)c);
     }
 }

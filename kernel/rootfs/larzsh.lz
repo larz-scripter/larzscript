@@ -23,6 +23,7 @@ ui.terminal("term1", 0, 0, _sz[0], _sz[1])
 
 import "bank" as bank
 import "auth" as auth
+import "color" as color
 let LARZHOME = env("HOME") + "/.larzos"
 let WALLET_FILE = LARZHOME + "/wallet.cents"
 let HISTORY = []
@@ -327,7 +328,8 @@ fn main() {
   mkdir(home); chdir(home)          # start in the user's home directory
   let state = {}
   while true {
-    let line = input(auth.session() + "@" + hostname() + ":" + short_cwd() + " (" + bank.fmt(bank.balance()) + ")$ ")
+    let prompt_text = auth.session() + "@" + hostname() + ":" + short_cwd() + " (" + bank.fmt(bank.balance()) + ")$ "
+    let line = input(color.green(prompt_text))
     if line == nil { print(""); break }          # EOF (Ctrl-D or end of piped input)
     let trimmed = line.strip()
     if trimmed == "" { continue }
