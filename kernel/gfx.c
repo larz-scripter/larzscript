@@ -20,6 +20,7 @@
 #include "console.h"
 #include "libc/string.h"
 #include "libc/stdlib.h"
+#include "libc/time.h"   /* time() - a real CMOS RTC read (kernel/libk.c), used by the taskbar clock */
 
 /* The Multiboot1 info struct GRUB hands back - field order/sizes exactly
  * match the spec (multiboot.org), packed defensively rather than relying
@@ -351,7 +352,30 @@ static void draw_cursor(void){
  * draw_taskbar() unconditionally otherwise, even with 0 windows open. */
 static int g_taskbar_visible = 1;
 void gfx_set_taskbar_visible(int v){ g_taskbar_visible = v; }
+/* Which window's taskbar entry (if any) the cursor is currently over -
+ * same pattern as g_hover_icon above, updated in gfx_cursor_move(). */
+static int g_hover_taskbar_entry = -1;
 
+/* A real wall-clock reading (kernel/libc/time.h's time(), backed by a
+ * genuine CMOS RTC read in kernel/libk.c - not uptime) formatted as
+ * HH:MM:SS - a manual formatter since the values are small/fixed-width,
+ * no snprintf dependency needed. Whatever the RTC itself is set to (no
+ * timezone handling exists anywhere in this kernel - stated as-is, not
+ * faked). Updates whenever the next redraw happens to occur (mouse move,
+ * window op, etc.) - this compositor has no periodic/timer-driven redraw,
+ * an accepted v1 scope note, not a guaranteed per-second tick. */
+static void format_clock(char *buf){
+    long secs = (long)time(0) % 86400; if(secs<0) secs += 86400;
+    int h=(int)(secs/3600), m=(int)((secs%3600)/60), s=(int)(secs%60);
+    buf[0]=(char)('0'+h/10); buf[1]=(char)('0'+h%10); buf[2]=':';
+    buf[3]=(char)('0'+m/10); buf[4]=(char)('0'+m%10); buf[5]=':';
+    buf[6]=(char)('0'+s/10); buf[7]=(char)('0'+s%10); buf[8]=0;
+}
+
+/* Entries: dark-gray chip normally, full accent when focused (unchanged
+ * from before - a strong, unambiguous "this one is active" signal), and
+ * an accent BORDER (not a full fill) on hover when not already focused -
+ * same hover convention icons now use. Real wall clock right-aligned. */
 static void draw_taskbar(void){
     if(!g_taskbar_visible) return;
     int y = gfx_height() - TASKBAR_H;
@@ -361,9 +385,21 @@ static void draw_taskbar(void){
         int idx = g_window_order[i];
         int ex = i*TASKBAR_ENTRY_W;
         int focused = (idx == g_focused_window);
-        gfx_fill_rect(ex, y+2, TASKBAR_ENTRY_W-4, TASKBAR_H-4, focused?GFX_ACCENT:GFX_DARK_GRAY);
-        gfx_draw_text(ex+6, y+(TASKBAR_H-8)/2, g_windows[idx].title, GFX_WHITE, focused?GFX_ACCENT:GFX_DARK_GRAY);
+        int hovered = (idx == g_hover_taskbar_entry) && !focused;
+        uint32_t fill = focused ? GFX_ACCENT : GFX_DARK_GRAY;
+        gfx_fill_rect(ex+2, y+2, TASKBAR_ENTRY_W-4, TASKBAR_H-4, fill);
+        if(hovered){
+            gfx_hline(ex+2, y+2, TASKBAR_ENTRY_W-4, GFX_ACCENT);
+            gfx_hline(ex+2, y+TASKBAR_H-3, TASKBAR_ENTRY_W-4, GFX_ACCENT);
+            gfx_vline(ex+2, y+2, TASKBAR_H-4, GFX_ACCENT);
+            gfx_vline(ex+TASKBAR_ENTRY_W-3, y+2, TASKBAR_H-4, GFX_ACCENT);
+        }
+        gfx_draw_text(ex+8, y+(TASKBAR_H-8)/2, g_windows[idx].title, GFX_WHITE, fill);
     }
+    char clockbuf[9];
+    format_clock(clockbuf);
+    int cx = gfx_width() - 8*8 - 12;
+    gfx_draw_text(cx, y+(TASKBAR_H-8)/2, clockbuf, GFX_WHITE, GFX_MID_GRAY);
 }
 
 /* window index whose taskbar entry contains (x,y), or -1. Checked BEFORE
@@ -579,6 +615,7 @@ void gfx_cursor_move(int x, int y){
     g_cursor_x = x; g_cursor_y = y; g_cursor_ready = 1;
     g_hover_icon = gfx_desktop_icon_hit_test(x, y);   /* updated BEFORE the redraw below so
                                                         * draw_desktop_icons() sees the current hover */
+    g_hover_taskbar_entry = gfx_taskbar_hit_test(x, y);   /* same idea, for draw_taskbar() */
     gfx_windows_redraw_all();   /* draws each window's chrome AND its own widgets together, in
                                 * z-order (see the comment there) - the cursor too, but that gets
                                 * one more pass below in case a widget's rect sits under it. */
