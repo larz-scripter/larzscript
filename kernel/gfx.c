@@ -391,8 +391,15 @@ int gfx_taskbar_hit_test(int x, int y){
 #define ICON_H 50
 #define ICON_GAP 60
 #define ICON_MAX 8
+#define ICON_STRIPE_H 5
 static const char *g_icon_labels[ICON_MAX];
 static int g_icon_count = 0;
+/* Which icon (if any) the cursor is currently over - updated in
+ * gfx_cursor_move() on every mouse move (no new event path needed, that
+ * function already runs on every move) so draw_desktop_icons() below can
+ * give the hovered tile real, expected mouse feedback - matches window
+ * focus's own accent-vs-dim border convention. -1 = nothing hovered. */
+static int g_hover_icon = -1;
 
 void gfx_desktop_icons_init(const char **labels, int count){
     if(count > ICON_MAX) count = ICON_MAX;
@@ -400,11 +407,28 @@ void gfx_desktop_icons_init(const char **labels, int count){
     g_icon_count = count;
 }
 
+/* Icon tiles: a thin accent stripe along the top - deliberately the same
+ * color a window's own title bar uses, so icons and windows read as one
+ * design language rather than unrelated UI - plus a bordered body and a
+ * centered label. Border switches to full accent when hovered, same
+ * focused/unfocused convention windows already use. Draw order (fills
+ * first, border traced last over their outer edge) matches draw_window_
+ * chrome()'s own structure exactly, for the same reason. */
 static void draw_desktop_icons(void){
     for(int i=0; i<g_icon_count; i++){
         int iy = ICON_Y0 + i*ICON_GAP;
-        gfx_fill_rect(ICON_X, iy, ICON_W, ICON_H, GFX_DARK_GRAY);
-        gfx_draw_text(ICON_X+6, iy+(ICON_H-8)/2, g_icon_labels[i], GFX_WHITE, GFX_DARK_GRAY);
+        int hovered = (i == g_hover_icon);
+        gfx_fill_rect(ICON_X, iy, ICON_W, ICON_STRIPE_H, GFX_ACCENT);
+        gfx_fill_rect(ICON_X, iy+ICON_STRIPE_H, ICON_W, ICON_H-ICON_STRIPE_H, GFX_DARK_GRAY);
+        uint32_t border = hovered ? GFX_ACCENT : GFX_MID_GRAY;
+        gfx_hline(ICON_X, iy, ICON_W, border);
+        gfx_hline(ICON_X, iy+ICON_H-1, ICON_W, border);
+        gfx_vline(ICON_X, iy, ICON_H, border);
+        gfx_vline(ICON_X+ICON_W-1, iy, ICON_H, border);
+        int lw=0; for(const char *p=g_icon_labels[i]; *p; p++) lw+=8;
+        int tx = ICON_X + (ICON_W-lw)/2; if(tx < ICON_X+4) tx = ICON_X+4;
+        int ty = iy + ICON_STRIPE_H + (ICON_H-ICON_STRIPE_H-8)/2;
+        gfx_draw_text(tx, ty, g_icon_labels[i], GFX_WHITE, GFX_DARK_GRAY);
     }
 }
 
@@ -553,6 +577,8 @@ void gfx_cursor_move(int x, int y){
     if(y < 0) y = 0;
     if(y >= gfx_height()) y = gfx_height()-1;
     g_cursor_x = x; g_cursor_y = y; g_cursor_ready = 1;
+    g_hover_icon = gfx_desktop_icon_hit_test(x, y);   /* updated BEFORE the redraw below so
+                                                        * draw_desktop_icons() sees the current hover */
     gfx_windows_redraw_all();   /* draws each window's chrome AND its own widgets together, in
                                 * z-order (see the comment there) - the cursor too, but that gets
                                 * one more pass below in case a widget's rect sits under it. */
