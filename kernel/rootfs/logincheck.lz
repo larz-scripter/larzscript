@@ -1,0 +1,27 @@
+# logincheck - internal helper for the GUI login screen (kernel.c's
+# login_screen(), LARZ_DESKTOP boot target only). NOT a user-facing
+# command - kernel.c writes the typed username/password to two temp files
+# before calling this via larz_main(), then reads the result back from a
+# third. Mirrors login.lz's real side effects exactly (auth.verify/
+# set_session, /dev/user, mkdir home) so the GUI login path behaves
+# identically to the CLI one afterward.
+#
+# Must NEVER call exit() - on this kernel exit() halts the whole machine
+# (kernel/libk.c's exit() calls qemu_exit() then loops forever), which
+# would mean a login attempt kills LarzOS instead of returning control to
+# kernel.c's login_screen() loop. Falling off the end of the script is
+# what lets larz_main() return normally.
+import "auth" as auth
+
+auth.ensure_root()
+let name = read_file("/tmp/.login_u").strip()
+let pw = read_file("/tmp/.login_p").strip()
+
+if auth.verify(name, pw) {
+  auth.set_session(name)
+  write_file("/dev/user", name)          # tell the kernel who is logged in
+  mkdir("/home/" + name)
+  write_file("/tmp/.login_result", "OK")
+} else {
+  write_file("/tmp/.login_result", "FAIL")
+}

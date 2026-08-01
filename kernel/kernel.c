@@ -84,6 +84,112 @@ static const char *g_app_manifest_scripts[] = { "/larzsh.lz", "/clock.lz", "/abo
 void desktop_icon_activate(int i){
     if(i>=0 && i<APP_MANIFEST_COUNT) launch_app(g_app_manifest_scripts[i]);
 }
+
+/* ---- GUI login screen ----
+ *
+ * A real, full-screen username/password gate before the desktop - not a
+ * "window" (no title bar, no close-X, you can't skip login), drawn
+ * directly with the same public gfx_* primitives every other diagnostic
+ * block in this file already uses. Runs synchronously in kernel_main(),
+ * BEFORE sched_init()/task_create() - console_getc() already works safely
+ * in a blocking loop this early (the exact mechanism /dev/password's
+ * masked-line-read already relies on, kernel/libk.c) so no task is needed
+ * just to read keystrokes.
+ *
+ * Credential verification reuses the REAL auth.lz logic (via a tiny
+ * internal script, /logincheck.lz) rather than duplicating the hash
+ * algorithm in C - kernel.c writes the typed username/password to two
+ * temp files, runs logincheck.lz synchronously with larz_main() (proven
+ * safe here: vfs_init() has already run), then reads its verdict back
+ * from a third file. logincheck.lz is carefully written to never call
+ * exit() - on this kernel exit() halts the whole machine (see its own
+ * comment), which would turn a login attempt into a hang instead of
+ * returning control to the loop below. */
+#define LOGIN_BUF 64
+static int text_w(const char *s){ int n=0; while(s[n]) n++; return n*8; }
+
+/* Draws one bordered field box + its current contents, centered text
+ * omitted deliberately (real login fields are left-aligned, like every
+ * other OS) - focused field gets an accent border, unfocused a dim one,
+ * the same focus-color convention buttons/windows already use elsewhere
+ * in this compositor. */
+static void login_draw_field(int x,int y,int w,int h,int focused,const char *text){
+    gfx_fill_rect(x,y,w,h,GFX_DARK_GRAY);
+    uint32_t border = focused ? GFX_ACCENT : GFX_MID_GRAY;
+    gfx_hline(x,y,w,border); gfx_hline(x,y+h-1,w,border);
+    gfx_vline(x,y,h,border); gfx_vline(x+w-1,y,h,border);
+    gfx_draw_text(x+8,y+(h-8)/2,text,GFX_WHITE,GFX_DARK_GRAY);
+}
+
+static void login_screen(void){
+    gfx_set_taskbar_visible(0);
+    /* No icons/windows exist yet at this point in the boot sequence (see
+     * kernel_main() below - login_screen() runs BEFORE gfx_desktop_icons_
+     * init()/launch_app()), so this redraw is naturally just the plain
+     * gradient background - no extra gating needed to hide anything. */
+    gfx_windows_redraw_all();
+
+    int cw=360, ch=280;
+    int cx=(gfx_width()-cw)/2, cy=(gfx_height()-ch)/2;
+    int fx=cx+40, fw=cw-80, fh=26;
+    int uy=cy+92, py=cy+156;
+
+    /* Card chrome + static labels/hint - drawn ONCE; only the two fields
+     * and the error line change per keystroke/attempt below. */
+    gfx_fill_rect(cx,cy,cw,ch,GFX_DARK_GRAY);
+    gfx_hline(cx,cy,cw,GFX_MID_GRAY); gfx_hline(cx,cy+ch-1,cw,GFX_MID_GRAY);
+    gfx_vline(cx,cy,ch,GFX_MID_GRAY); gfx_vline(cx+cw-1,cy,ch,GFX_MID_GRAY);
+    gfx_draw_text(cx+(cw-text_w("LARZOS"))/2, cy+24, "LARZOS", GFX_ACCENT, GFX_DARK_GRAY);
+    gfx_draw_text(fx, uy-14, "USERNAME", GFX_MID_GRAY, GFX_DARK_GRAY);
+    gfx_draw_text(fx, py-14, "PASSWORD", GFX_MID_GRAY, GFX_DARK_GRAY);
+    const char *hint = "ENTER TO CONTINUE";
+    gfx_draw_text(cx+(cw-text_w(hint))/2, cy+ch-26, hint, GFX_MID_GRAY, GFX_DARK_GRAY);
+    int ey = cy+ch+16;   /* error line, just below the card */
+
+    char ubuf[LOGIN_BUF]; int ulen=0;
+    char pbuf[LOGIN_BUF]; int plen=0;
+    char mask[LOGIN_BUF];
+    int focus=0;                          /* 0=username, 1=password */
+    ubuf[0]=0; pbuf[0]=0;
+
+    for(;;){
+        login_draw_field(fx,uy,fw,fh,focus==0,ubuf);
+        for(int i=0;i<plen;i++) mask[i]='.';
+        mask[plen]=0;
+        login_draw_field(fx,py,fw,fh,focus==1,mask);
+
+        char c = console_getc();
+        if(c=='\t'){ focus = 1-focus; continue; }
+        if(c==0x7F || c==0x08){
+            if(focus==0 && ulen>0) ubuf[--ulen]=0;
+            else if(focus==1 && plen>0) pbuf[--plen]=0;
+            continue;
+        }
+        if(c=='\n' || c=='\r'){
+            if(focus==0){ focus=1; continue; }
+            /* focus==1: submit - verify via the real auth.lz logic. */
+            FILE *f = fopen("/tmp/.login_u","w"); if(f){ fwrite(ubuf,1,(size_t)ulen,f); fclose(f); }
+            f = fopen("/tmp/.login_p","w"); if(f){ fwrite(pbuf,1,(size_t)plen,f); fclose(f); }
+            char *login_argv[] = { "larzscript", "/logincheck.lz", 0 };
+            larz_main(2, login_argv);
+            char result[8]={0};
+            f = fopen("/tmp/.login_result","r");
+            if(f){ fgets(result,sizeof result,f); fclose(f); }
+            remove("/tmp/.login_u"); remove("/tmp/.login_p"); remove("/tmp/.login_result");
+            if(result[0]=='O' && result[1]=='K') break;   /* success - fall out to kernel_main() */
+            gfx_fill_rect(cx, ey-10, cw, 12, GFX_DARK_GRAY);   /* clear any previous error first */
+            gfx_draw_text(cx+(cw-text_w("INVALID USERNAME OR PASSWORD"))/2, ey-10,
+                           "INVALID USERNAME OR PASSWORD", GFX_RED, GFX_DARK_GRAY);
+            plen=0; pbuf[0]=0; focus=1;
+            continue;
+        }
+        if(c>=32 && c<127){
+            if(focus==0 && ulen<LOGIN_BUF-1){ ubuf[ulen++]=c; ubuf[ulen]=0; }
+            else if(focus==1 && plen<LOGIN_BUF-1){ pbuf[plen++]=c; pbuf[plen]=0; }
+        }
+    }
+    gfx_set_taskbar_visible(1);
+}
 #else
 void desktop_icon_activate(int i){ (void)i; }
 /* ui.launch()/ui.close() (native/larzscript.c) call launch_app() unconditionally
@@ -178,17 +284,21 @@ void kernel_main(uint64_t mb_info){
     for(;;) __asm__ volatile("hlt");
 #endif
 #ifdef LARZ_DESKTOP
-    /* the real windowed desktop: the terminal auto-starts (task 1, its own
-     * window, launched the same generic way any other app is) plus a
-     * taskbar and a row of desktop-icon launchers for everything else - all
-     * launched on demand, none auto-started besides Terminal, since NTASK=3
-     * only leaves ONE free app-task slot beside it (closing an app frees its
-     * slot back up - see gfx_window_close()/task_exit()). task 0 stays idle
-     * (redraw-on-demand is already event-driven, not polled). */
+    /* the real windowed desktop: a full-screen login gate first (username/
+     * password, verified against the real auth.lz accounts - see
+     * login_screen() above), THEN the terminal auto-starts (task 1, its
+     * own window, launched the same generic way any other app is) plus a
+     * taskbar and a row of desktop-icon launchers for everything else -
+     * all launched on demand, none auto-started besides Terminal, since
+     * NTASK=3 only leaves ONE free app-task slot beside it (closing an
+     * app frees its slot back up - see gfx_window_close()/task_exit()).
+     * task 0 stays idle (redraw-on-demand is already event-driven, not
+     * polled). */
     ints_init();
     gfx_init();
     sched_init();
-    vfs_init();                    /* launch_app()'s apps open .lz files - FS must be mounted first */
+    vfs_init();                    /* login_screen()/launch_app()'s apps open .lz files - FS must be mounted first */
+    login_screen();                /* blocks here until real credentials verify - see its own comment */
     gfx_desktop_icons_init(g_app_manifest_labels, APP_MANIFEST_COUNT);
     gfx_windows_redraw_all();
     launch_app("/larzsh.lz");

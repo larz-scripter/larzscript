@@ -162,6 +162,11 @@ void gfx_window_move(int idx, int x, int y);
  * the taskbar is the more specific target when it's what was clicked. */
 int gfx_taskbar_hit_test(int x, int y);
 
+/* Shows/hides the taskbar strip entirely - used by the login screen
+ * (kernel.c) so it reads as a genuine full-screen view (no empty gray bar
+ * at the bottom) before credentials are verified. Defaults to visible. */
+void gfx_set_taskbar_visible(int visible);
+
 /* ---- desktop icons: a small fixed strip of launchable-app icons drawn on
  * the bare desktop background (stage 4) - gfx.c only knows their LABELS,
  * for drawing/hit-testing; kernel.c owns which script each one launches

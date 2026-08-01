@@ -344,7 +344,16 @@ static void draw_cursor(void){
  * creation order) only for simplicity - fine for the handful of windows
  * this desktop supports (GFX_MAX_WINDOWS). */
 #define TASKBAR_ENTRY_W 140
+/* Login screen: suppressed before credentials are verified (kernel.c's
+ * login_screen(), called before any window/icon exists) so the screen
+ * reads as a genuine full-screen login view, not "desktop with an empty
+ * gray bar at the bottom" - gfx_windows_redraw_all() always calls
+ * draw_taskbar() unconditionally otherwise, even with 0 windows open. */
+static int g_taskbar_visible = 1;
+void gfx_set_taskbar_visible(int v){ g_taskbar_visible = v; }
+
 static void draw_taskbar(void){
+    if(!g_taskbar_visible) return;
     int y = gfx_height() - TASKBAR_H;
     gfx_fill_rect(0, y, gfx_width(), TASKBAR_H, GFX_MID_GRAY);
     gfx_hline(0, y, gfx_width(), GFX_BLACK);
@@ -363,6 +372,7 @@ static void draw_taskbar(void){
  * there's no ambiguity about which one to check first, but the taskbar is
  * the more specific target when it's what was actually clicked. */
 int gfx_taskbar_hit_test(int x, int y){
+    if(!g_taskbar_visible) return -1;
     int ytop = gfx_height() - TASKBAR_H;
     if(y < ytop) return -1;
     int i = x / TASKBAR_ENTRY_W;
