@@ -1,0 +1,80 @@
+# retry - retry a flaky call with exponential backoff, or wrap it in a
+# circuit breaker that fails fast once it's seen enough trouble.
+#
+#   import "retry" as retry
+#   let result = retry.call(fn() { return might_fail() }, {"max_attempts": 5})
+#
+#   let cb = retry.breaker(3, 30)          # open after 3 failures, 30s cooldown
+#   retry.guard(cb, fn() { return might_fail() })
+
+# opts: max_attempts (default 3), base_delay (default 1), factor (default
+# 2), sleep_fn (default the real sleep() builtin - inject a no-op or a
+# recording stub in tests so retries don't actually wait).
+fn call(fn_, opts={}) {
+  let max_attempts = opts.has("max_attempts") ? opts["max_attempts"] : 3
+  let base_delay = opts.has("base_delay") ? opts["base_delay"] : 1
+  let factor = opts.has("factor") ? opts["factor"] : 2
+  let sleep_fn = opts.has("sleep_fn") ? opts["sleep_fn"] : sleep
+
+  let attempt = 1
+  let delay = base_delay
+  while true {
+    try {
+      return fn_()
+    } catch e {
+      if attempt >= max_attempts { throw e }
+      sleep_fn(delay)
+      delay = delay * factor
+      attempt = attempt + 1
+    }
+  }
+}
+
+# A retry-enabled wrapper you can call multiple times, instead of one-shot
+# call() - same options, returned as a plain function value.
+fn retrying(fn_, opts={}) {
+  return fn() { return call(fn_, opts) }
+}
+
+let _CLOSED = "closed"
+let _OPEN = "open"
+let _HALF_OPEN = "half_open"
+
+# Opens after `failure_threshold` consecutive failures; stays open for
+# `reset_after` seconds, then allows one trial call (half-open) before
+# fully closing again on success.
+fn breaker(failure_threshold, reset_after) {
+  return {
+    "state": _CLOSED, "failures": 0,
+    "threshold": failure_threshold, "reset_after": reset_after,
+    "opened_at": nil
+  }
+}
+
+fn _now(cb, clock_fn) { return clock_fn == nil ? time() : clock_fn() }
+
+fn guard(cb, fn_, clock_fn=nil) {
+  let now = _now(cb, clock_fn)
+  if cb["state"] == _OPEN {
+    unless now - cb["opened_at"] >= cb["reset_after"] {
+      throw {"type": "LarzCircuitOpenError", "message": "circuit breaker is open"}
+    }
+    cb["state"] = _HALF_OPEN
+  }
+  try {
+    let result = fn_()
+    cb["state"] = _CLOSED
+    cb["failures"] = 0
+    cb["opened_at"] = nil
+    return result
+  } catch e {
+    cb["failures"] = cb["failures"] + 1
+    if cb["state"] == _HALF_OPEN or cb["failures"] >= cb["threshold"] {
+      cb["state"] = _OPEN
+      cb["opened_at"] = now
+    }
+    throw e
+  }
+}
+
+fn is_open(cb) { return cb["state"] == _OPEN }

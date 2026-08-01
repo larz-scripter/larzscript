@@ -1,0 +1,60 @@
+# state - checkpointed, crash-resumable workflows (sagas): run a
+# sequence of named steps, persisting after each one so a process that
+# dies mid-workflow can be resumed by run id and skip everything already
+# completed. If a step throws, every already-completed step's
+# compensate() runs in reverse order (the saga pattern for "undo what
+# succeeded when a later step fails"). A step can carry a guard - a
+# predicate over the shared context - that must pass before it runs.
+#
+#   import "state" as state
+#   let w = state.resume("workflow.json", "order-42")
+#   state.step(w, "charge_card", fn(ctx) { ctx["charge_id"] = "ch_1" },
+#     fn(ctx) { print("refunding", ctx["charge_id"]) })
+#   state.step(w, "ship_order", fn(ctx) { ctx["shipped"] = true })
+#   print(state.is_done(w, "charge_card"))
+
+import "json" as json
+
+fn resume(path, run_id) {
+  let all_runs = {}
+  if file_exists(path) { all_runs = json.parse(read_file(path)) }
+  let saved = all_runs.has(run_id) ? all_runs[run_id] : {"completed": [], "context": {}}
+  return {"path": path, "run_id": run_id, "completed": saved["completed"], "context": saved["context"], "compensations": []}
+}
+
+fn _persist(w) {
+  let all_runs = {}
+  if file_exists(w["path"]) { all_runs = json.parse(read_file(w["path"])) }
+  all_runs[w["run_id"]] = {"completed": w["completed"], "context": w["context"]}
+  write_file(w["path"], json.stringify(all_runs))
+}
+
+fn is_done(w, step_name) { return step_name in w["completed"] }
+
+# Runs `body(ctx)` unless step_name is already completed (crash-resume).
+# `guard` (if given) must return true against the current context or the
+# step throws without running. `compensate(ctx)` (if given) is recorded
+# so a LATER step's failure can undo this one.
+fn step(w, step_name, body, compensate=nil, guard=nil) {
+  if is_done(w, step_name) { return "skipped" }
+  if guard != nil and not guard(w["context"]) {
+    throw {"type": "LarzGuardError", "message": "guard failed for step '" + step_name + "'"}
+  }
+  try {
+    body(w["context"])
+  } catch e {
+    let i = len(w["compensations"]) - 1
+    while i >= 0 {
+      let comp = w["compensations"][i]
+      comp["fn"](w["context"])
+      i = i - 1
+    }
+    throw e
+  }
+  w["completed"].push(step_name)
+  if compensate != nil { w["compensations"].push({"name": step_name, "fn": compensate}) }
+  _persist(w)
+  return "ran"
+}
+
+fn context(w) { return w["context"] }

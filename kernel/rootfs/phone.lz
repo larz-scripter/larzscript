@@ -1,0 +1,114 @@
+# phone - phone number parsing: detect the calling code from a leading
+# `+` or `00`, validate the national number's length against that
+# region's typical range, and format as E.164 / international /
+# national - all offline, no lookup service. ~50 regions' calling codes
+# + expected national-number-length ranges (approximate: several
+# countries have genuinely variable-length numbers, so this validates a
+# range, not one exact length - it's a sanity check, not a full
+# per-region numbering-plan validator).
+#
+#   import "phone" as phone
+#   let p = phone.parse("+14155552671")
+#   print(p["country_code"], p["national_number"], p["valid"])
+#   print(phone.format_e164(p))              # "+14155552671"
+#   print(phone.format_international(p))     # "+1 4155552671"
+
+let _REGIONS = [
+  {"code": "1", "name": "US/CA", "len": [10, 10]},
+  {"code": "44", "name": "UK", "len": [10, 10]},
+  {"code": "33", "name": "France", "len": [9, 9]},
+  {"code": "49", "name": "Germany", "len": [6, 11]},
+  {"code": "39", "name": "Italy", "len": [9, 10]},
+  {"code": "34", "name": "Spain", "len": [9, 9]},
+  {"code": "31", "name": "Netherlands", "len": [9, 9]},
+  {"code": "32", "name": "Belgium", "len": [8, 9]},
+  {"code": "41", "name": "Switzerland", "len": [9, 9]},
+  {"code": "43", "name": "Austria", "len": [7, 13]},
+  {"code": "46", "name": "Sweden", "len": [7, 9]},
+  {"code": "47", "name": "Norway", "len": [8, 8]},
+  {"code": "45", "name": "Denmark", "len": [8, 8]},
+  {"code": "358", "name": "Finland", "len": [5, 12]},
+  {"code": "48", "name": "Poland", "len": [9, 9]},
+  {"code": "351", "name": "Portugal", "len": [9, 9]},
+  {"code": "30", "name": "Greece", "len": [10, 10]},
+  {"code": "353", "name": "Ireland", "len": [7, 9]},
+  {"code": "420", "name": "Czechia", "len": [9, 9]},
+  {"code": "36", "name": "Hungary", "len": [8, 9]},
+  {"code": "40", "name": "Romania", "len": [9, 9]},
+  {"code": "7", "name": "Russia/Kazakhstan", "len": [10, 10]},
+  {"code": "380", "name": "Ukraine", "len": [9, 9]},
+  {"code": "90", "name": "Turkey", "len": [10, 10]},
+  {"code": "20", "name": "Egypt", "len": [9, 10]},
+  {"code": "27", "name": "South Africa", "len": [9, 9]},
+  {"code": "234", "name": "Nigeria", "len": [7, 10]},
+  {"code": "254", "name": "Kenya", "len": [9, 9]},
+  {"code": "233", "name": "Ghana", "len": [9, 9]},
+  {"code": "212", "name": "Morocco", "len": [9, 9]},
+  {"code": "971", "name": "UAE", "len": [8, 9]},
+  {"code": "966", "name": "Saudi Arabia", "len": [8, 9]},
+  {"code": "972", "name": "Israel", "len": [8, 9]},
+  {"code": "91", "name": "India", "len": [10, 10]},
+  {"code": "92", "name": "Pakistan", "len": [9, 10]},
+  {"code": "880", "name": "Bangladesh", "len": [8, 10]},
+  {"code": "86", "name": "China", "len": [11, 11]},
+  {"code": "81", "name": "Japan", "len": [9, 10]},
+  {"code": "82", "name": "South Korea", "len": [8, 10]},
+  {"code": "84", "name": "Vietnam", "len": [9, 10]},
+  {"code": "66", "name": "Thailand", "len": [8, 9]},
+  {"code": "65", "name": "Singapore", "len": [8, 8]},
+  {"code": "60", "name": "Malaysia", "len": [7, 10]},
+  {"code": "62", "name": "Indonesia", "len": [8, 12]},
+  {"code": "63", "name": "Philippines", "len": [10, 10]},
+  {"code": "61", "name": "Australia", "len": [9, 9]},
+  {"code": "64", "name": "New Zealand", "len": [8, 10]},
+  {"code": "55", "name": "Brazil", "len": [10, 11]},
+  {"code": "52", "name": "Mexico", "len": [10, 10]},
+  {"code": "54", "name": "Argentina", "len": [10, 11]},
+  {"code": "57", "name": "Colombia", "len": [10, 10]}
+]
+
+# Longest calling codes first, so "1" doesn't shadow-match before "39"
+# etc. get a chance - codes are 1-3 digits, sorted by length descending.
+fn _sorted_regions() {
+  let regions = []
+  for r in _REGIONS { regions.push(r) }
+  let i = 1
+  while i < len(regions) {
+    let cur = regions[i]
+    let j = i - 1
+    while j >= 0 and len(regions[j]["code"]) < len(cur["code"]) {
+      regions[j + 1] = regions[j]
+      j = j - 1
+    }
+    regions[j + 1] = cur
+    i = i + 1
+  }
+  return regions
+}
+let _SORTED_REGIONS = _sorted_regions()
+
+fn _digits_only(s) {
+  let out = ""
+  for c in s { if "0123456789".find(c) >= 0 { out = out + c } }
+  return out
+}
+
+fn parse(raw) {
+  let s = raw.strip()
+  let digits = ""
+  if len(s) > 0 and s[0:1] == "+" { digits = _digits_only(s[1:]) }
+  else if len(s) >= 2 and s[0:2] == "00" { digits = _digits_only(s[2:]) }
+  else { digits = _digits_only(s) }
+  for r in _SORTED_REGIONS {
+    if digits[0:len(r["code"])] == r["code"] {
+      let national = digits[len(r["code"]):]
+      let valid = len(national) >= r["len"][0] and len(national) <= r["len"][1]
+      return {"country_code": r["code"], "region": r["name"], "national_number": national, "valid": valid}
+    }
+  }
+  return {"country_code": nil, "region": nil, "national_number": digits, "valid": false}
+}
+
+fn format_e164(p) { return "+" + p["country_code"] + p["national_number"] }
+fn format_international(p) { return "+" + p["country_code"] + " " + p["national_number"] }
+fn format_national(p) { return p["national_number"] }

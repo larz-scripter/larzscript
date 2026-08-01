@@ -1,0 +1,60 @@
+# unit - convert values across length/mass/time/data units via a shared
+# base-unit factor per kind, plus temperature which gets its own honest
+# (non-linear) formulas instead of being forced into the same table.
+#
+#   import "unit" as unit
+#   print(unit.convert(5, "km", "mi"))          # ~3.1069
+#   print(unit.convert(1, "gb", "mb"))           # 1024
+#   print(unit.convert(0, "celsius", "fahrenheit"))  # 32
+#   print(unit.explain(5, "km", "mi"))
+
+# Each kind maps a unit name to "how many base units it equals" (base:
+# length=meters, mass=grams, time=seconds, data=bytes).
+let _FACTORS = {
+  "length": {"mm": 0.001, "cm": 0.01, "m": 1, "km": 1000, "in": 0.0254, "ft": 0.3048, "yd": 0.9144, "mi": 1609.344},
+  "mass": {"mg": 0.001, "g": 1, "kg": 1000, "oz": 28.349523125, "lb": 453.59237, "ton": 907184.74},
+  "time": {"ms": 0.001, "s": 1, "min": 60, "hr": 3600, "day": 86400, "week": 604800},
+  "data": {"b": 1, "byte": 1, "kb": 1024, "mb": 1048576, "gb": 1073741824, "tb": 1099511627776}
+}
+
+fn _find_kind(unit_name) {
+  for kind in keys(_FACTORS) { if _FACTORS[kind].has(unit_name) { return kind } }
+  return nil
+}
+
+fn _to_celsius(v, u) {
+  if u == "celsius" { return v }
+  if u == "fahrenheit" { return (v - 32) * 5 / 9 }
+  if u == "kelvin" { return v - 273.15 }
+  throw {"type": "LarzValueError", "message": "unknown temperature unit '" + u + "'"}
+}
+fn _from_celsius(c, u) {
+  if u == "celsius" { return c }
+  if u == "fahrenheit" { return c * 9 / 5 + 32 }
+  if u == "kelvin" { return c + 273.15 }
+  throw {"type": "LarzValueError", "message": "unknown temperature unit '" + u + "'"}
+}
+let _TEMP_UNITS = ["celsius", "fahrenheit", "kelvin"]
+
+fn convert(value, from_unit, to_unit) {
+  let fu = from_unit.lower()
+  let tu = to_unit.lower()
+  if fu in _TEMP_UNITS or tu in _TEMP_UNITS {
+    return _from_celsius(_to_celsius(value, fu), tu)
+  }
+  let kind = _find_kind(fu)
+  if kind == nil { throw {"type": "LarzValueError", "message": "unknown unit '" + from_unit + "'"} }
+  if not _FACTORS[kind].has(tu) { throw {"type": "LarzValueError", "message": "cannot convert " + from_unit + " to " + to_unit } }
+  return value * _FACTORS[kind][fu] / _FACTORS[kind][tu]
+}
+
+fn explain(value, from_unit, to_unit) {
+  let fu = from_unit.lower()
+  let tu = to_unit.lower()
+  if fu in _TEMP_UNITS or tu in _TEMP_UNITS {
+    return str(value) + " " + from_unit + " -> celsius -> " + to_unit + " = " + str(convert(value, from_unit, to_unit))
+  }
+  let kind = _find_kind(fu)
+  let factor = _FACTORS[kind][fu] / _FACTORS[kind][tu]
+  return str(value) + " " + from_unit + " * " + str(factor) + " = " + str(convert(value, from_unit, to_unit)) + " " + to_unit
+}

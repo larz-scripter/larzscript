@@ -1,0 +1,142 @@
+# xml - a small, safe XML: a fluent-style builder (nested function
+# calls, since Larzscript has no user-defined method dispatch), correct
+# text/attribute escaping, and a parser with find()/find_all()/iter()
+# querying. The parser rejects any `<!...>` construct outright (DOCTYPE,
+# ENTITY, comments) - that one rule kills both XXE (external entities
+# need a DOCTYPE to declare them) and billion-laughs (needs ENTITY) in
+# one place, at the cost of not supporting XML comments.
+#
+#   import "xml" as xml
+#   let doc = xml.element("root", {}, [
+#     xml.element("item", {"id": "1"}, [xml.text("Hello & welcome")])
+#   ])
+#   print(xml.to_string(doc))
+#   let parsed = xml.parse(xml.to_string(doc))
+#   print(xml.find(parsed, "item")["attrs"]["id"])   # "1"
+
+fn element(tag, attrs={}, children=[]) {
+  return {"tag": tag, "attrs": attrs, "children": children}
+}
+
+fn text(s) { return {"text": s} }
+
+fn escape_text(s) {
+  return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+}
+fn escape_attr(s) {
+  return escape_text(s).replace("\"", "&quot;").replace("'", "&apos;")
+}
+
+fn to_string(node) {
+  if node.has("text") { return escape_text(node["text"]) }
+  let attr_parts = []
+  for k in keys(node["attrs"]) { attr_parts.push(k + "=\"" + escape_attr(str(node["attrs"][k])) + "\"") }
+  let attr_str = len(attr_parts) == 0 ? "" : " " + join(attr_parts, " ")
+  if len(node["children"]) == 0 { return "<" + node["tag"] + attr_str + "/>" }
+  let inner = []
+  for c in node["children"] { inner.push(to_string(c)) }
+  return "<" + node["tag"] + attr_str + ">" + join(inner, "") + "</" + node["tag"] + ">"
+}
+
+# ---- parser ----
+fn _unescape(s) {
+  return s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+fn _skip_ws(s, i) {
+  while i < len(s) and (s[i:i+1] == " " or s[i:i+1] == "\n" or s[i:i+1] == "\t" or s[i:i+1] == "\r") { i = i + 1 }
+  return i
+}
+
+fn _parse_attrs(s, i) {
+  let attrs = {}
+  while true {
+    i = _skip_ws(s, i)
+    if i >= len(s) or s[i:i+1] == ">" or s[i:i+1] == "/" { break }
+    let start = i
+    while i < len(s) and s[i:i+1] != "=" and s[i:i+1] != " " and s[i:i+1] != ">" and s[i:i+1] != "/" { i = i + 1 }
+    let name = s[start:i]
+    i = _skip_ws(s, i)
+    if i < len(s) and s[i:i+1] == "=" {
+      i = i + 1
+      i = _skip_ws(s, i)
+      let quote = s[i:i+1]
+      i = i + 1
+      let vstart = i
+      while i < len(s) and s[i:i+1] != quote { i = i + 1 }
+      attrs[name] = _unescape(s[vstart:i])
+      i = i + 1
+    } else {
+      attrs[name] = ""
+    }
+  }
+  return {"attrs": attrs, "i": i}
+}
+
+fn _parse_node(s, i) {
+  i = _skip_ws(s, i)
+  if i >= len(s) or s[i:i+1] != "<" { throw {"type": "LarzValueError", "message": "expected '<' at position " + str(i)} }
+  if i + 1 < len(s) and s[i+1:i+2] == "!" {
+    throw {"type": "LarzXmlSecurityError", "message": "DOCTYPE/ENTITY/comment declarations are rejected - possible XXE or billion-laughs payload"}
+  }
+  i = i + 1
+  let tag_start = i
+  while i < len(s) and s[i:i+1] != " " and s[i:i+1] != ">" and s[i:i+1] != "/" { i = i + 1 }
+  let tag = s[tag_start:i]
+  let ar = _parse_attrs(s, i)
+  let attrs = ar["attrs"]
+  i = ar["i"]
+  if s[i:i+1] == "/" {
+    return {"node": {"tag": tag, "attrs": attrs, "children": []}, "i": i + 2}
+  }
+  i = i + 1
+  let children = []
+  while true {
+    i = _skip_ws(s, i)
+    if i + 1 < len(s) and s[i:i+2] == "</" {
+      i = i + 2
+      while i < len(s) and s[i:i+1] != ">" { i = i + 1 }
+      i = i + 1
+      break
+    }
+    if s[i:i+1] == "<" {
+      let r = _parse_node(s, i)
+      children.push(r["node"])
+      i = r["i"]
+    } else {
+      let tstart = i
+      while i < len(s) and s[i:i+1] != "<" { i = i + 1 }
+      let raw = s[tstart:i].strip()
+      if len(raw) > 0 { children.push({"text": _unescape(raw)}) }
+    }
+  }
+  return {"node": {"tag": tag, "attrs": attrs, "children": children}, "i": i}
+}
+
+fn parse(s) { return _parse_node(s, 0)["node"] }
+
+# ---- querying ----
+fn find(node, tag) {
+  for c in node["children"] {
+    if c.has("tag") and c["tag"] == tag { return c }
+  }
+  return nil
+}
+
+fn find_all(node, tag) {
+  let out = []
+  for c in node["children"] {
+    if c.has("tag") and c["tag"] == tag { out.push(c) }
+  }
+  return out
+}
+
+# Depth-first walk of every element (not text) node, including `node`
+# itself.
+fn iter(node) {
+  let out = [node]
+  for c in node["children"] {
+    if c.has("tag") { out = out + iter(c) }
+  }
+  return out
+}

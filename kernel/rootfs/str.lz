@@ -1,0 +1,116 @@
+# str - word-game string helpers: palindrome/anagram checks, reversal,
+# edit distance + similarity, character and word frequency, and a
+# Caesar cipher. (Larzscript's own name for "string" is already taken
+# by the `string` package's centering/wrapping helpers - this is the
+# separate, playful half.)
+#
+#   import "str" as str_
+#   print(str_.is_palindrome("A man a plan a canal Panama"))  # true
+#   print(str_.is_anagram("listen", "silent"))                 # true
+#   print(str_.reverse("hello"))                                # "olleh"
+#   print(str_.edit_distance("kitten", "sitting"))              # 3
+#   print(str_.char_frequency("banana"))
+#   print(str_.caesar_encode("attack at dawn", 3))
+#   print(str_.caesar_decode(str_.caesar_encode("attack at dawn", 3), 3))
+
+fn _only_alnum_lower(s) {
+  let out = ""
+  for c in s.lower() {
+    if ("abcdefghijklmnopqrstuvwxyz0123456789").find(c) >= 0 { out = out + c }
+  }
+  return out
+}
+
+fn is_palindrome(s) {
+  let t = _only_alnum_lower(s)
+  let n = len(t)
+  let i = 0
+  while i < n // 2 {
+    if t[i:i+1] != t[n-1-i:n-i] { return false }
+    i = i + 1
+  }
+  return true
+}
+
+fn _sorted_chars(s) {
+  let chars = []
+  for c in s { chars.push(c) }
+  return sorted(chars)
+}
+
+fn is_anagram(a, b) {
+  return _sorted_chars(_only_alnum_lower(a)) == _sorted_chars(_only_alnum_lower(b))
+}
+
+fn reverse(s) {
+  let out = ""
+  for c in s { out = c + out }
+  return out
+}
+
+fn edit_distance(a, b) {
+  let la = len(a)
+  let lb = len(b)
+  let prev = [i for i in range(lb + 1)]
+  let i = 1
+  while i <= la {
+    let cur = [i]
+    let j = 1
+    while j <= lb {
+      let cost = a[i-1:i] == b[j-1:j] ? 0 : 1
+      let del_ = prev[j] + 1
+      let ins_ = cur[j-1] + 1
+      let sub_ = prev[j-1] + cost
+      let best = del_ < ins_ ? del_ : ins_
+      best = best < sub_ ? best : sub_
+      cur.push(best)
+      j = j + 1
+    }
+    prev = cur
+    i = i + 1
+  }
+  return prev[lb]
+}
+
+fn similarity(a, b) {
+  let maxlen = len(a) > len(b) ? len(a) : len(b)
+  if maxlen == 0 { return 1.0 }
+  return 1 - (edit_distance(a, b) / maxlen)
+}
+
+fn char_frequency(s) {
+  let freq = {}
+  for c in s {
+    freq[c] = (freq.has(c) ? freq[c] : 0) + 1
+  }
+  return freq
+}
+
+fn word_frequency(s) {
+  let freq = {}
+  for w in s.lower().split(" ") {
+    let word = _only_alnum_lower(w)
+    if len(word) == 0 { continue }
+    freq[word] = (freq.has(word) ? freq[word] : 0) + 1
+  }
+  return freq
+}
+
+let _ALPHA_LOWER = "abcdefghijklmnopqrstuvwxyz"
+let _ALPHA_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+fn _shift_char(c, n) {
+  let lo = _ALPHA_LOWER.find(c)
+  if lo >= 0 { return _ALPHA_LOWER[(lo + n) % 26:(lo + n) % 26 + 1] }
+  let up = _ALPHA_UPPER.find(c)
+  if up >= 0 { return _ALPHA_UPPER[(up + n) % 26:(up + n) % 26 + 1] }
+  return c
+}
+
+fn caesar_encode(s, shift) {
+  let n = ((shift % 26) + 26) % 26
+  let out = ""
+  for c in s { out = out + _shift_char(c, n) }
+  return out
+}
+
+fn caesar_decode(s, shift) { return caesar_encode(s, -shift) }

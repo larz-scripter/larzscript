@@ -1,0 +1,127 @@
+# vm - a small deterministic stack machine: an assembler (text -> byte-
+# code), a disassembler (bytecode -> text, round-trips through the
+# assembler), and a VM that executes bytecode against a value stack,
+# named storage slots, and an event log, metered by gas - every
+# instruction costs gas, execution halts the instant gas hits zero, so
+# termination is guaranteed by construction (no program, buggy or not,
+# can run forever).
+#
+#   import "vm" as vm
+#   let program = "PUSH 5\nPUSH 3\nADD\nSTORE x\nLOAD x\nEMIT result\nHALT"
+#   let code = vm.assemble(program)
+#   let result = vm.run(code, 1000)
+#   print(result["stack"], result["storage"], result["events"], result["halted"])
+#   print(vm.disassemble(code) == program.replace("\n\n", "\n"))
+
+let _OPS = ["PUSH", "POP", "DUP", "SWAP", "ADD", "SUB", "MUL", "DIV", "MOD",
+            "EQ", "LT", "GT", "JMP", "JZ", "JNZ", "STORE", "LOAD", "EMIT", "HALT", "NOP"]
+# Instructions that take an argument (a number for PUSH, a label/name
+# for the rest).
+let _HAS_ARG = ["PUSH", "JMP", "JZ", "JNZ", "STORE", "LOAD", "EMIT"]
+
+fn assemble(source) {
+  let lines = []
+  for raw_line in source.split("\n") {
+    let line = raw_line.strip()
+    let comment = line.find(";")
+    if comment >= 0 { line = line[0:comment].strip() }
+    if len(line) > 0 { lines.push(line) }
+  }
+  # first pass: strip label definitions ("name:"), record their
+  # instruction index.
+  let labels = {}
+  let instrs = []
+  for line in lines {
+    if line[len(line)-1:] == ":" {
+      labels[line[0:len(line)-1]] = len(instrs)
+    } else {
+      instrs.push(line)
+    }
+  }
+  let code = []
+  for line in instrs {
+    let sp = line.find(" ")
+    let op = sp < 0 ? line : line[0:sp]
+    let arg_text = sp < 0 ? nil : line[sp+1:].strip()
+    if not (op in _OPS) { throw {"type": "LarzVmAssembleError", "message": "unknown instruction '" + op + "'"} }
+    let arg = nil
+    if op in _HAS_ARG {
+      if arg_text == nil { throw {"type": "LarzVmAssembleError", "message": op + " requires an argument"} }
+      if op == "PUSH" { arg = float(arg_text) }
+      else if op == "JMP" or op == "JZ" or op == "JNZ" {
+        if not labels.has(arg_text) { throw {"type": "LarzVmAssembleError", "message": "unknown label '" + arg_text + "'"} }
+        arg = labels[arg_text]
+      } else { arg = arg_text }
+    }
+    code.push({"op": op, "arg": arg})
+  }
+  return code
+}
+
+fn disassemble(code) {
+  let lines = []
+  for instr in code {
+    if instr["arg"] == nil { lines.push(instr["op"]) }
+    else { lines.push(instr["op"] + " " + str(instr["arg"])) }
+  }
+  return join(lines, "\n")
+}
+
+let _GAS_COST = {"JMP": 2, "JZ": 2, "JNZ": 2, "STORE": 2, "LOAD": 2, "EMIT": 3}
+
+fn run(code, gas_limit, storage_in={}) {
+  let stack = []
+  let storage = {}
+  for k in keys(storage_in) { storage[k] = storage_in[k] }
+  let events = []
+  # "gas" itself is a reserved keyword (Larzscript's own money-native gas
+  # metering construct) - can't be used as a bare identifier, so this
+  # tracks remaining fuel under a different name.
+  let fuel = gas_limit
+  let pc = 0
+  let halted = false
+  let error = nil
+  while pc < len(code) and not halted {
+    let instr = code[pc]
+    let cost = _GAS_COST.has(instr["op"]) ? _GAS_COST[instr["op"]] : 1
+    if fuel < cost { error = "out of gas"; break }
+    fuel = fuel - cost
+    let op = instr["op"]
+    if op == "PUSH" { stack.push(instr["arg"]) }
+    else if op == "POP" { stack = stack[0:len(stack) - 1] }
+    else if op == "DUP" { stack.push(stack[len(stack) - 1]) }
+    else if op == "SWAP" {
+      let a = stack[len(stack) - 1]
+      let b = stack[len(stack) - 2]
+      stack[len(stack) - 1] = b
+      stack[len(stack) - 2] = a
+    }
+    else if op == "ADD" or op == "SUB" or op == "MUL" or op == "DIV" or op == "MOD" or op == "EQ" or op == "LT" or op == "GT" {
+      let b = stack[len(stack) - 1]
+      let a = stack[len(stack) - 2]
+      stack = stack[0:len(stack) - 2]
+      if op == "ADD" { stack.push(a + b) }
+      else if op == "SUB" { stack.push(a - b) }
+      else if op == "MUL" { stack.push(a * b) }
+      else if op == "DIV" { stack.push(a / b) }
+      else if op == "MOD" { stack.push(a % b) }
+      else if op == "EQ" { stack.push(a == b ? 1 : 0) }
+      else if op == "LT" { stack.push(a < b ? 1 : 0) }
+      else { stack.push(a > b ? 1 : 0) }
+    }
+    else if op == "JMP" { pc = instr["arg"]; continue }
+    else if op == "JZ" { let v = stack[len(stack)-1]; stack = stack[0:len(stack)-1]; if v == 0 { pc = instr["arg"]; continue } }
+    else if op == "JNZ" { let v = stack[len(stack)-1]; stack = stack[0:len(stack)-1]; if v != 0 { pc = instr["arg"]; continue } }
+    else if op == "STORE" { storage[instr["arg"]] = stack[len(stack)-1]; stack = stack[0:len(stack)-1] }
+    else if op == "LOAD" { stack.push(storage.has(instr["arg"]) ? storage[instr["arg"]] : 0) }
+    else if op == "EMIT" { events.push({"name": instr["arg"], "value": stack[len(stack)-1]}) }
+    else if op == "HALT" { halted = true; continue }
+    # NOP falls through.
+    pc = pc + 1
+  }
+  return {
+    "stack": stack, "storage": storage, "events": events,
+    "gas_used": gas_limit - fuel, "gas_remaining": fuel,
+    "halted": halted, "pc": pc, "error": error
+  }
+}

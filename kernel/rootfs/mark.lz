@@ -1,0 +1,95 @@
+# mark - a tiny static site generator on top of `markdown`: front matter
+# parsing, an SEO-ready <head> (title/description/canonical), JSON-LD
+# Article schema, and a sitemap.xml builder for a batch of pages.
+#
+#   import "mark" as mark
+#   let src = "---\ntitle: Hello\ndescription: A first post\nurl: /hello/\n---\n# Hi\n\nBody **text**."
+#   let page = mark.render(src, "https://example.com")
+#   print(page["html"])       # full HTML5 document, head + body
+#   let site = mark.build_site([page], "https://example.com")
+#   print(site["sitemap"])    # sitemap.xml content
+
+import "markdown" as markdown
+import "html" as html
+
+# "---\nkey: value\n...\n---\nbody" -> {"front": {...}, "body": "..."}.
+# Deliberately simple: one "key: value" per line, no nested YAML - use
+# `yaml` directly if a post needs more than flat front matter.
+fn parse_front_matter(text) {
+  let lines = text.split("\n")
+  if len(lines) == 0 or lines[0].strip() != "---" {
+    return {"front": {}, "body": text}
+  }
+  let front = {}
+  let i = 1
+  while i < len(lines) and lines[i].strip() != "---" {
+    let line = lines[i]
+    let colon = line.find(":")
+    if colon >= 0 {
+      let key = line[0:colon].strip()
+      let val = line[colon+1:].strip()
+      if len(val) >= 2 and (val[0:1] == "\"" or val[0:1] == "'") and val[len(val)-1:] == val[0:1] {
+        val = val[1:len(val)-1]
+      }
+      front[key] = val
+    }
+    i = i + 1
+  }
+  let body = join(lines[i+1:], "\n")
+  return {"front": front, "body": body}
+}
+
+fn _get(d, k, default_) { return d.has(k) ? d[k] : default_ }
+
+fn json_ld(front, url) {
+  let title = _get(front, "title", "")
+  let desc = _get(front, "description", "")
+  let obj = {
+    "@context": "https://schema.org", "@type": "Article",
+    "headline": title, "description": desc, "url": url
+  }
+  return json_stringify_(obj)
+}
+
+# A tiny, local JSON stringifier so this package doesn't force-import
+# `json` just for one object shape - dict of strings only, which is all
+# an Article JSON-LD block needs here.
+fn json_stringify_(d) {
+  let parts = []
+  for k in keys(d) {
+    parts.push("\"" + k + "\":\"" + str(d[k]).replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+  }
+  return "{" + join(parts, ",") + "}"
+}
+
+fn render(source, base_url) {
+  let parsed = parse_front_matter(source)
+  let front = parsed["front"]
+  let body_html = markdown.to_html(parsed["body"])
+  let title = _get(front, "title", "Untitled")
+  let desc = _get(front, "description", "")
+  let url_path = _get(front, "url", "/")
+  let full_url = base_url + url_path
+  let head = "<title>" + html.escape(title) + "</title>\n" +
+    "<meta name=\"description\" content=\"" + html.escape(desc) + "\">\n" +
+    "<link rel=\"canonical\" href=\"" + full_url + "\">\n" +
+    "<script type=\"application/ld+json\">" + json_ld(front, full_url) + "</script>"
+  let doc = "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n" + head +
+    "\n</head>\n<body>\n" + body_html + "\n</body>\n</html>\n"
+  return {"front": front, "url": url_path, "html": doc}
+}
+
+fn build_site(pages, base_url) {
+  let files = {}
+  let urls = []
+  for page in pages {
+    files[page["url"]] = page["html"]
+    urls.push(base_url + page["url"])
+  }
+  let entries = []
+  for u in urls { entries.push("<url><loc>" + u + "</loc></url>") }
+  let sitemap = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+    "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n" +
+    join(entries, "\n") + "\n</urlset>\n"
+  return {"files": files, "sitemap": sitemap}
+}

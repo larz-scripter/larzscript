@@ -1,0 +1,68 @@
+# text - small text-shaping helpers for real writing: truncating and
+# wrapping copy, pluralizing by count, estimating reading time, and
+# pulling initials from a name.
+#
+#   import "text" as text
+#   print(text.truncate("a long sentence here", 10))   # "a long..."
+#   print(text.wrap("the quick brown fox jumps", 10))
+#   print(text.pluralize("item", 1))     # "item"
+#   print(text.pluralize("item", 3))     # "items"
+#   print(text.reading_time("word " * 400))  # minutes, at 200wpm
+#   print(text.initials("Ada Lovelace"))     # "AL"
+
+fn truncate(s, width, suffix="...") {
+  if len(s) <= width { return s }
+  let cut = width - len(suffix)
+  if cut < 0 { cut = 0 }
+  return s[0:cut] + suffix
+}
+
+fn wrap(s, width) {
+  let words = []
+  for w in s.split(" ") { if len(w) > 0 { words.push(w) } }
+  let lines = []
+  let cur = ""
+  for w in words {
+    let candidate = len(cur) == 0 ? w : cur + " " + w
+    if len(candidate) > width and len(cur) > 0 {
+      lines.push(cur)
+      cur = w
+    } else {
+      cur = candidate
+    }
+  }
+  if len(cur) > 0 { lines.push(cur) }
+  return join(lines, "\n")
+}
+
+# Naive English pluralization: default +s, "-y"->"-ies" after a
+# consonant, "-s/-x/-z/-ch/-sh"->"+es". Good enough for UI copy, not a
+# full irregular-plural dictionary.
+fn pluralize(word, count, plural=nil) {
+  if count == 1 { return word }
+  if plural != nil { return plural }
+  let vowels = "aeiouAEIOU"
+  if len(word) >= 2 and word[len(word)-1:] == "y" and vowels.find(word[len(word)-2:len(word)-1]) < 0 {
+    return word[0:len(word)-1] + "ies"
+  }
+  for suf in ["s", "x", "z", "ch", "sh"] {
+    if len(word) >= len(suf) and word[len(word)-len(suf):] == suf { return word + "es" }
+  }
+  return word + "s"
+}
+
+fn reading_time(body, wpm=200) {
+  let words = 0
+  for w in body.split(" ") { if len(w.strip()) > 0 { words = words + 1 } }
+  let minutes = words / wpm
+  return minutes < 1 ? 1 : int(minutes + 0.999999)
+}
+
+fn initials(name) {
+  let out = ""
+  for part in name.split(" ") {
+    let p = part.strip()
+    if len(p) > 0 { out = out + p[0:1].upper() }
+  }
+  return out
+}

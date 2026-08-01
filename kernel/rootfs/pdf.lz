@@ -1,0 +1,150 @@
+# pdf - generate a real, valid PDF: numbered objects, a correct xref
+# table (exact byte offsets - the classic way a hand-rolled PDF breaks
+# is a wrong offset there), a trailer, and a Standard-14 font reference
+# (Helvetica by name - no embedded font data or other assets needed,
+# every PDF viewer already has the 14 standard fonts). invoice()/
+# receipt() build a line-itemized document with an exact total,
+# accepting each amount as a plain number, a pre-formatted string, or a
+# Larzscript Money value.
+#
+#   import "pdf" as pdf
+#   let doc = pdf.new()
+#   pdf.text(doc, 50, 750, "Hello, PDF!", 18)
+#   write_file("out.pdf", pdf.render(doc))
+#
+#   let inv = pdf.invoice({
+#     "title": "Invoice #1042", "items": [
+#       {"description": "Widget", "qty": 3, "unit_price": 12.5},
+#       {"description": "Gadget", "qty": 1, "unit_price": 40}
+#     ]
+#   })
+#   write_file("invoice.pdf", inv)
+
+fn new(page_width=612, page_height=792) {
+  return {"width": page_width, "height": page_height, "ops": []}
+}
+
+fn _pdf_string(s) {
+  return "(" + str(s).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") + ")"
+}
+
+fn text(doc, x, y, content, size=12, font="F1") {
+  doc["ops"].push("BT /" + font + " " + str(size) + " Tf " + str(x) + " " + str(y) + " Td " + _pdf_string(content) + " Tj ET")
+}
+
+fn line(doc, x1, y1, x2, y2, width=1) {
+  doc["ops"].push(str(width) + " w " + str(x1) + " " + str(y1) + " m " + str(x2) + " " + str(y2) + " l S")
+}
+
+fn rect(doc, x, y, w, h, fill=false) {
+  doc["ops"].push(str(x) + " " + str(y) + " " + str(w) + " " + str(h) + " re " + (fill ? "f" : "S"))
+}
+
+# Renders `doc` to a complete PDF file's contents (a string - the
+# content stream here is pure ASCII text-drawing operators, so there's
+# no embedded-NUL binary-safety concern the way there is for zip/tar).
+fn render(doc) {
+  let content = join(doc["ops"], "\n")
+  let objects = []
+  # 1: Catalog, 2: Pages, 3: Page, 4: Font, 5: Content stream.
+  objects.push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+  objects.push("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+  objects.push("3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> " +
+    "/MediaBox [0 0 " + str(doc["width"]) + " " + str(doc["height"]) + "] /Contents 5 0 R >>\nendobj\n")
+  objects.push("4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n")
+  objects.push("5 0 obj\n<< /Length " + str(len(content)) + " >>\nstream\n" + content + "\nendstream\nendobj\n")
+
+  let header = "%PDF-1.4\n"
+  let body = header
+  let offsets = [0]   # object 0 is the always-free entry, offset unused.
+  for obj in objects {
+    offsets.push(len(body))
+    body = body + obj
+  }
+  let xref_offset = len(body)
+  let xref_lines = ["xref", "0 " + str(len(objects) + 1), "0000000000 65535 f "]
+  let i = 1
+  while i <= len(objects) {
+    let off = str(offsets[i])
+    while len(off) < 10 { off = "0" + off }
+    xref_lines.push(off + " 00000 n ")
+    i = i + 1
+  }
+  let trailer = "trailer\n<< /Size " + str(len(objects) + 1) + " /Root 1 0 R >>\nstartxref\n" + str(xref_offset) + "\n%%EOF"
+  return body + join(xref_lines, "\n") + "\n" + trailer
+}
+
+# Verifies every xref offset actually points at the matching "N 0 obj"
+# marker in the rendered PDF - the exact thing that silently corrupts a
+# hand-rolled PDF if the byte bookkeeping is off by even one character.
+fn verify_xref(pdf_text) {
+  let xref_start = pdf_text.find("\nxref")
+  if xref_start < 0 { return false }
+  let lines = pdf_text[xref_start+1:].split("\n")
+  if lines[0] != "xref" { return false }
+  let counts = lines[1].split(" ")
+  let n = int(counts[1])
+  let i = 1
+  while i < n {
+    let entry = lines[2 + i].strip()
+    let offset = int(entry[0:10])
+    let marker = str(i) + " 0 obj"
+    if pdf_text[offset:offset + len(marker)] != marker { return false }
+    i = i + 1
+  }
+  return true
+}
+
+fn _amount_str(v) {
+  if type(v) == "money" { return str(v) }
+  if type(v) == "string" { return v }
+  let cents = int(v * 100 + (v < 0 ? -0.5 : 0.5))
+  let neg = cents < 0
+  cents = neg ? -cents : cents
+  let s = str(cents // 100) + "." + str((cents % 100) // 10) + str(cents % 10)
+  return (neg ? "-$" : "$") + s
+}
+fn _amount_num(v) {
+  if type(v) == "money" {
+    let s = str(v)
+    let neg = s[0:1] == "-"
+    if neg { s = s[1:] }
+    return (neg ? -1 : 1) * float(s.replace("$", ""))
+  }
+  if type(v) == "string" { return float(v.replace("$", "")) }
+  return v
+}
+
+# opts: {"title": str, "items": [{"description","qty","unit_price"}, ...]}.
+# unit_price/each item total may be number, string ("$12.50"), or Money.
+fn invoice(opts) {
+  let doc = new()
+  text(doc, 50, 740, opts.has("title") ? opts["title"] : "Invoice", 18)
+  line(doc, 50, 725, 562, 725)
+  let y = 700
+  text(doc, 50, y, "Description", 10)
+  text(doc, 350, y, "Qty", 10)
+  text(doc, 420, y, "Unit Price", 10)
+  text(doc, 500, y, "Total", 10)
+  y = y - 15
+  line(doc, 50, y + 10, 562, y + 10)
+  let grand_total = 0.0
+  for item in opts["items"] {
+    let unit = _amount_num(item["unit_price"])
+    let qty = item["qty"]
+    let line_total = unit * qty
+    grand_total = grand_total + line_total
+    text(doc, 50, y, item["description"], 10)
+    text(doc, 350, y, str(qty), 10)
+    text(doc, 420, y, _amount_str(item["unit_price"]), 10)
+    text(doc, 500, y, _amount_str(line_total), 10)
+    y = y - 18
+  }
+  line(doc, 50, y + 5, 562, y + 5)
+  y = y - 15
+  text(doc, 420, y, "Total:", 11)
+  text(doc, 500, y, _amount_str(grand_total), 11)
+  return render(doc)
+}
+
+fn receipt(opts) { return invoice(opts) }

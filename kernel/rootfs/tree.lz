@@ -1,0 +1,118 @@
+# tree - a readable, node-based binary search tree. Not self-balancing
+# (no AVL/red-black rotations) - a deliberately simple reference BST,
+# same spirit as the rest of this "watch how it works" library family.
+#
+#   import "tree" as bst
+#   let t = bst.new()
+#   for x in [5, 3, 8, 1, 4] { bst.insert(t, x) }
+#   print(bst.contains(t, 4))     # true
+#   print(bst.inorder(t))         # [1, 3, 4, 5, 8] - sorted
+#   print(bst.min_(t))            # 1
+#   print(bst.height(t))          # tree height
+
+fn new() { return {"root": nil} }
+
+fn _node(v) { return {"value": v, "left": nil, "right": nil} }
+
+fn insert(t, v) {
+  if t["root"] == nil { t["root"] = _node(v); return }
+  let cur = t["root"]
+  while true {
+    if v == cur["value"] { return }
+    if v < cur["value"] {
+      if cur["left"] == nil { cur["left"] = _node(v); return }
+      cur = cur["left"]
+    } else {
+      if cur["right"] == nil { cur["right"] = _node(v); return }
+      cur = cur["right"]
+    }
+  }
+}
+
+fn contains(t, v) {
+  let cur = t["root"]
+  while cur != nil {
+    if v == cur["value"] { return true }
+    cur = v < cur["value"] ? cur["left"] : cur["right"]
+  }
+  return false
+}
+
+fn min_(t) {
+  if t["root"] == nil { throw {"type": "LarzRuntimeError", "message": "min of an empty tree"} }
+  let cur = t["root"]
+  while cur["left"] != nil { cur = cur["left"] }
+  return cur["value"]
+}
+
+fn max_(t) {
+  if t["root"] == nil { throw {"type": "LarzRuntimeError", "message": "max of an empty tree"} }
+  let cur = t["root"]
+  while cur["right"] != nil { cur = cur["right"] }
+  return cur["value"]
+}
+
+fn _height(node) {
+  if node == nil { return -1 }
+  let lh = _height(node["left"])
+  let rh = _height(node["right"])
+  return 1 + (lh > rh ? lh : rh)
+}
+fn height(t) { return _height(t["root"]) }
+
+fn _inorder(node, out) {
+  if node == nil { return }
+  _inorder(node["left"], out)
+  out.push(node["value"])
+  _inorder(node["right"], out)
+}
+fn inorder(t) { let out = []; _inorder(t["root"], out); return out }
+
+fn _preorder(node, out) {
+  if node == nil { return }
+  out.push(node["value"])
+  _preorder(node["left"], out)
+  _preorder(node["right"], out)
+}
+fn preorder(t) { let out = []; _preorder(t["root"], out); return out }
+
+fn _postorder(node, out) {
+  if node == nil { return }
+  _postorder(node["left"], out)
+  _postorder(node["right"], out)
+  out.push(node["value"])
+}
+fn postorder(t) { let out = []; _postorder(t["root"], out); return out }
+
+fn levelorder(t) {
+  let out = []
+  if t["root"] == nil { return out }
+  let q = [t["root"]]
+  let i = 0
+  while i < len(q) {
+    let node = q[i]
+    out.push(node["value"])
+    if node["left"] != nil { q.push(node["left"]) }
+    if node["right"] != nil { q.push(node["right"]) }
+    i = i + 1
+  }
+  return out
+}
+
+# Remove a value (standard BST delete: leaf / one child / two children -
+# the two-children case replaces the node with its inorder successor).
+fn remove(t, v) {
+  t["root"] = _remove_node(t["root"], v)
+}
+fn _remove_node(node, v) {
+  if node == nil { return nil }
+  if v < node["value"] { node["left"] = _remove_node(node["left"], v); return node }
+  if v > node["value"] { node["right"] = _remove_node(node["right"], v); return node }
+  if node["left"] == nil { return node["right"] }
+  if node["right"] == nil { return node["left"] }
+  let succ = node["right"]
+  while succ["left"] != nil { succ = succ["left"] }
+  node["value"] = succ["value"]
+  node["right"] = _remove_node(node["right"], succ["value"])
+  return node
+}

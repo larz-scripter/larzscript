@@ -1,0 +1,59 @@
+# events - a plain event emitter: on()/once()/off()/emit(), for
+# decoupling components without them holding direct references to each
+# other. emit() iterates a snapshot of the handler list, so a handler
+# that adds/removes handlers (including itself) during emit never
+# corrupts the in-progress dispatch.
+#
+#   import "events" as events
+#   let e = events.new()
+#   let id = events.on(e, "save", fn(data) { print("saved", data) })
+#   events.once(e, "save", fn(data) { print("first save only") })
+#   print(events.emit(e, "save", "payload"))   # 2 (handlers run)
+#   events.off(e, "save", id)
+
+fn new() { return {"handlers": {}, "next_id": 1} }
+
+fn on(e, name, callback) {
+  if not e["handlers"].has(name) { e["handlers"][name] = [] }
+  let id = e["next_id"]
+  e["next_id"] = e["next_id"] + 1
+  e["handlers"][name].push({"id": id, "fn": callback, "once": false})
+  return id
+}
+
+fn once(e, name, callback) {
+  if not e["handlers"].has(name) { e["handlers"][name] = [] }
+  let id = e["next_id"]
+  e["next_id"] = e["next_id"] + 1
+  e["handlers"][name].push({"id": id, "fn": callback, "once": true})
+  return id
+}
+
+fn off(e, name, id) {
+  if not e["handlers"].has(name) { return false }
+  let list_ = e["handlers"][name]
+  let i = 0
+  while i < len(list_) {
+    if list_[i]["id"] == id {
+      e["handlers"][name] = list_[0:i] + list_[i+1:]
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+fn emit(e, name, arg=nil) {
+  if not e["handlers"].has(name) { return 0 }
+  # Snapshot before iterating - a handler is free to call on()/off()
+  # during its own callback without disturbing this dispatch.
+  let snapshot = []
+  for h in e["handlers"][name] { snapshot.push(h) }
+  let ran = 0
+  for h in snapshot {
+    h["fn"](arg)
+    ran = ran + 1
+    if h["once"] { off(e, name, h["id"]) }
+  }
+  return ran
+}

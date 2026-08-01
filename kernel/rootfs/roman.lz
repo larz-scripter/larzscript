@@ -1,0 +1,73 @@
+# roman - Roman numeral conversion (1-3999), with strict round-trip
+# validation (rejects non-canonical forms like "IIII") and an explain()
+# that shows the symbol-by-symbol breakdown. Pairs naturally with `base`
+# for "convert this number every way".
+#
+#   import "roman" as roman
+#   print(roman.to_roman(1994))       # "MCMXCIV"
+#   print(roman.from_roman("MCMXCIV")) # 1994
+#   print(roman.is_valid("IIII"))      # false - not canonical
+#   print(roman.explain(1994))
+
+let _VALUES = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+let _SYMBOLS = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+
+fn to_roman(n) {
+  if n < 1 or n > 3999 { throw {"type": "LarzValueError", "message": "roman numerals cover 1-3999"} }
+  let out = ""
+  let v = n
+  let i = 0
+  while i < len(_VALUES) {
+    while v >= _VALUES[i] {
+      out = out + _SYMBOLS[i]
+      v = v - _VALUES[i]
+    }
+    i = i + 1
+  }
+  return out
+}
+
+let _DIGIT = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+fn from_roman(s) {
+  s = s.upper()
+  let total = 0
+  let i = 0
+  while i < len(s) {
+    let c = s[i:i+1]
+    if not _DIGIT.has(c) { throw {"type": "LarzValueError", "message": "'" + c + "' is not a roman digit"} }
+    let v = _DIGIT[c]
+    if i + 1 < len(s) and _DIGIT.has(s[i+1:i+2]) and _DIGIT[s[i+1:i+2]] > v {
+      total = total + (_DIGIT[s[i+1:i+2]] - v)
+      i = i + 2
+    } else {
+      total = total + v
+      i = i + 1
+    }
+  }
+  return total
+}
+
+# Rejects non-canonical spellings (e.g. "IIII", "VV", "IM") by requiring
+# that re-encoding the parsed value reproduces the exact same string.
+fn is_valid(s) {
+  s = s.upper()
+  for c in s { if not _DIGIT.has(c) { return false } }
+  let n = from_roman(s)
+  if n < 1 or n > 3999 { return false }
+  return to_roman(n) == s
+}
+
+fn explain(n) {
+  let v = n
+  let i = 0
+  let lines = []
+  while i < len(_VALUES) {
+    while v >= _VALUES[i] {
+      lines.push(_SYMBOLS[i] + " = " + str(_VALUES[i]))
+      v = v - _VALUES[i]
+    }
+    i = i + 1
+  }
+  return join(lines, "\n") + "\n= " + to_roman(n) + " (" + str(n) + ")"
+}

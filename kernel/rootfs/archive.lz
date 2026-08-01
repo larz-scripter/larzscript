@@ -1,0 +1,284 @@
+# archive - create and list real ZIP and TAR (USTAR) archives, and
+# extract them safely: every entry name is checked against zip-slip/
+# tar-slip (a `../../etc/passwd`-style entry escaping the target
+# directory) before anything is written, the same realpath-guard
+# principle real extractors use. ZIP entries are STORED (uncompressed) -
+# no DEFLATE implementation here - so files are valid, standard,
+# extractable-by-any-real-unzip archives, just not space-saving.
+#
+# Archive content is a list of ints 0-255 (a byte list), NOT a
+# Larzscript string, throughout - Larzscript strings are C-style
+# NUL-terminated, and every real archive format is full of 0x00 bytes
+# (length fields, padding, timestamps); building one via string
+# concatenation silently truncates at the first zero byte. Use
+# write_file()/read_file_bytes() (both binary-safe for byte lists) to
+# persist archives to real files - not write_file() with a string.
+#
+#   import "archive" as archive
+#   let z = archive.zip_create([{"name": "hello.txt", "data": "hi there"}])
+#   write_file("out.zip", z)             # z is a byte list - binary-safe
+#   print(archive.zip_list(z))
+#   archive.zip_extract(z, "/tmp/safe_dir")
+
+# ---- CRC32 (standard polynomial 0xEDB88320 = 3988292384) ----
+fn _xor32(a, b) {
+  let result = 0
+  let place = 1
+  let x = a
+  let y = b
+  let i = 0
+  while i < 32 {
+    if x % 2 != y % 2 { result = result + place }
+    x = x // 2
+    y = y // 2
+    place = place * 2
+    i = i + 1
+  }
+  return result
+}
+fn _build_crc_table() {
+  let table = [0 for _ in range(256)]
+  let n = 0
+  while n < 256 {
+    let c = n
+    let k = 0
+    while k < 8 {
+      if c % 2 == 1 { c = _xor32(c // 2, 3988292384) } else { c = c // 2 }
+      k = k + 1
+    }
+    table[n] = c
+    n = n + 1
+  }
+  return table
+}
+let _CRC = _build_crc_table()
+
+# crc32 of a byte list.
+fn crc32_bytes(bytes_) {
+  let crc = 4294967295
+  for b in bytes_ { crc = _xor32(crc // 256, _CRC[_xor32(crc, b) % 256]) }
+  return _xor32(crc, 4294967295)
+}
+# crc32 of a (NUL-free) string - convenience wrapper.
+fn crc32(text) { return crc32_bytes(str_to_bytes(text)) }
+
+fn _u16(n) { return [n % 256, (n // 256) % 256] }
+fn _u32(n) { return [n % 256, (n // 256) % 256, (n // 65536) % 256, (n // 16777216) % 256] }
+fn str_to_bytes(s) { let out = []; for c in s { out.push(ord(c)) } return out }
+fn bytes_to_str(bytes_) { let s = ""; for b in bytes_ { s = s + chr(b) } return s }
+
+fn _dos_time() { return 0 }
+fn _dos_date() { return 33 }
+
+# entries: [{"name": str, "data": str}]. Returns a byte list.
+fn zip_create(entries) {
+  let out = []
+  let central = []
+  let offset = 0
+  for e in entries {
+    let name_bytes = str_to_bytes(e["name"])
+    let data_bytes = str_to_bytes(e["data"])
+    let crc = crc32_bytes(data_bytes)
+    let size = len(data_bytes)
+    let local = [80, 75, 3, 4] + _u16(20) + _u16(0) + _u16(0) + _u16(_dos_time()) + _u16(_dos_date()) +
+      _u32(crc) + _u32(size) + _u32(size) + _u16(len(name_bytes)) + _u16(0)
+    for b in local { out.push(b) }
+    for b in name_bytes { out.push(b) }
+    for b in data_bytes { out.push(b) }
+    let cdir = [80, 75, 1, 2] + _u16(20) + _u16(20) + _u16(0) + _u16(0) + _u16(_dos_time()) + _u16(_dos_date()) +
+      _u32(crc) + _u32(size) + _u32(size) + _u16(len(name_bytes)) + _u16(0) + _u16(0) + _u16(0) + _u16(0) + _u32(0) + _u32(offset)
+    for b in cdir { central.push(b) }
+    for b in name_bytes { central.push(b) }
+    offset = offset + len(local) + len(name_bytes) + len(data_bytes)
+  }
+  let cdir_start = offset
+  let cdir_size = len(central)
+  for b in central { out.push(b) }
+  let eocd = [80, 75, 5, 6] + _u16(0) + _u16(0) + _u16(len(entries)) + _u16(len(entries)) +
+    _u32(cdir_size) + _u32(cdir_start) + _u16(0)
+  for b in eocd { out.push(b) }
+  return out
+}
+
+fn _read_u16(bytes_, i) { return bytes_[i] + bytes_[i+1] * 256 }
+fn _read_u32(bytes_, i) { return bytes_[i] + bytes_[i+1] * 256 + bytes_[i+2] * 65536 + bytes_[i+3] * 16777216 }
+
+# Returns [{"name": str, "data": bytes-list, "crc32": int}] - `data` stays
+# a byte list here (the safe, exact representation); zip_list() below
+# wraps this for the common case where the content is known-text.
+fn _zip_list_bytes(bytes_) {
+  let entries = []
+  let i = 0
+  while i < len(bytes_) {
+    if bytes_[i] == 80 and bytes_[i+1] == 75 and bytes_[i+2] == 3 and bytes_[i+3] == 4 {
+      let crc = _read_u32(bytes_, i + 14)
+      let comp_size = _read_u32(bytes_, i + 18)
+      let name_len = _read_u16(bytes_, i + 26)
+      let extra_len = _read_u16(bytes_, i + 28)
+      let name_start = i + 30
+      let name = bytes_to_str(bytes_[name_start:name_start + name_len])
+      let data_start = name_start + name_len + extra_len
+      entries.push({"name": name, "data": bytes_[data_start:data_start + comp_size], "crc32": crc})
+      i = data_start + comp_size
+    } else {
+      i = i + 1
+    }
+  }
+  return entries
+}
+
+fn zip_list(zip_bytes) {
+  let out = []
+  for e in _zip_list_bytes(zip_bytes) { out.push({"name": e["name"], "data": bytes_to_str(e["data"]), "crc32": e["crc32"]}) }
+  return out
+}
+
+# Rejects any entry name that would resolve outside `base_dir`: absolute
+# paths, and any path whose ".." components climb above the base -
+# checked by simulating the walk rather than trusting string prefixes.
+fn _safe_join(base_dir, name) {
+  if len(name) > 0 and (name[0:1] == "/" or name.find(":") >= 0) {
+    throw {"type": "LarzArchiveSecurityError", "message": "'" + name + "' is an absolute/rooted path - refusing to extract"}
+  }
+  let stack = []
+  for part in name.split("/") {
+    if part == "" or part == "." { continue }
+    if part == ".." {
+      if len(stack) == 0 { throw {"type": "LarzArchiveSecurityError", "message": "'" + name + "' escapes the extraction directory"} }
+      stack = stack[0:len(stack) - 1]
+    } else {
+      stack.push(part)
+    }
+  }
+  return base_dir + "/" + join(stack, "/")
+}
+
+# mkdir() only makes one level at a time - this walks the path and
+# creates each missing parent in order (mkdir() returning false for an
+# already-existing directory is expected and ignored).
+fn _ensure_parent_dirs(path) {
+  let parts = path.split("/")
+  let built = ""
+  let i = 0
+  while i < len(parts) - 1 {
+    built = i == 0 ? parts[0] : built + "/" + parts[i]
+    if len(built) > 0 { mkdir(built) }
+    i = i + 1
+  }
+}
+
+fn zip_extract(zip_bytes, base_dir) {
+  let written = []
+  for e in _zip_list_bytes(zip_bytes) {
+    let path = _safe_join(base_dir, e["name"])
+    _ensure_parent_dirs(path)
+    write_file(path, e["data"])
+    written.push(path)
+  }
+  return written
+}
+
+# ---- TAR (USTAR) ----
+fn _tar_pad_field(bytes_, width) {
+  let out = []
+  for b in bytes_ { out.push(b) }
+  while len(out) < width { out.push(0) }
+  return out[0:width]
+}
+fn _octal(n, width) {
+  let digits = ""
+  let v = n
+  if v == 0 { digits = "0" }
+  while v > 0 { digits = str(v % 8) + digits; v = v // 8 }
+  while len(digits) < width - 1 { digits = "0" + digits }
+  return str_to_bytes(digits + " ")
+}
+
+fn _tar_header(name, size) {
+  let h = []
+  for b in _tar_pad_field(str_to_bytes(name), 100) { h.push(b) }
+  for b in _tar_pad_field(str_to_bytes("0000644"), 8) { h.push(b) }
+  for b in _tar_pad_field(str_to_bytes("0000000"), 8) { h.push(b) }
+  for b in _tar_pad_field(str_to_bytes("0000000"), 8) { h.push(b) }
+  for b in _octal(size, 12) { h.push(b) }
+  for b in _octal(0, 12) { h.push(b) }
+  for b in str_to_bytes("        ") { h.push(b) }   # checksum field, blanked for calc
+  h.push(ord("0"))                                    # typeflag: regular file
+  for b in _tar_pad_field([], 100) { h.push(b) }       # linkname
+  for b in str_to_bytes("ustar") { h.push(b) }
+  h.push(0)
+  for b in str_to_bytes("00") { h.push(b) }
+  for b in _tar_pad_field([], 32) { h.push(b) }        # uname
+  for b in _tar_pad_field([], 32) { h.push(b) }        # gname
+  for b in _tar_pad_field(str_to_bytes("0000000"), 8) { h.push(b) }
+  for b in _tar_pad_field(str_to_bytes("0000000"), 8) { h.push(b) }
+  for b in _tar_pad_field([], 155) { h.push(b) }       # prefix
+  while len(h) < 512 { h.push(0) }
+  let sum = 0
+  for b in h { sum = sum + b }
+  let checksum = _octal(sum, 8)
+  let out = h[0:148]
+  for b in checksum[0:7] { out.push(b) }
+  out.push(ord(" "))
+  for b in h[156:] { out.push(b) }
+  return out
+}
+
+# entries: [{"name": str, "data": str}]. Returns a byte list.
+fn tar_create(entries) {
+  let out = []
+  for e in entries {
+    let data_bytes = str_to_bytes(e["data"])
+    for b in _tar_header(e["name"], len(data_bytes)) { out.push(b) }
+    for b in data_bytes { out.push(b) }
+    let pad = (512 - (len(data_bytes) % 512)) % 512
+    let i = 0
+    while i < pad { out.push(0); i = i + 1 }
+  }
+  let i = 0
+  while i < 1024 { out.push(0); i = i + 1 }
+  return out
+}
+
+fn _octal_to_int(bytes_) {
+  let v = 0
+  for b in bytes_ {
+    if b == 0 or b == 32 { continue }
+    v = v * 8 + (b - 48)
+  }
+  return v
+}
+
+fn _tar_list_bytes(bytes_) {
+  let entries = []
+  let i = 0
+  while i + 512 <= len(bytes_) {
+    let block = bytes_[i:i+512]
+    let name = ""
+    for b in block[0:100] { if b == 0 { break } name = name + chr(b) }
+    if len(name) == 0 { i = i + 512; continue }
+    let size = _octal_to_int(block[124:136])
+    let data_start = i + 512
+    entries.push({"name": name, "data": bytes_[data_start:data_start + size]})
+    let pad = (512 - (size % 512)) % 512
+    i = data_start + size + pad
+  }
+  return entries
+}
+
+fn tar_list(tar_bytes) {
+  let out = []
+  for e in _tar_list_bytes(tar_bytes) { out.push({"name": e["name"], "data": bytes_to_str(e["data"])}) }
+  return out
+}
+
+fn tar_extract(tar_bytes, base_dir) {
+  let written = []
+  for e in _tar_list_bytes(tar_bytes) {
+    let path = _safe_join(base_dir, e["name"])
+    _ensure_parent_dirs(path)
+    write_file(path, e["data"])
+    written.push(path)
+  }
+  return written
+}

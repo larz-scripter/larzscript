@@ -1,0 +1,57 @@
+# base - convert numbers between any base 2-36, with an explain() that
+# shows the place-value math.
+#
+#   import "base" as numbase
+#   print(numbase.to_base(255, 16))     # "ff"
+#   print(numbase.to_base(255, 2))      # "11111111"
+#   print(numbase.from_base("ff", 16))  # 255
+#   print(numbase.to_binary(10))        # "1010"
+#   print(numbase.to_hex(255))          # "ff"
+#   print(numbase.to_octal(8))          # "10"
+#   print(numbase.explain(255, 16))
+
+let DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+fn to_base(n, base) {
+  if base < 2 or base > 36 { throw {"type": "LarzValueError", "message": "base must be 2-36"} }
+  if n == 0 { return "0" }
+  let neg = n < 0
+  let v = neg ? -n : n
+  let out = ""
+  while v > 0 {
+    out = DIGITS[v % base:v % base + 1] + out
+    v = v // base
+  }
+  return neg ? "-" + out : out
+}
+
+fn from_base(s, base) {
+  let neg = s[0:1] == "-"
+  if neg { s = s[1:] }
+  let v = 0
+  for c in s.lower() {
+    let d = DIGITS.find(c)
+    if d < 0 or d >= base { throw {"type": "LarzValueError", "message": "'" + c + "' is not a valid base-" + str(base) + " digit"} }
+    v = v * base + d
+  }
+  return neg ? -v : v
+}
+
+fn to_binary(n) { return to_base(n, 2) }
+fn to_hex(n) { return to_base(n, 16) }
+fn to_octal(n) { return to_base(n, 8) }
+
+fn explain(n, base) {
+  let digits = to_base(n, base)
+  let lines = []
+  let power = len(digits) - 1
+  let i = 0
+  while i < len(digits) {
+    let d = digits[i:i+1]
+    let place = base ** power
+    lines.push(d + " * " + str(base) + "^" + str(power) + " = " + str(from_base(d, base) * place))
+    power = power - 1
+    i = i + 1
+  }
+  return join(lines, "\n") + "\n= " + str(n)
+}

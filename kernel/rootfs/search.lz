@@ -1,0 +1,136 @@
+# search - a small in-process full-text search engine: an inverted
+# index, BM25 ranking, and fuzzy fallback matching for typo-tolerant
+# queries. No search server, no external index - everything lives in
+# one dict you build and query in-process.
+#
+#   import "search" as search
+#   let idx = search.new()
+#   search.add(idx, "1", "the quick brown fox")
+#   search.add(idx, "2", "the lazy dog sleeps")
+#   print(search.query(idx, "quick fox"))         # [{"id": "1", "score": ...}]
+#   print(search.query_fuzzy(idx, "qwick fox"))    # still finds doc 1
+
+import "fuzzy" as fuzzy
+
+fn _tokenize(text) {
+  let words = []
+  let cur = ""
+  for c in text.lower() {
+    if "abcdefghijklmnopqrstuvwxyz0123456789".find(c) >= 0 { cur = cur + c }
+    else { if len(cur) > 0 { words.push(cur) } cur = "" }
+  }
+  if len(cur) > 0 { words.push(cur) }
+  return words
+}
+
+fn new() {
+  return {"docs": {}, "postings": {}, "doc_lengths": {}, "total_length": 0}
+}
+
+fn add(idx, id, text) {
+  let tokens = _tokenize(text)
+  idx["docs"][id] = text
+  idx["doc_lengths"][id] = len(tokens)
+  idx["total_length"] = idx["total_length"] + len(tokens)
+  for tok in tokens {
+    if not idx["postings"].has(tok) { idx["postings"][tok] = {} }
+    let posting = idx["postings"][tok]
+    posting[id] = (posting.has(id) ? posting[id] : 0) + 1
+  }
+}
+
+fn _avg_doc_len(idx) {
+  let n = len(keys(idx["docs"]))
+  return n == 0 ? 0 : idx["total_length"] / n
+}
+
+# Standard BM25 (k1=1.5, b=0.75).
+fn _bm25(idx, term, id, tf) {
+  let n = len(keys(idx["docs"]))
+  let df = len(keys(idx["postings"][term]))
+  let idf = ln((n - df + 0.5) / (df + 0.5) + 1)
+  let k1 = 1.5
+  let b = 0.75
+  let dl = idx["doc_lengths"][id]
+  let avgdl = _avg_doc_len(idx)
+  let denom = tf + k1 * (1 - b + b * dl / avgdl)
+  return idf * (tf * (k1 + 1)) / denom
+}
+
+# Natural log via the identity ln(x) = log2(x) * ln(2) is unnecessary -
+# a direct series isn't needed either: Larzscript's `**` only takes
+# whole-number exponents, so this is a straightforward bisection solve
+# of e^y = x instead of a builtin log.
+fn ln(x) {
+  if x <= 0 { throw {"type": "LarzValueError", "message": "ln() needs a positive number"} }
+  let lo = -50.0
+  let hi = 50.0
+  let e_const = 2.718281828459045
+  let i = 0
+  while i < 100 {
+    let mid = (lo + hi) / 2
+    let val = _exp(mid, e_const)
+    if val < x { lo = mid } else { hi = mid }
+    i = i + 1
+  }
+  return (lo + hi) / 2
+}
+fn _exp(y, e_const) {
+  # e^y via e^floor(y) * e^frac(y), the latter by a Taylor series -
+  # keeps the series argument small (|frac| <= 1) so it converges fast.
+  let whole = int(y)
+  if y < 0 and whole != y { whole = whole - 1 }
+  let frac = y - whole
+  let base = 1.0
+  let k = 0
+  while k < (whole < 0 ? -whole : whole) {
+    base = whole < 0 ? base / e_const : base * e_const
+    k = k + 1
+  }
+  let term = 1.0
+  let total = 1.0
+  let n = 1
+  while n < 30 { term = term * frac / n; total = total + term; n = n + 1 }
+  return base * total
+}
+
+fn query(idx, text) {
+  let tokens = _tokenize(text)
+  let scores = {}
+  for tok in tokens {
+    if not idx["postings"].has(tok) { continue }
+    for id in keys(idx["postings"][tok]) {
+      let tf = idx["postings"][tok][id]
+      scores[id] = (scores.has(id) ? scores[id] : 0) + _bm25(idx, tok, id, tf)
+    }
+  }
+  let results = []
+  for id in keys(scores) { results.push({"id": id, "score": scores[id]}) }
+  let i = 1
+  while i < len(results) {
+    let cur = results[i]
+    let j = i - 1
+    while j >= 0 and results[j]["score"] < cur["score"] {
+      results[j + 1] = results[j]
+      j = j - 1
+    }
+    results[j + 1] = cur
+    i = i + 1
+  }
+  return results
+}
+
+# Falls back to fuzzy-matching each query token against the vocabulary
+# (edit-distance ratio > 0.7) when it isn't an exact vocabulary term, so
+# small typos still surface results.
+fn query_fuzzy(idx, text) {
+  let tokens = _tokenize(text)
+  let vocab = keys(idx["postings"])
+  let expanded = []
+  for tok in tokens {
+    if idx["postings"].has(tok) { expanded.push(tok); continue }
+    let best = fuzzy.extract_one(tok, vocab)
+    if best != nil and best["score"] > 0.7 { expanded.push(best["choice"]) }
+  }
+  return query(idx, join(expanded, " "))
+}

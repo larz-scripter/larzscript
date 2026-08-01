@@ -1,0 +1,123 @@
+# fuzzy - approximate string matching: Levenshtein distance, a 0-1
+# similarity ratio, Jaro-Winkler similarity, and extract()/extract_one()
+# to fuzzy-search a list of candidates. Case-normalized throughout.
+#
+#   import "fuzzy" as fuzzy
+#   print(fuzzy.levenshtein("kitten", "sitting"))   # 3
+#   print(fuzzy.ratio("kitten", "sitting"))          # 0-1 similarity
+#   print(fuzzy.jaro_winkler("martha", "marhta"))
+#   print(fuzzy.extract_one("aple", ["apple", "grape", "orange"]))
+
+fn levenshtein(a, b) {
+  a = a.lower()
+  b = b.lower()
+  let la = len(a)
+  let lb = len(b)
+  let prev = [i for i in range(lb + 1)]
+  let i = 1
+  while i <= la {
+    let cur = [i]
+    let j = 1
+    while j <= lb {
+      let cost = a[i-1:i] == b[j-1:j] ? 0 : 1
+      let del_ = prev[j] + 1
+      let ins_ = cur[j-1] + 1
+      let sub_ = prev[j-1] + cost
+      let best = del_ < ins_ ? del_ : ins_
+      best = best < sub_ ? best : sub_
+      cur.push(best)
+      j = j + 1
+    }
+    prev = cur
+    i = i + 1
+  }
+  return prev[lb]
+}
+
+fn ratio(a, b) {
+  let maxlen = len(a) > len(b) ? len(a) : len(b)
+  if maxlen == 0 { return 1.0 }
+  return 1 - (levenshtein(a, b) / maxlen)
+}
+
+fn _common_prefix(a, b, limit) {
+  let n = 0
+  while n < len(a) and n < len(b) and n < limit and a[n:n+1] == b[n:n+1] { n = n + 1 }
+  return n
+}
+
+# Jaro similarity, then the Winkler boost for a shared prefix (up to 4
+# chars, scaling factor 0.1) - the standard formulation.
+fn jaro_winkler(a, b) {
+  a = a.lower()
+  b = b.lower()
+  let la = len(a)
+  let lb = len(b)
+  if la == 0 and lb == 0 { return 1.0 }
+  if la == 0 or lb == 0 { return 0.0 }
+  let match_dist = (la > lb ? la : lb) // 2 - 1
+  if match_dist < 0 { match_dist = 0 }
+  let a_matches = [false for _ in range(la)]
+  let b_matches = [false for _ in range(lb)]
+  let matches = 0
+  let i = 0
+  while i < la {
+    let start = i - match_dist
+    if start < 0 { start = 0 }
+    let end = i + match_dist + 1
+    if end > lb { end = lb }
+    let j = start
+    while j < end {
+      if not b_matches[j] and a[i:i+1] == b[j:j+1] {
+        a_matches[i] = true
+        b_matches[j] = true
+        matches = matches + 1
+        break
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  if matches == 0 { return 0.0 }
+  let transpositions = 0
+  let k = 0
+  let ai = 0
+  while ai < la {
+    if a_matches[ai] {
+      while not b_matches[k] { k = k + 1 }
+      if a[ai:ai+1] != b[k:k+1] { transpositions = transpositions + 1 }
+      k = k + 1
+    }
+    ai = ai + 1
+  }
+  transpositions = transpositions // 2
+  let m = matches
+  let jaro = (m / la + m / lb + (m - transpositions) / m) / 3
+  let prefix = _common_prefix(a, b, 4)
+  return jaro + prefix * 0.1 * (1 - jaro)
+}
+
+# candidates: list of strings. Returns [{"choice": s, "score": 0-1}, ...]
+# sorted best-first.
+fn extract(query, candidates, limit=5) {
+  let scored = []
+  for c in candidates { scored.push({"choice": c, "score": ratio(query, c)}) }
+  let i = 1
+  while i < len(scored) {
+    let cur = scored[i]
+    let j = i - 1
+    while j >= 0 and scored[j]["score"] < cur["score"] {
+      scored[j + 1] = scored[j]
+      j = j - 1
+    }
+    scored[j + 1] = cur
+    i = i + 1
+  }
+  if limit < len(scored) { return scored[0:limit] }
+  return scored
+}
+
+fn extract_one(query, candidates) {
+  let top = extract(query, candidates, 1)
+  return len(top) == 0 ? nil : top[0]
+}

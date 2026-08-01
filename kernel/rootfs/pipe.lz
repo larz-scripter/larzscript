@@ -1,0 +1,69 @@
+# pipe - composable map/filter/reduce over a list. "Lazy" here means
+# deferred, not generator-based (Larzscript has no `yield`): map()/
+# filter() just record the transform without touching the data, and the
+# whole chain runs as one pass only when you call to_list()/reduce()/
+# for_each() - so nothing is materialized between steps. Re-iterable:
+# calling to_list() twice re-runs the pipeline over the original source
+# both times, since the source itself is never consumed.
+#
+#   import "pipe" as pipe
+#   let p = pipe.from_(range(10))
+#   let doubled_evens = pipe.filter(pipe.map(p, fn(x) { return x * 2 }), fn(x) { return x % 4 == 0 })
+#   print(pipe.to_list(doubled_evens))
+#   print(pipe.reduce(p, fn(acc, x) { return acc + x }, 0))
+
+fn from_(source) { return {"source": source, "ops": []} }
+
+fn map(p, fn_) { return {"source": p["source"], "ops": p["ops"] + [{"kind": "map", "fn": fn_}]} }
+fn filter(p, fn_) { return {"source": p["source"], "ops": p["ops"] + [{"kind": "filter", "fn": fn_}]} }
+fn take(p, n) { return {"source": p["source"], "ops": p["ops"] + [{"kind": "take", "n": n}]} }
+fn skip(p, n) { return {"source": p["source"], "ops": p["ops"] + [{"kind": "skip", "n": n}]} }
+
+fn for_each(p, callback) {
+  let taken = 0
+  let skipped_counts = {}
+  for x in p["source"] {
+    let value = x
+    let keep = true
+    let op_i = 0
+    for op in p["ops"] {
+      if not keep { break }
+      if op["kind"] == "map" { value = op["fn"](value) }
+      else if op["kind"] == "filter" { if not op["fn"](value) { keep = false } }
+      else if op["kind"] == "skip" {
+        let key = str(op_i)
+        if not skipped_counts.has(key) { skipped_counts[key] = 0 }
+        if skipped_counts[key] < op["n"] { skipped_counts[key] = skipped_counts[key] + 1; keep = false }
+      }
+      op_i = op_i + 1
+    }
+    if keep {
+      if taken >= _take_limit(p) { break }
+      callback(value)
+      taken = taken + 1
+    }
+  }
+}
+
+fn _take_limit(p) {
+  for op in p["ops"] { if op["kind"] == "take" { return op["n"] } }
+  return 9007199254740992
+}
+
+fn to_list(p) {
+  let out = []
+  for_each(p, fn(v) { out.push(v) })
+  return out
+}
+
+fn reduce(p, fn_, initial) {
+  let acc = initial
+  for_each(p, fn(v) { acc = fn_(acc, v) })
+  return acc
+}
+
+fn count(p) { return len(to_list(p)) }
+fn first(p, default_=nil) {
+  let out = to_list(take(p, 1))
+  return len(out) == 0 ? default_ : out[0]
+}

@@ -1,0 +1,45 @@
+# bench - micro-benchmarking: time a function over N runs, get clean
+# stats, and rank several candidates against each other.
+#
+#   import "bench" as bench
+#   let r = bench.benchmark(fn() { return 1 + 1 }, 1000)
+#   print(r["mean"], r["min"], r["max"])
+#   let ranked = bench.compare({"a": fn() { ... }, "b": fn() { ... }}, 100)
+
+fn benchmark(fn_, runs) {
+  let times = []
+  for _ in range(runs) {
+    let start = clock()
+    fn_()
+    times.push(clock() - start)
+  }
+  let total = sum(times)
+  return {
+    "runs": runs, "total": total, "mean": total / runs,
+    "min": min(times), "max": max(times), "times": times
+  }
+}
+
+# candidates: {name: fn}. Returns a list of {name, mean, ...} sorted
+# fastest first.
+fn compare(candidates, runs) {
+  let results = []
+  for name in keys(candidates) {
+    let r = benchmark(candidates[name], runs)
+    r["name"] = name
+    results.push(r)
+  }
+  # sort by mean, fastest first - insertion sort, no key-function builtin
+  let i = 1
+  while i < len(results) {
+    let cur = results[i]
+    let j = i - 1
+    while j >= 0 and results[j]["mean"] > cur["mean"] {
+      results[j + 1] = results[j]
+      j = j - 1
+    }
+    results[j + 1] = cur
+    i = i + 1
+  }
+  return results
+}

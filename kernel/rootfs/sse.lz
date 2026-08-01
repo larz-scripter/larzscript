@@ -1,0 +1,48 @@
+# sse - Server-Sent Events: format() builds the wire-format text block
+# for one event (event:/data:/id: lines), and broadcaster() fans one
+# published event out to every subscribed client. Zero dependencies,
+# one-way (server -> client) only, matching the SSE spec itself - this
+# package doesn't open a socket for you (Larzscript's hosted mode has no
+# server-accept loop; see `net.serve` for the kernel-only equivalent),
+# it hands each subscriber the exact bytes to write to whatever
+# connection they already have open.
+#
+#   import "sse" as sse
+#   print(sse.format("update", "{\"x\":1}", "42"))
+#   # "id: 42\nevent: update\ndata: {\"x\":1}\n\n"
+#   let b = sse.broadcaster()
+#   sse.subscribe(b, fn(chunk) { write_to_client(chunk) })
+#   sse.publish(b, "update", "{\"x\":1}")
+
+# A multi-line `data` value becomes multiple `data:` lines, per spec -
+# a client join()s them with "\n" on the way back out.
+fn format(event, data, id=nil) {
+  let lines = []
+  if id != nil { lines.push("id: " + str(id)) }
+  if event != nil { lines.push("event: " + event) }
+  for line in data.split("\n") { lines.push("data: " + line) }
+  return join(lines, "\n") + "\n\n"
+}
+
+fn retry(ms) { return "retry: " + str(ms) + "\n\n" }
+
+fn broadcaster() { return {"subs": [], "next_id": 1} }
+
+fn subscribe(b, callback) {
+  let id = b["next_id"]
+  b["next_id"] = b["next_id"] + 1
+  b["subs"].push({"id": id, "fn": callback})
+  return id
+}
+
+fn unsubscribe(b, id) {
+  let out = []
+  for s in b["subs"] { if s["id"] != id { out.push(s) } }
+  b["subs"] = out
+}
+
+fn publish(b, event, data, id=nil) {
+  let chunk = format(event, data, id)
+  for s in b["subs"] { s["fn"](chunk) }
+  return len(b["subs"])
+}

@@ -1,0 +1,83 @@
+# agent - a defensive tool-calling loop against any OpenAI-compatible
+# chat-completions API. Larzscript has no type hints/decorators to
+# derive a tool schema from automatically, so register_tool() takes an
+# explicit JSON-schema-shaped parameter spec instead of `@tool`
+# introspection - same end result (the model gets a real function
+# schema), just written out rather than inferred. Transport is
+# injectable: chat() calls `transport(payload)` and expects back the
+# API's parsed JSON response, so tests run against a canned fake
+# instead of a real network call. "Defensive": a tool that throws never
+# crashes the loop - the error is reported back to the model as the
+# tool's result, and a max_turns bound stops a misbehaving model from
+# looping forever.
+#
+#   import "agent" as agent
+#   let a = agent.new({"model": "gpt-4"})
+#   agent.register_tool(a, "add", "Add two numbers", {
+#     "type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]
+#   }, fn(args) { return args["a"] + args["b"] })
+#   let result = agent.chat(a, "what is 2 + 3?", fake_transport)
+#   print(result["content"])
+
+import "json" as json
+
+fn new(config) {
+  return {"config": config, "tools": {}, "history": []}
+}
+
+fn register_tool(a, name, description, params_schema, fn_) {
+  a["tools"][name] = {"name": name, "description": description, "params_schema": params_schema, "fn": fn_}
+}
+
+fn _tools_payload(a) {
+  let out = []
+  for name in keys(a["tools"]) {
+    let t = a["tools"][name]
+    out.push({"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["params_schema"]}})
+  }
+  return out
+}
+
+fn _call_tool(a, name, args_json) {
+  if not a["tools"].has(name) { return {"ok": false, "result": "unknown tool '" + name + "'"} }
+  try {
+    let args = json.parse(args_json)
+    return {"ok": true, "result": a["tools"][name]["fn"](args)}
+  } catch e {
+    return {"ok": false, "result": "tool error: " + str(e)}
+  }
+}
+
+# `transport(payload)` should POST payload to the chat-completions
+# endpoint and return the parsed JSON response dict (the caller owns
+# how - http.post + json.parse, or a test double). Returns
+# {"content": final text or nil, "tool_calls": [...] made along the way}.
+fn chat(a, user_message, transport, max_turns=8) {
+  a["history"].push({"role": "user", "content": user_message})
+  let turn = 0
+  let calls_made = []
+  while turn < max_turns {
+    let payload = {"model": a["config"]["model"], "messages": a["history"]}
+    if len(keys(a["tools"])) > 0 { payload["tools"] = _tools_payload(a) }
+    let response = transport(payload)
+    let choice = response["choices"][0]
+    let message = choice["message"]
+    if not message.has("tool_calls") or message["tool_calls"] == nil or len(message["tool_calls"]) == 0 {
+      a["history"].push({"role": "assistant", "content": message["content"]})
+      return {"content": message["content"], "tool_calls": calls_made}
+    }
+    a["history"].push(message)
+    for call in message["tool_calls"] {
+      let fn_name = call["function"]["name"]
+      let fn_args = call["function"]["arguments"]
+      let outcome = _call_tool(a, fn_name, fn_args)
+      calls_made.push({"name": fn_name, "args": fn_args, "ok": outcome["ok"], "result": outcome["result"]})
+      a["history"].push({"role": "tool", "tool_call_id": call["id"], "content": str(outcome["result"])})
+    }
+    turn = turn + 1
+  }
+  throw {"type": "LarzAgentMaxTurnsError", "message": "exceeded max_turns (" + str(max_turns) + ") without a final response"}
+}
+
+fn reset(a) { a["history"] = [] }
+fn history(a) { return a["history"] }

@@ -1,0 +1,72 @@
+# router - URL routing: register path patterns with `<name>` and
+# `<int:id>` params, match a request path to its handler + extracted
+# params, and build() a concrete URL back out of a pattern + values.
+# No decorators in Larzscript, so registration is a plain function call
+# instead of `@route`.
+#
+#   import "router" as router
+#   let r = router.new()
+#   router.add(r, "/users/<int:id>", "get_user")
+#   router.add(r, "/users/<name>/posts", "user_posts")
+#   let m = router.match(r, "/users/42")
+#   print(m["handler"], m["params"])      # "get_user", {"id": 42}
+#   print(router.build("/users/<int:id>", {"id": 42}))   # "/users/42"
+
+fn new() { return {"routes": []} }
+
+fn _split(path) {
+  let parts = []
+  for p in path.split("/") { if len(p) > 0 { parts.push(p) } }
+  return parts
+}
+
+fn add(r, pattern, handler) {
+  r["routes"].push({"pattern": pattern, "segments": _split(pattern), "handler": handler})
+}
+
+# `<int:id>` -> {"name": "id", "type": "int"}; `<name>` -> {"name": "name", "type": "str"}.
+fn _param_spec(seg) {
+  if len(seg) < 2 or seg[0:1] != "<" or seg[len(seg)-1:] != ">" { return nil }
+  let inner = seg[1:len(seg)-1]
+  let colon = inner.find(":")
+  if colon >= 0 { return {"name": inner[colon+1:], "type": inner[0:colon]} }
+  return {"name": inner, "type": "str"}
+}
+
+fn match(r, path) {
+  let path_segs = _split(path)
+  for route in r["routes"] {
+    if len(route["segments"]) != len(path_segs) { continue }
+    let params = {}
+    let ok = true
+    let i = 0
+    while i < len(route["segments"]) {
+      let seg = route["segments"][i]
+      let spec = _param_spec(seg)
+      if spec == nil {
+        if seg != path_segs[i] { ok = false; break }
+      } else if spec["type"] == "int" {
+        let val = path_segs[i]
+        let is_int = len(val) > 0
+        for c in val { if "0123456789".find(c) < 0 { is_int = false } }
+        if not is_int { ok = false; break }
+        params[spec["name"]] = int(val)
+      } else {
+        params[spec["name"]] = path_segs[i]
+      }
+      i = i + 1
+    }
+    if ok { return {"handler": route["handler"], "params": params} }
+  }
+  return nil
+}
+
+fn build(pattern, values) {
+  let segs = _split(pattern)
+  let out = []
+  for seg in segs {
+    let spec = _param_spec(seg)
+    out.push(spec == nil ? seg : str(values[spec["name"]]))
+  }
+  return "/" + join(out, "/")
+}

@@ -1,0 +1,75 @@
+# metrics - counters, gauges, and histograms with Prometheus text
+# exposition format output, so any real Prometheus-compatible scraper
+# can consume them straight from a `/metrics` endpoint.
+#
+#   import "metrics" as metrics
+#   let m = metrics.new()
+#   metrics.counter_inc(m, "requests_total", {"method": "GET"})
+#   metrics.gauge_set(m, "queue_depth", 5)
+#   metrics.histogram_observe(m, "latency_seconds", 0.23)
+#   print(metrics.export_prometheus(m))
+
+fn new() { return {"counters": {}, "gauges": {}, "histograms": {}} }
+
+fn _key(name, labels) {
+  if len(keys(labels)) == 0 { return name }
+  let parts = []
+  for k in sorted(keys(labels)) { parts.push(k + "=\"" + str(labels[k]) + "\"") }
+  return name + "{" + join(parts, ",") + "}"
+}
+
+fn counter_inc(m, name, labels={}, amount=1) {
+  let k = _key(name, labels)
+  if not m["counters"].has(k) { m["counters"][k] = {"name": name, "labels": labels, "value": 0} }
+  m["counters"][k]["value"] = m["counters"][k]["value"] + amount
+}
+
+fn gauge_set(m, name, value, labels={}) {
+  let k = _key(name, labels)
+  m["gauges"][k] = {"name": name, "labels": labels, "value": value}
+}
+fn gauge_inc(m, name, labels={}, amount=1) {
+  let k = _key(name, labels)
+  if not m["gauges"].has(k) { m["gauges"][k] = {"name": name, "labels": labels, "value": 0} }
+  m["gauges"][k]["value"] = m["gauges"][k]["value"] + amount
+}
+
+let _DEFAULT_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+
+fn histogram_observe(m, name, value, labels={}, buckets=nil) {
+  let k = _key(name, labels)
+  if not m["histograms"].has(k) {
+    let bs = buckets == nil ? _DEFAULT_BUCKETS : buckets
+    let counts = {}
+    for b in bs { counts[str(b)] = 0 }
+    m["histograms"][k] = {"name": name, "labels": labels, "buckets": bs, "counts": counts, "sum": 0, "total": 0}
+  }
+  let h = m["histograms"][k]
+  h["sum"] = h["sum"] + value
+  h["total"] = h["total"] + 1
+  for b in h["buckets"] { if value <= b { h["counts"][str(b)] = h["counts"][str(b)] + 1 } }
+}
+
+fn export_prometheus(m) {
+  let lines = []
+  for k in keys(m["counters"]) {
+    let c = m["counters"][k]
+    lines.push(_key(c["name"], c["labels"]) + " " + str(c["value"]))
+  }
+  for k in keys(m["gauges"]) {
+    let g = m["gauges"][k]
+    lines.push(_key(g["name"], g["labels"]) + " " + str(g["value"]))
+  }
+  for k in keys(m["histograms"]) {
+    let h = m["histograms"][k]
+    for b in h["buckets"] {
+      let le_labels = {}
+      for lk in keys(h["labels"]) { le_labels[lk] = h["labels"][lk] }
+      le_labels["le"] = str(b)
+      lines.push(_key(h["name"] + "_bucket", le_labels) + " " + str(h["counts"][str(b)]))
+    }
+    lines.push(_key(h["name"] + "_sum", h["labels"]) + " " + str(h["sum"]))
+    lines.push(_key(h["name"] + "_count", h["labels"]) + " " + str(h["total"]))
+  }
+  return join(lines, "\n") + "\n"
+}

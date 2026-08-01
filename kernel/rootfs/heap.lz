@@ -1,0 +1,65 @@
+# heap - a readable, array-backed binary heap. Min-heap by default; pass
+# a key function for max-heap or custom ordering.
+#
+#   import "heap" as heap
+#   let h = heap.new()
+#   heap.push(h, 5); heap.push(h, 1); heap.push(h, 3)
+#   print(heap.pop(h))        # 1
+#   print(heap.peek(h))       # 3
+#   print(heap.heapsort([5, 1, 4, 2, 8]))   # [1, 2, 4, 5, 8]
+
+fn new(key=nil) { return {"items": [], "key": key} }
+fn _k(h, v) { return h["key"] == nil ? v : h["key"](v) }
+
+fn push(h, v) {
+  let items = h["items"]
+  items.push(v)
+  let i = len(items) - 1
+  while i > 0 {
+    let parent = (i - 1) // 2
+    if _k(h, items[parent]) <= _k(h, items[i]) { break }
+    let t = items[parent]; items[parent] = items[i]; items[i] = t
+    i = parent
+  }
+}
+
+fn _sift_down(h) {
+  let items = h["items"]
+  let n = len(items)
+  let i = 0
+  while true {
+    let left = 2 * i + 1
+    let right = 2 * i + 2
+    let smallest = i
+    if left < n and _k(h, items[left]) < _k(h, items[smallest]) { smallest = left }
+    if right < n and _k(h, items[right]) < _k(h, items[smallest]) { smallest = right }
+    if smallest == i { break }
+    let t = items[i]; items[i] = items[smallest]; items[smallest] = t
+    i = smallest
+  }
+}
+
+fn pop(h) {
+  let items = h["items"]
+  if len(items) == 0 { throw {"type": "LarzRuntimeError", "message": "pop from an empty heap"} }
+  let top = items[0]
+  let last = items.pop()
+  if len(items) > 0 { items[0] = last; _sift_down(h) }
+  return top
+}
+
+fn peek(h) {
+  if len(h["items"]) == 0 { throw {"type": "LarzRuntimeError", "message": "peek on an empty heap"} }
+  return h["items"][0]
+}
+
+fn size(h) { return len(h["items"]) }
+fn is_empty(h) { return len(h["items"]) == 0 }
+
+fn heapsort(xs) {
+  let h = new()
+  for x in xs { push(h, x) }
+  let out = []
+  while not is_empty(h) { out.push(pop(h)) }
+  return out
+}

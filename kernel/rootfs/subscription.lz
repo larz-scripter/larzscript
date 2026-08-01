@@ -1,0 +1,59 @@
+# subscription - subscription billing as an explicit, testable state
+# machine: trial -> active -> (renew stays active) -> dunning (a failed
+# renewal) -> active (dunning recovers) or canceled. Provider-agnostic -
+# this tracks STATE and computes proration; it doesn't call any payment
+# API itself (wire it to `pay`/wallets, or a real provider, yourself).
+#
+#   import "subscription" as subscription
+#   let sub = subscription.start_trial("sub_1", 1400)   # 14-day trial
+#   subscription.activate(sub)
+#   print(sub["state"])                                  # "active"
+#   subscription.fail_payment(sub)
+#   print(sub["state"])                                  # "dunning"
+#   subscription.recover(sub)
+#   print(sub["state"])                                  # "active"
+#   print(subscription.prorate(3000, 30, 10))            # unused days -> refund cents
+
+let STATES = {"trial": true, "active": true, "dunning": true, "canceled": true}
+
+fn start_trial(id, trial_seconds) {
+  return {"id": id, "state": "trial", "trial_ends": time() + trial_seconds, "dunning_count": 0}
+}
+
+fn activate(sub) {
+  if sub["state"] != "trial" { throw {"type": "LarzRuntimeError", "message": "can only activate from trial (currently '" + sub["state"] + "')"} }
+  sub["state"] = "active"
+}
+
+fn renew(sub) {
+  if sub["state"] != "active" { throw {"type": "LarzRuntimeError", "message": "can only renew from active (currently '" + sub["state"] + "')"} }
+  sub["dunning_count"] = 0
+}
+
+fn fail_payment(sub) {
+  if sub["state"] != "active" and sub["state"] != "dunning" {
+    throw {"type": "LarzRuntimeError", "message": "cannot fail payment from '" + sub["state"] + "'"}
+  }
+  sub["state"] = "dunning"
+  sub["dunning_count"] = sub["dunning_count"] + 1
+}
+
+fn recover(sub) {
+  if sub["state"] != "dunning" { throw {"type": "LarzRuntimeError", "message": "can only recover from dunning (currently '" + sub["state"] + "')"} }
+  sub["state"] = "active"
+  sub["dunning_count"] = 0
+}
+
+fn cancel(sub) {
+  if sub["state"] == "canceled" { throw {"type": "LarzRuntimeError", "message": "already canceled"} }
+  sub["state"] = "canceled"
+}
+
+# How many cents to refund/credit for `unused_days` out of a `period_days`
+# billing period that cost `period_cents`. Largest-remainder-free (a
+# subscription only has one holder, so plain floor division is exact
+# enough) - rounds down, never refunds more than was paid.
+fn prorate(period_cents, period_days, unused_days) {
+  if unused_days > period_days { unused_days = period_days }
+  return (period_cents * unused_days) // period_days
+}

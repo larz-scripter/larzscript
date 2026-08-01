@@ -1,0 +1,106 @@
+# turtle - classic turtle graphics (forward/turn/pen up-down), rendered
+# headless to SVG or an ASCII grid - no display needed anywhere,
+# including the kernel. circle()/polygon() build on the same primitives
+# every other turtle command does, and every move returns the turtle
+# state so calls can be chained by nesting.
+#
+#   import "turtle" as turtle
+#   let t = turtle.new()
+#   turtle.forward(t, 50)
+#   turtle.turn(t, 90)
+#   turtle.forward(t, 50)
+#   turtle.polygon(t, 4, 30)
+#   print(turtle.to_svg(t, 200, 200))
+
+let PI = 3.141592653589793
+
+fn new() { return {"x": 0.0, "y": 0.0, "heading": 0.0, "pen": true, "lines": []} }
+
+fn _rad(deg) { return deg * PI / 180 }
+fn _cos(deg) {
+  # Taylor series around the nearest quadrant reference, good to ~1e-6 -
+  # fine for line-drawing, no trig builtin needed.
+  let r = _rad(deg % 360)
+  let term = 1.0
+  let total = 1.0
+  let n = 1
+  while n <= 10 { term = term * (-1) * r * r / ((2 * n - 1) * (2 * n)); total = total + term; n = n + 1 }
+  return total
+}
+fn _sin(deg) { return _cos(deg - 90) }
+
+fn forward(t, dist) {
+  let x0 = t["x"]
+  let y0 = t["y"]
+  let x1 = x0 + dist * _cos(t["heading"])
+  let y1 = y0 + dist * _sin(t["heading"])
+  if t["pen"] { t["lines"].push({"x0": x0, "y0": y0, "x1": x1, "y1": y1}) }
+  t["x"] = x1
+  t["y"] = y1
+  return t
+}
+fn backward(t, dist) { return forward(t, -dist) }
+fn turn(t, degrees) { t["heading"] = (t["heading"] + degrees) % 360; return t }
+fn pen_up(t) { t["pen"] = false; return t }
+fn pen_down(t) { t["pen"] = true; return t }
+fn goto_(t, x, y) {
+  if t["pen"] { t["lines"].push({"x0": t["x"], "y0": t["y"], "x1": x, "y1": y}) }
+  t["x"] = x
+  t["y"] = y
+  return t
+}
+fn home(t) { return goto_(t, 0, 0) }
+
+fn polygon(t, sides, side_len) {
+  let angle = 360.0 / sides
+  let i = 0
+  while i < sides { forward(t, side_len); turn(t, angle); i = i + 1 }
+  return t
+}
+
+# Approximated as a regular polygon with `steps` sides - the standard
+# headless-turtle technique, since there's no true arc primitive.
+fn circle(t, radius, steps=36) {
+  let circumference = 2 * PI * radius
+  let side = circumference / steps
+  let angle = 360.0 / steps
+  let i = 0
+  while i < steps { forward(t, side); turn(t, angle); i = i + 1 }
+  return t
+}
+
+fn to_svg(t, width=400, height=400) {
+  let cx = width / 2
+  let cy = height / 2
+  let segs = []
+  for l in t["lines"] {
+    segs.push("<line x1='" + str(cx + l["x0"]) + "' y1='" + str(cy - l["y0"]) +
+      "' x2='" + str(cx + l["x1"]) + "' y2='" + str(cy - l["y1"]) + "' stroke='black'/>")
+  }
+  return "<svg xmlns='http://www.w3.org/2000/svg' width='" + str(width) + "' height='" + str(height) + "'>" +
+    join(segs, "") + "</svg>"
+}
+
+# A coarse ASCII rendering: each line is rasterized onto a `cols`x`rows`
+# character grid via simple stepped interpolation.
+fn to_ascii(t, cols=60, rows=30, scale=1.0) {
+  let grid = [[" " for _ in range(cols)] for _ in range(rows)]
+  let cx = cols / 2
+  let cy = rows / 2
+  for l in t["lines"] {
+    let steps = 50
+    let i = 0
+    while i <= steps {
+      let frac = i / steps
+      let x = l["x0"] + (l["x1"] - l["x0"]) * frac
+      let y = l["y0"] + (l["y1"] - l["y0"]) * frac
+      let gx = int(cx + x * scale / 4)
+      let gy = int(cy - y * scale / 8)
+      if gx >= 0 and gx < cols and gy >= 0 and gy < rows { grid[gy][gx] = "#" }
+      i = i + 1
+    }
+  }
+  let lines = []
+  for row in grid { lines.push(join(row, "")) }
+  return join(lines, "\n")
+}

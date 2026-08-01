@@ -1,0 +1,79 @@
+# task - an in-process job queue: priorities, delayed availability,
+# retry with exponential backoff, a dead-letter list once a job
+# exhausts its retries, and claim() for pulling the next job by worker
+# id. "Atomic" claim needs no locking here - Larzscript has no OS
+# threads, so two calls to claim() can never interleave; the atomicity
+# is a consequence of the language, not a mechanism this package adds.
+#
+#   import "task" as task
+#   let q = task.new()
+#   task.enqueue(q, {"send": "email"}, {"priority": 5})
+#   task.enqueue(q, {"send": "sms"}, {"priority": 1, "delay": 30})
+#   let job = task.claim(q, "worker-1")
+#   task.complete(q, job["id"])
+#   # ... or on failure:
+#   task.fail(q, job["id"])   # retries with backoff, eventually dead-letters
+
+fn new() { return {"jobs": [], "next_id": 1, "dead_letter": []} }
+
+fn enqueue(q, payload, opts={}) {
+  let id = q["next_id"]
+  q["next_id"] = q["next_id"] + 1
+  let priority = opts.has("priority") ? opts["priority"] : 0
+  let delay = opts.has("delay") ? opts["delay"] : 0
+  let max_retries = opts.has("max_retries") ? opts["max_retries"] : 3
+  q["jobs"].push({
+    "id": id, "payload": payload, "priority": priority,
+    "available_at": time() + delay, "attempts": 0, "max_retries": max_retries,
+    "claimed_by": nil
+  })
+  return id
+}
+
+# Highest priority first, then earliest-enqueued (lowest id) among ties.
+fn claim(q, worker_id) {
+  let now = time()
+  let best = nil
+  for j in q["jobs"] {
+    if j["claimed_by"] != nil { continue }
+    if j["available_at"] > now { continue }
+    if best == nil or j["priority"] > best["priority"] or (j["priority"] == best["priority"] and j["id"] < best["id"]) {
+      best = j
+    }
+  }
+  if best == nil { return nil }
+  best["claimed_by"] = worker_id
+  return best
+}
+
+fn complete(q, job_id) {
+  let out = []
+  for j in q["jobs"] { if j["id"] != job_id { out.push(j) } }
+  let removed = len(out) != len(q["jobs"])
+  q["jobs"] = out
+  return removed
+}
+
+fn fail(q, job_id) {
+  for j in q["jobs"] {
+    if j["id"] == job_id {
+      j["attempts"] = j["attempts"] + 1
+      j["claimed_by"] = nil
+      if j["attempts"] >= j["max_retries"] {
+        q["dead_letter"].push(j)
+        complete(q, job_id)
+        return "dead_letter"
+      }
+      j["available_at"] = time() + (2 ** j["attempts"])
+      return "retrying"
+    }
+  }
+  return "not_found"
+}
+
+fn pending_count(q) {
+  let n = 0
+  for j in q["jobs"] { if j["claimed_by"] == nil { n = n + 1 } }
+  return n
+}
+fn dead_letters(q) { return q["dead_letter"] }

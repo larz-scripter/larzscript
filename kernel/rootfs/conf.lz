@@ -1,0 +1,109 @@
+# conf - layered app config: deep-merge dicts, dotted-path get/set,
+# .env file loading, and simple schema validation.
+#
+#   import "conf" as conf
+#   let base = {"db": {"host": "localhost", "port": 5432}}
+#   let override = {"db": {"port": 5433}}
+#   let merged = conf.merge(base, override)
+#   print(conf.get(merged, "db.port", nil))       # 5433
+#   conf.set(merged, "db.name", "app")
+#   print(conf.get(merged, "db.name", nil))        # "app"
+
+# Deep-merge: `override` wins; nested dicts merge recursively, everything
+# else (lists, scalars) is replaced wholesale.
+fn merge(base, override) {
+  let out = {}
+  for k in keys(base) { out[k] = base[k] }
+  for k in keys(override) {
+    let ov = override[k]
+    if out.has(k) and is_dict(out[k]) and is_dict(ov) {
+      out[k] = merge(out[k], ov)
+    } else {
+      out[k] = ov
+    }
+  }
+  return out
+}
+
+fn is_dict(v) { return type(v) == "dict" }
+
+fn _split_path(path) { return path.split(".") }
+
+fn get(conf, path, default_) {
+  let cur = conf
+  for part in _split_path(path) {
+    if not is_dict(cur) or not cur.has(part) { return default_ }
+    cur = cur[part]
+  }
+  return cur
+}
+
+fn set(conf, path, value) {
+  let parts = _split_path(path)
+  let cur = conf
+  let i = 0
+  while i < len(parts) - 1 {
+    let part = parts[i]
+    if not cur.has(part) or not is_dict(cur[part]) { cur[part] = {} }
+    cur = cur[part]
+    i = i + 1
+  }
+  cur[parts[len(parts) - 1]] = value
+  return conf
+}
+
+# Parse KEY=VALUE lines (a real .env file's contents) into a flat dict.
+# Blank lines, lines starting with #, and lines with no "=" are skipped.
+# Surrounding quotes on the value are stripped.
+fn parse_dotenv(text) {
+  let out = {}
+  for raw_line in text.split("\n") {
+    let line = raw_line.strip()
+    if len(line) == 0 or line[0:1] == "#" { continue }
+    let eq = line.find("=")
+    if eq < 0 { continue }
+    let key = line[0:eq].strip()
+    let val = line[eq + 1:].strip()
+    if len(val) >= 2 and (val[0:1] == "\"" or val[0:1] == "'") and val[len(val)-1:] == val[0:1] {
+      val = val[1:len(val)-1]
+    }
+    out[key] = val
+  }
+  return out
+}
+
+fn load_dotenv(path) { return parse_dotenv(read_file(path)) }
+
+# Build a nested dict from an explicit list of env-var-style keys under
+# `prefix`, e.g. keys=["DB_HOST", "DB_PORT"] with prefix "APP" looks up
+# APP_DB_HOST/APP_DB_PORT and nests as {"db": {"host": ..., "port": ...}}.
+# (Larzscript's env() reads one named variable at a time - there is no
+# "list every env var" builtin, so the caller must name the keys it wants.)
+fn from_env(prefix, keys_) {
+  let out = {}
+  for key in keys_ {
+    let full = prefix + "_" + key
+    let v = env(full, nil)
+    if v != nil {
+      let path = key.lower().replace("_", ".")
+      set(out, path, v)
+    }
+  }
+  return out
+}
+
+# schema: {"dotted.path": "string"|"number"|"bool"|"list"|"dict"} - the
+# same names type() itself returns, so schema authors never memorize a
+# second vocabulary.
+# Returns a list of error strings; empty means valid.
+fn validate(conf, schema) {
+  let errors = []
+  for path in keys(schema) {
+    let want = schema[path]
+    let v = get(conf, path, nil)
+    if v == nil { errors.push(path + " is missing"); continue }
+    let got = type(v)
+    if got != want { errors.push(path + " should be " + want + " but is " + got) }
+  }
+  return errors
+}

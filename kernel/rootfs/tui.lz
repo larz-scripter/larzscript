@@ -1,0 +1,111 @@
+# tui - terminal-style text UI widgets: panels, tables, horizontal
+# rules, and column layouts, all width-aware (padding math measures
+# visible width, skipping ANSI color codes rather than counting their
+# raw characters) and renderable to a plain string anywhere - a log
+# file, a non-terminal pipe, a web page's <pre>. Colour is opt-in and
+# there's no TTY-detection builtin in Larzscript to auto-disable it (see
+# the `progress` package for the same constraint) - color() only emits
+# codes when explicitly asked, so plain text is always the safe default.
+#
+#   import "tui" as tui
+#   print(tui.panel("Status", "All systems operational", "single"))
+#   print(tui.table([["Name", "Age"], ["Ada", "36"], ["Bo", "24"]]))
+#   print(tui.rule(40))
+#   print(tui.columns(["a", "bb", "ccc"], 10))
+
+let _ANSI_ESCAPE_START = chr(27) + "["
+
+fn _visible_len(s) {
+  let n = 0
+  let i = 0
+  let in_escape = false
+  while i < len(s) {
+    let c = s[i:i+1]
+    if in_escape {
+      if c == "m" { in_escape = false }
+    } else if c == chr(27) {
+      in_escape = true
+    } else {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  return n
+}
+
+fn color(text, code) { return _ANSI_ESCAPE_START + str(code) + "m" + text + _ANSI_ESCAPE_START + "0m" }
+
+let _BOX_STYLES = {
+  "single": {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|"},
+  "double": {"tl": "#", "tr": "#", "bl": "#", "br": "#", "h": "=", "v": "#"},
+  "round":  {"tl": ".", "tr": ".", "bl": "'", "br": "'", "h": "-", "v": "|"}
+}
+
+fn _pad_right(s, width) {
+  let out = s
+  while _visible_len(out) < width { out = out + " " }
+  return out
+}
+
+fn panel(title, body, style="single") {
+  let box = _BOX_STYLES.has(style) ? _BOX_STYLES[style] : _BOX_STYLES["single"]
+  let lines = body.split("\n")
+  let width = _visible_len(title) + 2
+  for l in lines { if _visible_len(l) > width { width = _visible_len(l) } }
+  let out = [box["tl"] + (box["h"] * (width + 2)) + box["tr"]]
+  out.push(box["v"] + " " + _pad_right(title, width) + " " + box["v"])
+  out.push(box["v"] + " " + (box["h"] * width) + " " + box["v"])
+  for l in lines { out.push(box["v"] + " " + _pad_right(l, width) + " " + box["v"]) }
+  out.push(box["bl"] + (box["h"] * (width + 2)) + box["br"])
+  return join(out, "\n")
+}
+
+fn rule(width, ch="-") { return ch * width }
+
+# `rows[0]` is the header. Column widths auto-size to the widest cell.
+fn table(rows, style="single") {
+  let box = _BOX_STYLES.has(style) ? _BOX_STYLES[style] : _BOX_STYLES["single"]
+  let ncols = len(rows[0])
+  let widths = [0 for _ in range(ncols)]
+  for row in rows {
+    let i = 0
+    while i < ncols { if _visible_len(row[i]) > widths[i] { widths[i] = _visible_len(row[i]) } i = i + 1 }
+  }
+  fn sep(left, mid, right) {
+    let parts = []
+    for w in widths { parts.push(box["h"] * (w + 2)) }
+    return left + join(parts, mid) + right
+  }
+  fn row_line(row) {
+    let parts = []
+    let i = 0
+    while i < ncols { parts.push(" " + _pad_right(row[i], widths[i]) + " "); i = i + 1 }
+    return box["v"] + join(parts, box["v"]) + box["v"]
+  }
+  let out = [sep(box["tl"], "+", box["tr"])]
+  out.push(row_line(rows[0]))
+  out.push(sep("+", "+", "+"))
+  let i = 1
+  while i < len(rows) { out.push(row_line(rows[i])); i = i + 1 }
+  out.push(sep(box["bl"], "+", box["br"]))
+  return join(out, "\n")
+}
+
+# Lays out `items` into as many equal-width columns as fit `total_width`.
+fn columns(items, total_width, min_col_width=8) {
+  let max_item = 0
+  for it in items { if _visible_len(it) > max_item { max_item = _visible_len(it) } }
+  let col_width = (max_item + 2) > min_col_width ? max_item + 2 : min_col_width
+  let ncols = total_width // col_width
+  if ncols < 1 { ncols = 1 }
+  let lines = []
+  let i = 0
+  while i < len(items) {
+    let row = []
+    let j = 0
+    while j < ncols and i + j < len(items) { row.push(_pad_right(items[i + j], col_width)); j = j + 1 }
+    lines.push(join(row, ""))
+    i = i + ncols
+  }
+  return join(lines, "\n")
+}

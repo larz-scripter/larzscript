@@ -1,0 +1,72 @@
+# rpc - JSON-RPC 2.0 message building, parsing, batching, and a small
+# server that dispatches requests to registered methods. Transport is
+# pluggable by design: this package only ever produces/consumes plain
+# dicts and JSON text - how you actually send those bytes (over `http`,
+# a raw socket, `net.serve` in the kernel, anything) is up to the
+# caller, matching every other network package in this estate that
+# can't assume a live socket API exists on every target.
+#
+#   import "rpc" as rpc
+#   let srv = rpc.server()
+#   rpc.register(srv, "add", fn(params) { return params[0] + params[1] })
+#   let req = rpc.request("add", [2, 3], 1)
+#   print(rpc.dispatch(srv, req))    # {"jsonrpc": "2.0", "result": 5, "id": 1}
+
+import "json" as json
+
+fn request(method, params, id) { return {"jsonrpc": "2.0", "method": method, "params": params, "id": id} }
+fn notification(method, params) { return {"jsonrpc": "2.0", "method": method, "params": params} }
+fn response(result, id) { return {"jsonrpc": "2.0", "result": result, "id": id} }
+fn error_response(code, message, id) {
+  return {"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": id}
+}
+
+let PARSE_ERROR = -32700
+let INVALID_REQUEST = -32600
+let METHOD_NOT_FOUND = -32601
+let INTERNAL_ERROR = -32603
+
+fn server() { return {"methods": {}} }
+fn register(srv, name, fn_) { srv["methods"][name] = fn_ }
+
+# Dispatches one request dict. A notification (no "id" key) always
+# returns nil - per spec, the server sends nothing back for one.
+fn dispatch(srv, req) {
+  let has_id = req.has("id")
+  if not req.has("method") or not req.has("jsonrpc") {
+    return has_id ? error_response(INVALID_REQUEST, "invalid request", req.has("id") ? req["id"] : nil) : nil
+  }
+  if not srv["methods"].has(req["method"]) {
+    return has_id ? error_response(METHOD_NOT_FOUND, "method not found: " + req["method"], req["id"]) : nil
+  }
+  let params = req.has("params") ? req["params"] : []
+  try {
+    let result = srv["methods"][req["method"]](params)
+    return has_id ? response(result, req["id"]) : nil
+  } catch e {
+    return has_id ? error_response(INTERNAL_ERROR, str(e), req["id"]) : nil
+  }
+}
+
+# Accepts either one request or a batch (a JSON array of requests).
+# Returns the matching shape back: a single response dict, a list of
+# response dicts (notifications omitted, same as the spec), or nil if
+# everything sent was a notification.
+fn dispatch_json(srv, text) {
+  let parsed = json.parse(text)
+  if type(parsed) == "list" {
+    let out = []
+    for req in parsed {
+      let r = dispatch(srv, req)
+      if r != nil { out.push(r) }
+    }
+    return len(out) == 0 ? nil : json.stringify(out)
+  }
+  let r = dispatch(srv, parsed)
+  return r == nil ? nil : json.stringify(r)
+}
+
+fn parse_response(text) {
+  let parsed = json.parse(text)
+  return {"ok": not parsed.has("error"), "result": parsed.has("result") ? parsed["result"] : nil, "error": parsed.has("error") ? parsed["error"] : nil}
+}

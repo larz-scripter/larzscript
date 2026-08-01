@@ -1,0 +1,130 @@
+# algo - classic sorting/searching algorithms that record every
+# comparison and swap, so you can see how many steps each one actually
+# takes on the same input.
+#
+#   import "algo" as algo
+#   let r = algo.bubble_sort([5, 1, 4, 2, 8])
+#   print(r["sorted"])       # [1, 2, 4, 5, 8]
+#   print(r["comparisons"], r["swaps"])
+#   print(algo.binary_search([1, 2, 4, 5, 8], 5))   # 3 (index), or -1
+
+fn bubble_sort(xs) {
+  let a = list(xs)
+  let n = len(a)
+  let comparisons = 0
+  let swaps = 0
+  let i = 0
+  while i < n {
+    let j = 0
+    while j < n - i - 1 {
+      comparisons = comparisons + 1
+      if a[j] > a[j + 1] { let t = a[j]; a[j] = a[j + 1]; a[j + 1] = t; swaps = swaps + 1 }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  return {"sorted": a, "comparisons": comparisons, "swaps": swaps}
+}
+
+fn selection_sort(xs) {
+  let a = list(xs)
+  let n = len(a)
+  let comparisons = 0
+  let swaps = 0
+  let i = 0
+  while i < n {
+    let min_idx = i
+    let j = i + 1
+    while j < n {
+      comparisons = comparisons + 1
+      if a[j] < a[min_idx] { min_idx = j }
+      j = j + 1
+    }
+    if min_idx != i { let t = a[i]; a[i] = a[min_idx]; a[min_idx] = t; swaps = swaps + 1 }
+    i = i + 1
+  }
+  return {"sorted": a, "comparisons": comparisons, "swaps": swaps}
+}
+
+fn insertion_sort(xs) {
+  let a = list(xs)
+  let comparisons = 0
+  let swaps = 0
+  let i = 1
+  while i < len(a) {
+    let key = a[i]
+    let j = i - 1
+    while j >= 0 {
+      comparisons = comparisons + 1
+      if a[j] <= key { break }
+      a[j + 1] = a[j]
+      swaps = swaps + 1
+      j = j - 1
+    }
+    a[j + 1] = key
+    i = i + 1
+  }
+  return {"sorted": a, "comparisons": comparisons, "swaps": swaps}
+}
+
+fn merge_sort(xs) {
+  let stats = {"comparisons": 0}
+  let sorted_ = _merge_sort(list(xs), stats)
+  return {"sorted": sorted_, "comparisons": stats["comparisons"], "swaps": nil}
+}
+fn _merge_sort(a, stats) {
+  if len(a) <= 1 { return a }
+  let mid = len(a) // 2
+  let left = _merge_sort(a[0:mid], stats)
+  let right = _merge_sort(a[mid:len(a)], stats)
+  let out = []
+  let i = 0
+  let j = 0
+  while i < len(left) and j < len(right) {
+    stats["comparisons"] = stats["comparisons"] + 1
+    if left[i] <= right[j] { out.push(left[i]); i = i + 1 } else { out.push(right[j]); j = j + 1 }
+  }
+  while i < len(left) { out.push(left[i]); i = i + 1 }
+  while j < len(right) { out.push(right[j]); j = j + 1 }
+  return out
+}
+
+fn quick_sort(xs) {
+  let stats = {"comparisons": 0, "swaps": 0}
+  let a = list(xs)
+  _quick_sort(a, 0, len(a) - 1, stats)
+  return {"sorted": a, "comparisons": stats["comparisons"], "swaps": stats["swaps"]}
+}
+fn _quick_sort(a, lo, hi, stats) {
+  if lo >= hi { return }
+  let pivot = a[hi]
+  let i = lo - 1
+  let j = lo
+  while j < hi {
+    stats["comparisons"] = stats["comparisons"] + 1
+    if a[j] < pivot { i = i + 1; let t = a[i]; a[i] = a[j]; a[j] = t; stats["swaps"] = stats["swaps"] + 1 }
+    j = j + 1
+  }
+  let t2 = a[i + 1]; a[i + 1] = a[hi]; a[hi] = t2
+  stats["swaps"] = stats["swaps"] + 1
+  _quick_sort(a, lo, i, stats)
+  _quick_sort(a, i + 2, hi, stats)
+}
+
+fn linear_search(xs, target) {
+  let i = 0
+  for x in xs { if x == target { return i } i = i + 1 }
+  return -1
+}
+
+# xs must already be sorted ascending.
+fn binary_search(xs, target) {
+  let lo = 0
+  let hi = len(xs) - 1
+  while lo <= hi {
+    let mid = (lo + hi) // 2
+    if xs[mid] == target { return mid }
+    if xs[mid] < target { lo = mid + 1 } else { hi = mid - 1 }
+  }
+  return -1
+}

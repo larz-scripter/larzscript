@@ -1,0 +1,150 @@
+# cron - a real 5-field cron parser (minute hour day-of-month month
+# day-of-week, plus */N step syntax) with next()/previous() run-time
+# math, interval jobs, and a simple in-process scheduler you drive by
+# calling tick() in your own loop.
+#
+#   import "cron" as cron
+#   let job = cron.parse("*/15 9-17 * * 1-5")   # every 15m, 9am-5pm, weekdays
+#   print(cron.next_run(job, now))
+#
+#   let s = cron.scheduler()
+#   cron.every(s, 60, fn() { print("a minute passed") })
+#   cron.cron_job(s, "0 * * * *", fn() { print("top of the hour") })
+#   cron.tick(s, now)   # call this periodically with the current time()
+
+# ---- calendar math (pure integer, no OS date command - see time.lz's
+# kernel-portable variant for the same algorithm) ----
+fn _civil_from_days(z) {
+  z = z + 719468
+  let era = (z >= 0 ? z : z - 146096) // 146097
+  let doe = z - era * 146097
+  let yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+  let y = yoe + era * 400
+  let doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+  let mp = (5 * doy + 2) // 153
+  let d = doy - (153 * mp + 2) // 5 + 1
+  let m = mp + (mp < 10 ? 3 : -9)
+  y = y + (m <= 2 ? 1 : 0)
+  return {"y": y, "m": m, "d": d}
+}
+
+fn _fields(ts) {
+  let t = int(ts)
+  let days = t // 86400
+  let secs_of_day = t % 86400
+  if secs_of_day < 0 { secs_of_day = secs_of_day + 86400; days = days - 1 }
+  let civil = _civil_from_days(days)
+  # epoch day 0 (1970-01-01) was a Thursday -> weekday index 4 (Sun=0).
+  # % truncates toward zero (can go negative for negative days), so this
+  # floor-mods by hand: ((days+4) % 7 + 7) % 7 is always in [0, 6].
+  let wd = ((days + 4) % 7 + 7) % 7
+  return {
+    "minute": (secs_of_day % 3600) // 60, "hour": secs_of_day // 3600,
+    "day": civil["d"], "month": civil["m"], "weekday": wd, "year": civil["y"]
+  }
+}
+
+# ---- one cron field: "*", "N", "N-M", "*/N", "N-M/S", or a comma list
+# of any of those - expanded to the explicit set of matching values. ----
+fn _expand_field(spec, lo, hi) {
+  let out = {}
+  for part in spec.split(",") {
+    let step = 1
+    let base = part
+    if part.find("/") >= 0 {
+      let bits_ = part.split("/")
+      base = bits_[0]
+      step = int(bits_[1])
+    }
+    let start = lo
+    let end = hi
+    if base != "*" {
+      if base.find("-") >= 0 {
+        let range_ = base.split("-")
+        start = int(range_[0])
+        end = int(range_[1])
+      } else {
+        start = int(base)
+        end = int(base)
+      }
+    }
+    for v from start to end {
+      if (v - start) % step == 0 { out[str(v)] = true }
+    }
+  }
+  return out
+}
+
+fn parse(expr) {
+  let parts = expr.strip().split(" ")
+  if len(parts) != 5 {
+    throw {"type": "LarzValueError", "message": "cron expr needs 5 fields: min hour day month weekday"}
+  }
+  return {
+    "minute": _expand_field(parts[0], 0, 59),
+    "hour": _expand_field(parts[1], 0, 23),
+    "day": _expand_field(parts[2], 1, 31),
+    "month": _expand_field(parts[3], 1, 12),
+    "weekday": _expand_field(parts[4], 0, 6),
+    "expr": expr
+  }
+}
+
+fn _matches(job, f) {
+  return job["minute"].has(str(f["minute"])) and job["hour"].has(str(f["hour"])) and
+         job["day"].has(str(f["day"])) and job["month"].has(str(f["month"])) and
+         job["weekday"].has(str(f["weekday"]))
+}
+
+# Earliest timestamp strictly after `from_ts` that matches. Scans minute
+# by minute up to `limit_days` ahead (default 4 years, comfortably
+# covering every real schedule including "Feb 29" jobs) rather than
+# solving the field constraints analytically - simple and always correct.
+fn next_run(job, from_ts, limit_days=1460) {
+  let t = (int(from_ts) // 60) * 60 + 60
+  let stop = int(from_ts) + limit_days * 86400
+  while t <= stop {
+    if _matches(job, _fields(t)) { return t }
+    t = t + 60
+  }
+  throw {"type": "LarzValueError", "message": "no matching run within " + str(limit_days) + " days"}
+}
+
+fn previous_run(job, from_ts, limit_days=1460) {
+  let t = (int(from_ts) // 60) * 60 - 60
+  let stop = int(from_ts) - limit_days * 86400
+  while t >= stop {
+    if _matches(job, _fields(t)) { return t }
+    t = t - 60
+  }
+  throw {"type": "LarzValueError", "message": "no matching run within " + str(limit_days) + " days"}
+}
+
+# ---- in-process scheduler: driven by calling tick(s, now) periodically
+# from the host program's own loop (no background thread). ----
+fn scheduler() { return {"interval_jobs": [], "cron_jobs": []} }
+
+fn every(s, seconds, callback) {
+  s["interval_jobs"].push({"seconds": seconds, "callback": callback, "next": nil})
+}
+
+fn cron_job(s, expr, callback) {
+  s["cron_jobs"].push({"job": parse(expr), "callback": callback, "next": nil})
+}
+
+fn tick(s, now) {
+  for ij in s["interval_jobs"] {
+    if ij["next"] == nil { ij["next"] = now + ij["seconds"] }
+    if now >= ij["next"] {
+      ij["callback"]()
+      ij["next"] = now + ij["seconds"]
+    }
+  }
+  for cj in s["cron_jobs"] {
+    if cj["next"] == nil { cj["next"] = next_run(cj["job"], now - 1) }
+    if now >= cj["next"] {
+      cj["callback"]()
+      cj["next"] = next_run(cj["job"], now)
+    }
+  }
+}

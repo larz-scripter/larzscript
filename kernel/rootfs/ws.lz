@@ -1,0 +1,134 @@
+# ws - RFC 6455 WebSocket frame encoding/decoding: framing, the
+# variable-length payload-size encoding, masking, fragmentation
+# (continuation frames), and ping/pong control frames. Like `cbor`/
+# `pack`, frames are lists of ints 0-255, not Larzscript strings (which
+# can't safely hold a 0x00 byte). Pure synchronous encode/decode over
+# whatever bytes you already have from a real socket - there's no
+# blocking I/O in here, so "no async needed" is just a description of
+# what this layer actually does, not a claim about your whole app.
+#
+#   import "ws" as ws
+#   let frame = ws.encode_frame(ws.OP_TEXT, ws.text_to_bytes("hi"), false)
+#   let decoded = ws.decode_frame(frame, 0)
+#   print(ws.bytes_to_text(decoded["payload"]))   # "hi"
+
+let OP_CONTINUATION = 0
+let OP_TEXT = 1
+let OP_BINARY = 2
+let OP_CLOSE = 8
+let OP_PING = 9
+let OP_PONG = 10
+
+fn text_to_bytes(s) { let out = []; for c in s { out.push(ord(c)) } return out }
+fn bytes_to_text(bytes_) { let s = ""; for b in bytes_ { s = s + chr(b) } return s }
+
+fn _mask_key() {
+  # A real client should use a cryptographically random key; this uses
+  # time()-seeded arithmetic so the package has no hard dependency on
+  # `random`/`crypto` - swap in your own 4-byte source for production use.
+  let seed = int(time() * 1000) % 2147483647
+  let key = []
+  let s = seed <= 0 ? 1 : seed
+  let i = 0
+  while i < 4 {
+    s = (s * 16807) % 2147483647
+    key.push(s % 256)
+    i = i + 1
+  }
+  return key
+}
+
+fn encode_frame(opcode, payload, masked, fin=true) {
+  let out = []
+  out.push((fin ? 128 : 0) + opcode)
+  let n = len(payload)
+  let mask_bit = masked ? 128 : 0
+  if n < 126 {
+    out.push(mask_bit + n)
+  } else if n < 65536 {
+    out.push(mask_bit + 126)
+    out.push(n // 256); out.push(n % 256)
+  } else {
+    out.push(mask_bit + 127)
+    let i = 7
+    let rest = n
+    let lenbytes = [0,0,0,0,0,0,0,0]
+    while i >= 0 { lenbytes[i] = rest % 256; rest = rest // 256; i = i - 1 }
+    for b in lenbytes { out.push(b) }
+  }
+  if masked {
+    let key = _mask_key()
+    for b in key { out.push(b) }
+    let i = 0
+    while i < n { out.push(_xor8(payload[i], key[i % 4])); i = i + 1 }
+  } else {
+    for b in payload { out.push(b) }
+  }
+  return out
+}
+
+# No native ^ operator - byte XOR done bit-by-bit via the same //2 %2
+# trick `bits` uses, since both operands are always < 256 here.
+fn _xor8(a, b) {
+  let result = 0
+  let place = 1
+  let x = a
+  let y = b
+  let i = 0
+  while i < 8 {
+    let bx = x % 2
+    let by = y % 2
+    if bx != by { result = result + place }
+    x = x // 2
+    y = y // 2
+    place = place * 2
+    i = i + 1
+  }
+  return result
+}
+
+fn decode_frame(bytes_, start=0) {
+  let i = start
+  let b0 = bytes_[i]
+  let fin = b0 // 128 == 1
+  let opcode = b0 % 16
+  i = i + 1
+  let b1 = bytes_[i]
+  let masked = b1 // 128 == 1
+  let len7 = b1 % 128
+  i = i + 1
+  let n = len7
+  if len7 == 126 {
+    n = bytes_[i] * 256 + bytes_[i+1]
+    i = i + 2
+  } else if len7 == 127 {
+    n = 0
+    let k = 0
+    while k < 8 { n = n * 256 + bytes_[i]; i = i + 1; k = k + 1 }
+  }
+  let key = [0, 0, 0, 0]
+  if masked {
+    key = bytes_[i:i+4]
+    i = i + 4
+  }
+  let payload = []
+  let k = 0
+  while k < n {
+    let byte_ = bytes_[i + k]
+    payload.push(masked ? _xor8(byte_, key[k % 4]) : byte_)
+    k = k + 1
+  }
+  return {"fin": fin, "opcode": opcode, "payload": payload, "next_offset": i + n}
+}
+
+fn is_control(opcode) { return opcode == OP_CLOSE or opcode == OP_PING or opcode == OP_PONG }
+
+# Concatenates a fragmented message: the first frame carries the real
+# opcode, every following one must be OP_CONTINUATION, the last must
+# have fin=true.
+fn reassemble(frames) {
+  let payload = []
+  let opcode = frames[0]["opcode"]
+  for f in frames { for b in f["payload"] { payload.push(b) } }
+  return {"opcode": opcode, "payload": payload, "fin": frames[len(frames) - 1]["fin"]}
+}

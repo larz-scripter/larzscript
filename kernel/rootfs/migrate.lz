@@ -1,0 +1,101 @@
+# migrate - a schema-migration runner: register named up()/down() steps
+# (each takes whatever `ctx` you pass in - a `db`/`store` handle, a raw
+# DB-API connection, anything), apply/roll back in order, and detect
+# drift when an already-applied migration's checksum no longer matches
+# what's registered (meaning its source changed after it ran). There's
+# no function-source introspection in Larzscript, so the checksum is
+# supplied by the caller (e.g. a hash of the migration file) rather than
+# computed automatically here.
+#
+#   import "migrate" as migrate
+#   let r = migrate.new("migrations.json")
+#   migrate.add(r, "001_users", "abc123", fn(ctx) { ... }, fn(ctx) { ... })
+#   migrate.add(r, "002_posts", "def456", fn(ctx) { ... }, fn(ctx) { ... })
+#   migrate.up(r, my_db)
+#   print(migrate.status(r))
+
+import "json" as json
+
+fn new(state_path) {
+  let applied = []
+  if state_path != nil and file_exists(state_path) { applied = json.parse(read_file(state_path)) }
+  return {"path": state_path, "defs": [], "applied": applied}
+}
+
+fn add(r, name, checksum, up_fn, down_fn) {
+  r["defs"].push({"name": name, "checksum": checksum, "up": up_fn, "down": down_fn})
+}
+
+fn _find_def(r, name) {
+  for d in r["defs"] { if d["name"] == name { return d } }
+  return nil
+}
+fn _find_applied(r, name) {
+  for a in r["applied"] { if a["name"] == name { return a } }
+  return nil
+}
+
+fn _save(r) {
+  if r["path"] == nil { return nil }
+  let plain = []
+  for a in r["applied"] { plain.push({"name": a["name"], "checksum": a["checksum"], "applied_at": a["applied_at"]}) }
+  write_file(r["path"], json.stringify(plain))
+}
+
+# For each registered migration: "applied", "pending", or "drift" (ran
+# already, but its checksum no longer matches what's registered now).
+fn status(r) {
+  let out = []
+  for d in r["defs"] {
+    let a = _find_applied(r, d["name"])
+    let state = "pending"
+    if a != nil { state = a["checksum"] == d["checksum"] ? "applied" : "drift" }
+    out.push({"name": d["name"], "state": state})
+  }
+  return out
+}
+
+fn up(r, ctx, target=nil) {
+  let ran = []
+  for d in r["defs"] {
+    if _find_applied(r, d["name"]) != nil { continue }
+    d["up"](ctx)
+    r["applied"].push({"name": d["name"], "checksum": d["checksum"], "applied_at": time()})
+    ran.push(d["name"])
+    if target != nil and d["name"] == target { break }
+  }
+  _save(r)
+  return ran
+}
+
+# Rolls back the last `steps` applied migrations, most-recent first.
+fn down(r, ctx, steps=1) {
+  let rolled = []
+  let n = 0
+  while n < steps and len(r["applied"]) > 0 {
+    let last = r["applied"][len(r["applied"]) - 1]
+    let d = _find_def(r, last["name"])
+    if d == nil { throw {"type": "LarzValueError", "message": "no registered migration named '" + last["name"] + "' to roll back"} }
+    d["down"](ctx)
+    r["applied"] = r["applied"][0:len(r["applied"]) - 1]
+    rolled.push(last["name"])
+    n = n + 1
+  }
+  _save(r)
+  return rolled
+}
+
+fn rollback_to(r, ctx, name) {
+  let rolled = []
+  while len(r["applied"]) > 0 {
+    let last = r["applied"][len(r["applied"]) - 1]
+    if last["name"] == name { break }
+    let d = _find_def(r, last["name"])
+    if d == nil { throw {"type": "LarzValueError", "message": "no registered migration named '" + last["name"] + "' to roll back"} }
+    d["down"](ctx)
+    r["applied"] = r["applied"][0:len(r["applied"]) - 1]
+    rolled.push(last["name"])
+  }
+  _save(r)
+  return rolled
+}

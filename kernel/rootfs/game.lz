@@ -1,0 +1,107 @@
+# game - a text-adventure engine: rooms with exits and items, a player
+# inventory, a look/go/take/drop command parser, and win conditions
+# (reaching a room, or holding an item). play() drives a real session
+# with injectable I/O, so a full playthrough is scriptable and testable
+# without a terminal.
+#
+#   import "game" as game
+#   let w = game.world()
+#   game.room(w, "hall", "A dim hall.", {"north": "study"})
+#   game.room(w, "study", "A quiet study.", {"south": "hall"})
+#   game.item(w, "key", "study")
+#   game.win_on_item(w, "key")
+#   let g = game.new_game(w, "hall")
+#   print(game.command(g, "go north"))
+#   print(game.command(g, "take key"))
+#   print(game.won(g))
+
+fn world() { return {"rooms": {}, "items": {}, "win_room": nil, "win_item": nil} }
+
+fn room(w, name, description, exits) {
+  w["rooms"][name] = {"description": description, "exits": exits}
+}
+
+fn item(w, name, in_room) { w["items"][name] = {"location": in_room} }
+
+fn win_on_room(w, room_name) { w["win_room"] = room_name }
+fn win_on_item(w, item_name) { w["win_item"] = item_name }
+
+fn new_game(w, start_room) {
+  return {"world": w, "room": start_room, "inventory": [], "won": false, "log": []}
+}
+
+fn _items_in(g, room_name) {
+  let out = []
+  for name in keys(g["world"]["items"]) {
+    if g["world"]["items"][name]["location"] == room_name { out.push(name) }
+  }
+  return out
+}
+
+fn look(g) {
+  let r = g["world"]["rooms"][g["room"]]
+  let items_here = _items_in(g, g["room"])
+  let out = r["description"]
+  if len(items_here) > 0 { out = out + " You see: " + join(items_here, ", ") + "." }
+  let exits_ = keys(r["exits"])
+  out = out + " Exits: " + join(sorted(exits_), ", ") + "."
+  return out
+}
+
+fn _check_win(g) {
+  if g["world"]["win_room"] != nil and g["room"] == g["world"]["win_room"] { g["won"] = true }
+  if g["world"]["win_item"] != nil and (g["world"]["win_item"] in g["inventory"]) { g["won"] = true }
+}
+
+fn command(g, text) {
+  let parts = text.strip().lower().split(" ")
+  let verb = parts[0]
+  let arg = len(parts) > 1 ? join(parts[1:], " ") : ""
+  let result = ""
+  if verb == "look" { result = look(g) }
+  else if verb == "go" {
+    let r = g["world"]["rooms"][g["room"]]
+    if r["exits"].has(arg) {
+      g["room"] = r["exits"][arg]
+      result = look(g)
+    } else {
+      result = "You can't go that way."
+    }
+  } else if verb == "take" {
+    let items_here = _items_in(g, g["room"])
+    if arg in items_here {
+      g["world"]["items"][arg]["location"] = "_inventory"
+      g["inventory"].push(arg)
+      result = "You take the " + arg + "."
+    } else {
+      result = "There's no " + arg + " here."
+    }
+  } else if verb == "drop" {
+    if arg in g["inventory"] {
+      let out = []
+      for i in g["inventory"] { if i != arg { out.push(i) } }
+      g["inventory"] = out
+      g["world"]["items"][arg]["location"] = g["room"]
+      result = "You drop the " + arg + "."
+    } else {
+      result = "You aren't carrying that."
+    }
+  } else {
+    result = "I don't understand."
+  }
+  g["log"].push({"cmd": text, "result": result})
+  _check_win(g)
+  return result
+}
+
+fn won(g) { return g["won"] }
+fn inventory(g) { return g["inventory"] }
+
+fn play(g, command_source, print_fn) {
+  print_fn(look(g))
+  while not g["won"] {
+    let cmd = command_source()
+    if cmd == nil { break }
+    print_fn(command(g, cmd))
+  }
+}

@@ -1,0 +1,22 @@
+# cart - shopping-cart totals with the correct order of operations: tax is
+# computed on the DISCOUNTED amount, not the original subtotal, and
+# shipping tax is optional and separate. All amounts are integer cents.
+#
+#   import "cart" as cart
+#   let r = cart.total(4250, 500, 825, 599, false)
+#   # subtotal $42.50, $5.00 off, 8.25% tax, $5.99 shipping (untaxed)
+#   print(r["total"])   # subtotal - discount + tax + shipping, exactly
+
+# subtotal, discount (cents), tax_bp (basis points, e.g. 825 = 8.25%),
+# shipping (cents), tax_shipping (bool)
+fn total(subtotal, discount, tax_bp, shipping, tax_shipping) {
+  if discount > subtotal { discount = subtotal }
+  let discounted = subtotal - discount
+  let tax = (discounted * tax_bp) // 10000
+  if tax_shipping { tax = tax + (shipping * tax_bp) // 10000 }
+  let grand = discounted + tax + shipping
+  return {
+    "subtotal": subtotal, "discount": discount, "discounted": discounted,
+    "tax": tax, "shipping": shipping, "total": grand
+  }
+}

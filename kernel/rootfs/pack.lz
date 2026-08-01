@@ -1,0 +1,129 @@
+# pack - MessagePack-compatible encode/decode, canonical (deterministic:
+# sorted map keys, shortest-fixed-width form) bytes. Like `cbor`, bytes
+# are a list of ints 0-255, not a Larzscript string, since Larzscript
+# strings can't safely hold a 0x00 byte.
+#
+#   import "pack" as pack
+#   let bytes_ = pack.encode({"a": 1, "b": [1, 2, 3]})
+#   print(pack.decode(bytes_))
+
+import "cbor" as cbor
+
+fn encode(v) {
+  let out = []
+  _enc(v, out)
+  return out
+}
+
+fn _enc(v, out) {
+  let t = type(v)
+  if t == "nil" { out.push(192); return nil }
+  if t == "bool" { out.push(v ? 195 : 194); return nil }
+  if t == "number" {
+    if v == int(v) {
+      let n = int(v)
+      if n >= 0 and n <= 127 { out.push(n) }
+      else if n < 0 and n >= -32 { out.push(256 + n) }
+      else if n >= 0 and n < 256 { out.push(204); out.push(n) }
+      else if n >= 0 and n < 65536 { out.push(205); out.push(n // 256); out.push(n % 256) }
+      else if n >= 0 { out.push(206); _push_u32(n, out) }
+      else if n >= -128 { out.push(208); out.push(256 + n) }
+      else if n >= -32768 { out.push(209); _push_u16(65536 + n, out) }
+      else { out.push(210); _push_u32(4294967296 + n, out) }
+    } else {
+      out.push(203)
+      let bits = cbor._f64_bits(v)
+      for b in bits { out.push(b) }
+    }
+    return nil
+  }
+  if t == "string" {
+    let n = len(v)
+    if n < 32 { out.push(160 + n) }
+    else if n < 256 { out.push(217); out.push(n) }
+    else { out.push(218); _push_u16(n, out) }
+    for c in v { out.push(ord(c)) }
+    return nil
+  }
+  if t == "list" {
+    let n = len(v)
+    if n < 16 { out.push(144 + n) } else { out.push(220); _push_u16(n, out) }
+    for item in v { _enc(item, out) }
+    return nil
+  }
+  if t == "dict" {
+    let ks = sorted(keys(v))
+    let n = len(ks)
+    if n < 16 { out.push(128 + n) } else { out.push(222); _push_u16(n, out) }
+    for k in ks { _enc(k, out); _enc(v[k], out) }
+    return nil
+  }
+  throw {"type": "LarzValueError", "message": "pack cannot encode a " + t}
+}
+
+fn _push_u16(n, out) { out.push(n // 256); out.push(n % 256) }
+fn _push_u32(n, out) {
+  out.push((n // 16777216) % 256); out.push((n // 65536) % 256)
+  out.push((n // 256) % 256); out.push(n % 256)
+}
+
+fn _dec(bytes_, st) {
+  let b0 = bytes_[st["i"]]
+  st["i"] = st["i"] + 1
+  if b0 <= 127 { return b0 }
+  if b0 >= 224 { return b0 - 256 }
+  if b0 >= 160 and b0 <= 191 { return _read_str(bytes_, st, b0 - 160) }
+  if b0 >= 144 and b0 <= 159 { return _read_arr(bytes_, st, b0 - 144) }
+  if b0 >= 128 and b0 <= 143 { return _read_map(bytes_, st, b0 - 128) }
+  if b0 == 192 { return nil }
+  if b0 == 194 { return false }
+  if b0 == 195 { return true }
+  if b0 == 204 { let n = bytes_[st["i"]]; st["i"] = st["i"] + 1; return n }
+  if b0 == 205 { let n = bytes_[st["i"]] * 256 + bytes_[st["i"]+1]; st["i"] = st["i"] + 2; return n }
+  if b0 == 206 {
+    let n = bytes_[st["i"]] * 16777216 + bytes_[st["i"]+1] * 65536 + bytes_[st["i"]+2] * 256 + bytes_[st["i"]+3]
+    st["i"] = st["i"] + 4
+    return n
+  }
+  if b0 == 208 { let n = bytes_[st["i"]]; st["i"] = st["i"] + 1; return n >= 128 ? n - 256 : n }
+  if b0 == 209 { let n = bytes_[st["i"]] * 256 + bytes_[st["i"]+1]; st["i"] = st["i"] + 2; return n >= 32768 ? n - 65536 : n }
+  if b0 == 210 {
+    let n = bytes_[st["i"]] * 16777216 + bytes_[st["i"]+1] * 65536 + bytes_[st["i"]+2] * 256 + bytes_[st["i"]+3]
+    st["i"] = st["i"] + 4
+    return n >= 2147483648 ? n - 4294967296 : n
+  }
+  if b0 == 203 {
+    let bits_ = bytes_[st["i"]:st["i"]+8]
+    st["i"] = st["i"] + 8
+    return cbor._bits_to_f64(bits_)
+  }
+  if b0 == 217 { let n = bytes_[st["i"]]; st["i"] = st["i"] + 1; return _read_str(bytes_, st, n) }
+  if b0 == 218 { let n = bytes_[st["i"]] * 256 + bytes_[st["i"]+1]; st["i"] = st["i"] + 2; return _read_str(bytes_, st, n) }
+  if b0 == 220 { let n = bytes_[st["i"]] * 256 + bytes_[st["i"]+1]; st["i"] = st["i"] + 2; return _read_arr(bytes_, st, n) }
+  if b0 == 222 { let n = bytes_[st["i"]] * 256 + bytes_[st["i"]+1]; st["i"] = st["i"] + 2; return _read_map(bytes_, st, n) }
+  throw {"type": "LarzValueError", "message": "pack: unsupported byte 0x" + str(b0)}
+}
+
+fn _read_str(bytes_, st, n) {
+  let s = ""
+  let k = 0
+  while k < n { s = s + chr(bytes_[st["i"]]); st["i"] = st["i"] + 1; k = k + 1 }
+  return s
+}
+fn _read_arr(bytes_, st, n) {
+  let arr = []
+  let k = 0
+  while k < n { arr.push(_dec(bytes_, st)); k = k + 1 }
+  return arr
+}
+fn _read_map(bytes_, st, n) {
+  let d = {}
+  let k = 0
+  while k < n { let key = _dec(bytes_, st); d[key] = _dec(bytes_, st); k = k + 1 }
+  return d
+}
+
+fn decode(bytes_) {
+  let st = {"i": 0}
+  return _dec(bytes_, st)
+}

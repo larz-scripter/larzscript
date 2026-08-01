@@ -1,0 +1,52 @@
+# fsm - a declarative finite state machine: register (event, from, to)
+# transitions (from can be "*" for "any state"), then fire() events,
+# check can()/allowed(), and read back the full transition history. An
+# on_transition callback fires after every successful transition.
+#
+#   import "fsm" as fsm
+#   let m = fsm.new("draft")
+#   fsm.transition(m, "submit", "draft", "review")
+#   fsm.transition(m, "approve", "review", "published")
+#   fsm.transition(m, "reject", "*", "draft")     # wildcard source
+#   fsm.on_transition(m, fn(from_, event, to_) { print(from_, "->", to_) })
+#   fsm.fire(m, "submit")
+#   print(fsm.can(m, "approve"))       # true
+#   print(fsm.history(m))
+
+fn new(initial_state) {
+  return {"state": initial_state, "transitions": [], "history": [{"event": nil, "from": nil, "to": initial_state}], "callbacks": []}
+}
+
+fn transition(m, event, from_state, to_state) {
+  m["transitions"].push({"event": event, "from": from_state, "to": to_state})
+}
+
+fn on_transition(m, callback) { m["callbacks"].push(callback) }
+
+fn allowed(m) {
+  let events_ = []
+  for t in m["transitions"] {
+    if t["from"] == m["state"] or t["from"] == "*" {
+      if not (t["event"] in events_) { events_.push(t["event"]) }
+    }
+  }
+  return events_
+}
+
+fn can(m, event) { return event in allowed(m) }
+
+fn fire(m, event) {
+  for t in m["transitions"] {
+    if t["event"] == event and (t["from"] == m["state"] or t["from"] == "*") {
+      let from_state = m["state"]
+      m["state"] = t["to"]
+      m["history"].push({"event": event, "from": from_state, "to": t["to"]})
+      for cb in m["callbacks"] { cb(from_state, event, t["to"]) }
+      return true
+    }
+  }
+  return false
+}
+
+fn history(m) { return m["history"] }
+fn state(m) { return m["state"] }

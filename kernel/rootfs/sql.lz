@@ -1,0 +1,89 @@
+# sql - a parameterized SQL query builder. Every value you pass becomes
+# a bound parameter, never inlined into the query text - the builder
+# can't produce a SQL-injectable string because it never puts a value in
+# the SQL itself. Table/column identifiers are validated against a strict
+# whitelist pattern instead (they can't be parameters in real SQL).
+#
+#   import "sql" as sql
+#   let q = sql.limit(sql.where(sql.select_("users", ["id", "name"]),
+#     "age", ">", 18), 10)
+#   let built = sql.build(q)
+#   print(built["sql"])      # "SELECT id, name FROM users WHERE age > ?  LIMIT ?"
+#   print(built["params"])    # [18, 10]
+
+fn _valid_ident(name) {
+  if len(name) == 0 { return false }
+  for c in name {
+    if "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".find(c) < 0 { return false }
+  }
+  return true
+}
+fn _check_ident(name) {
+  if not _valid_ident(name) { throw {"type": "LarzValueError", "message": "'" + name + "' is not a valid SQL identifier"} }
+  return name
+}
+
+let _OPS = ["=", "!=", "<", "<=", ">", ">=", "like", "in"]
+
+fn select_(table, columns=["*"]) {
+  _check_ident(table)
+  for c in columns { if c != "*" { _check_ident(c) } }
+  return {"table": table, "columns": columns, "wheres": [], "joins": [], "orders": [], "limit_": nil}
+}
+
+fn where(b, field, op, value) {
+  _check_ident(field)
+  if not (op in _OPS) { throw {"type": "LarzValueError", "message": "unsupported operator '" + op + "'"} }
+  let next_ = {"table": b["table"], "columns": b["columns"], "joins": b["joins"], "orders": b["orders"], "limit_": b["limit_"]}
+  next_["wheres"] = b["wheres"] + [{"field": field, "op": op, "value": value}]
+  return next_
+}
+
+fn join_table(b, table, on) {
+  _check_ident(table)
+  let next_ = {"table": b["table"], "columns": b["columns"], "wheres": b["wheres"], "orders": b["orders"], "limit_": b["limit_"]}
+  next_["joins"] = b["joins"] + [{"table": table, "on": on}]
+  return next_
+}
+
+fn order_by(b, field, desc=false) {
+  _check_ident(field)
+  let next_ = {"table": b["table"], "columns": b["columns"], "wheres": b["wheres"], "joins": b["joins"], "limit_": b["limit_"]}
+  next_["orders"] = b["orders"] + [{"field": field, "desc": desc}]
+  return next_
+}
+
+fn limit(b, n) {
+  return {"table": b["table"], "columns": b["columns"], "wheres": b["wheres"], "joins": b["joins"], "orders": b["orders"], "limit_": n}
+}
+
+fn build(b, paramstyle="qmark") {
+  let params = []
+  let ph = fn() { return paramstyle == "pyformat" ? "%s" : "?" }
+  let sql_ = "SELECT " + join(b["columns"], ", ") + " FROM " + b["table"]
+  for j in b["joins"] { sql_ = sql_ + " JOIN " + j["table"] + " ON " + j["on"] }
+  if len(b["wheres"]) > 0 {
+    let clauses = []
+    for w in b["wheres"] {
+      if w["op"] == "in" {
+        let marks = []
+        for v in w["value"] { marks.push(ph()); params.push(v) }
+        clauses.push(w["field"] + " IN (" + join(marks, ", ") + ")")
+      } else {
+        clauses.push(w["field"] + " " + w["op"].upper() + " " + ph())
+        params.push(w["value"])
+      }
+    }
+    sql_ = sql_ + " WHERE " + join(clauses, " AND ")
+  }
+  if len(b["orders"]) > 0 {
+    let parts = []
+    for o in b["orders"] { parts.push(o["field"] + (o["desc"] ? " DESC" : " ASC")) }
+    sql_ = sql_ + " ORDER BY " + join(parts, ", ")
+  }
+  if b["limit_"] != nil {
+    sql_ = sql_ + " LIMIT " + ph()
+    params.push(b["limit_"])
+  }
+  return {"sql": sql_, "params": params}
+}

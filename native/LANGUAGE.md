@@ -253,10 +253,18 @@ what `for i from A to B { ... }` desugars to (see "Read it like English").
 write_file("out.txt", "hello")        # write (overwrite)
 append_file("out.txt", " more")       # append
 read_file("out.txt")                  # -> string
+read_file_bytes("out.bin")            # -> list of ints 0-255
 file_exists("out.txt")                # -> bool
 args                                   # command-line args after the script (a list)
 exit(0)                               # exit with a status code
 ```
+
+Strings are C-style and NUL-terminated internally, so a `0x00` byte
+inside one silently ends it early for `len`/`+`/`for..in`/writing.
+`write_file`/`append_file` accept a list of ints 0-255 as binary-safe
+content (raw `fwrite`, no truncation) instead of a string - use that,
+with `read_file_bytes`, for any real binary format (zip, tar, packed
+protocols) that has to survive a `0x00` byte intact.
 
 ---
 

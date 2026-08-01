@@ -1,0 +1,169 @@
+# graph - the standard graph algorithms over an adjacency-list graph:
+# BFS/DFS traversal, Dijkstra shortest paths, connected components,
+# strongly-connected components (Tarjan), topological sort, and cycle
+# detection.
+#
+#   import "graph" as graph
+#   let g = graph.new()
+#   graph.add_edge(g, "a", "b", 1)
+#   graph.add_edge(g, "b", "c", 2)
+#   print(graph.bfs(g, "a"))
+#   print(graph.dijkstra(g, "a"))
+#   print(graph.has_cycle(g))
+
+fn new(directed=false) { return {"adj": {}, "directed": directed} }
+
+fn _ensure(g, v) { if not g["adj"].has(v) { g["adj"][v] = [] } }
+
+fn add_edge(g, u, v, weight=1) {
+  _ensure(g, u)
+  _ensure(g, v)
+  g["adj"][u].push({"to": v, "weight": weight})
+  if not g["directed"] { g["adj"][v].push({"to": u, "weight": weight}) }
+}
+
+fn nodes(g) { return keys(g["adj"]) }
+
+fn bfs(g, start) {
+  let visited = {start: true}
+  let order = [start]
+  let queue = [start]
+  let qi = 0
+  while qi < len(queue) {
+    let u = queue[qi]
+    qi = qi + 1
+    for edge in g["adj"][u] {
+      if not visited.has(edge["to"]) {
+        visited[edge["to"]] = true
+        order.push(edge["to"])
+        queue.push(edge["to"])
+      }
+    }
+  }
+  return order
+}
+
+fn dfs(g, start) {
+  let visited = {}
+  let order = []
+  fn visit(u) {
+    if visited.has(u) { return nil }
+    visited[u] = true
+    order.push(u)
+    for edge in g["adj"][u] { visit(edge["to"]) }
+  }
+  visit(start)
+  return order
+}
+
+# Returns {node: distance} for every node reachable from `start` -
+# classic array-scan Dijkstra (no heap needed at this scale).
+fn dijkstra(g, start) {
+  let dist = {start: 0}
+  let done = {}
+  while true {
+    let u = nil
+    let best = nil
+    for v in keys(dist) {
+      if not done.has(v) and (best == nil or dist[v] < best) { best = dist[v]; u = v }
+    }
+    if u == nil { break }
+    done[u] = true
+    for edge in g["adj"][u] {
+      let nd = dist[u] + edge["weight"]
+      if not dist.has(edge["to"]) or nd < dist[edge["to"]] { dist[edge["to"]] = nd }
+    }
+  }
+  return dist
+}
+
+fn components(g) {
+  let visited = {}
+  let comps = []
+  for start in keys(g["adj"]) {
+    if visited.has(start) { continue }
+    let comp = bfs(g, start)
+    for v in comp { visited[v] = true }
+    comps.push(comp)
+  }
+  return comps
+}
+
+# Tarjan's SCC algorithm - correct for directed graphs; on an
+# undirected graph every connected component is trivially one SCC.
+fn scc(g) {
+  let index_ = {}
+  let lowlink = {}
+  let on_stack = {}
+  let stack = []
+  let counter = [0]
+  let result = []
+  fn strongconnect(v) {
+    index_[v] = counter[0]
+    lowlink[v] = counter[0]
+    counter[0] = counter[0] + 1
+    stack.push(v)
+    on_stack[v] = true
+    for edge in g["adj"][v] {
+      let w = edge["to"]
+      if not index_.has(w) {
+        strongconnect(w)
+        if lowlink[w] < lowlink[v] { lowlink[v] = lowlink[w] }
+      } else if on_stack.has(w) {
+        if index_[w] < lowlink[v] { lowlink[v] = index_[w] }
+      }
+    }
+    if lowlink[v] == index_[v] {
+      let comp = []
+      while true {
+        let w = stack[len(stack) - 1]
+        stack = stack[0:len(stack) - 1]
+        on_stack.remove(w)
+        comp.push(w)
+        if w == v { break }
+      }
+      result.push(comp)
+    }
+  }
+  for v in keys(g["adj"]) { if not index_.has(v) { strongconnect(v) } }
+  return result
+}
+
+# Kahn's algorithm. Throws if the graph has a cycle (no valid order exists).
+fn topological_sort(g) {
+  let in_degree = {}
+  for v in keys(g["adj"]) { in_degree[v] = 0 }
+  for v in keys(g["adj"]) { for edge in g["adj"][v] { in_degree[edge["to"]] = in_degree[edge["to"]] + 1 } }
+  let queue = []
+  for v in keys(in_degree) { if in_degree[v] == 0 { queue.push(v) } }
+  let order = []
+  let qi = 0
+  while qi < len(queue) {
+    let u = queue[qi]
+    qi = qi + 1
+    order.push(u)
+    for edge in g["adj"][u] {
+      in_degree[edge["to"]] = in_degree[edge["to"]] - 1
+      if in_degree[edge["to"]] == 0 { queue.push(edge["to"]) }
+    }
+  }
+  if len(order) != len(keys(g["adj"])) { throw {"type": "LarzGraphCycleError", "message": "graph has a cycle - no topological order exists"} }
+  return order
+}
+
+fn has_cycle(g) {
+  let color = {}   # 0=unvisited(absent), 1=visiting, 2=done
+  let found = [false]
+  fn visit(u) {
+    if found[0] { return nil }
+    color[u] = 1
+    for edge in g["adj"][u] {
+      let w = edge["to"]
+      if color.has(w) and color[w] == 1 { found[0] = true; return nil }
+      if not color.has(w) or color[w] != 2 { if not color.has(w) { visit(w) } }
+    }
+    color[u] = 2
+  }
+  for v in keys(g["adj"]) { if not color.has(v) { visit(v) } }
+  return found[0]
+}

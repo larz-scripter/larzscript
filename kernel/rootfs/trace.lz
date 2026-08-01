@@ -1,0 +1,70 @@
+# trace - execution tracing for teaching/debugging: mark() checkpoints
+# through code (Larzscript has no automatic per-line hook like Python's
+# sys.settrace - there's no introspection API exposed to user code for
+# that - so tracing here is explicit: you call mark() with a label and
+# the variables you want recorded, at each point you want visibility
+# into), then table()/explain() render the run and variable_history()
+# pulls one variable's value across every mark.
+#
+#   import "trace" as trace
+#   let t = trace.new()
+#   let a = 1
+#   let b = 1
+#   trace.mark(t, "start", {"a": a, "b": b})
+#   a = a + b
+#   trace.mark(t, "after add", {"a": a, "b": b})
+#   print(trace.table(t))
+#   print(trace.explain(t))
+#   print(trace.variable_history(t, "a"))    # [1, 2]
+
+fn _copy(v) {
+  let t = type(v)
+  if t == "dict" { let out = {}; for k in keys(v) { out[k] = _copy(v[k]) } return out }
+  if t == "list" { let out = []; for item in v { out.push(_copy(item)) } return out }
+  return v
+}
+
+fn new() { return {"events": []} }
+
+fn mark(t, label, vars_) {
+  t["events"].push({"step": len(t["events"]) + 1, "label": label, "vars": _copy(vars_)})
+}
+
+fn table(t) {
+  let all_keys = []
+  for ev in t["events"] { for k in keys(ev["vars"]) { if not (k in all_keys) { all_keys.push(k) } } }
+  let header = ["step", "label"] + all_keys
+  let lines = [join(header, " | ")]
+  for ev in t["events"] {
+    let row = [str(ev["step"]), ev["label"]]
+    for k in all_keys { row.push(ev["vars"].has(k) ? str(ev["vars"][k]) : "") }
+    lines.push(join(row, " | "))
+  }
+  return join(lines, "\n")
+}
+
+fn explain(t) {
+  let lines = []
+  let prev = nil
+  for ev in t["events"] {
+    let changes = []
+    if prev != nil {
+      for k in keys(ev["vars"]) {
+        if not prev.has(k) { changes.push(k + " introduced as " + str(ev["vars"][k])) }
+        else if prev[k] != ev["vars"][k] { changes.push(k + ": " + str(prev[k]) + " -> " + str(ev["vars"][k])) }
+      }
+    } else {
+      for k in keys(ev["vars"]) { changes.push(k + " = " + str(ev["vars"][k])) }
+    }
+    let desc = len(changes) == 0 ? "(no change)" : join(changes, ", ")
+    lines.push("step " + str(ev["step"]) + " [" + ev["label"] + "]: " + desc)
+    prev = ev["vars"]
+  }
+  return join(lines, "\n")
+}
+
+fn variable_history(t, name) {
+  let out = []
+  for ev in t["events"] { if ev["vars"].has(name) { out.push(ev["vars"][name]) } }
+  return out
+}

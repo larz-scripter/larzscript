@@ -1,0 +1,79 @@
+# query - a chainable query builder over any Larzscript list of dicts:
+# where/order_by/limit narrow the set (each returns a NEW query, never
+# touching the list you started with), then select/pluck/sum/avg/min/max
+# pull a final answer out. Chaining is nested calls, not `.method()`
+# dot-chains - Larzscript has no user-defined method dispatch - but the
+# shape is the same.
+#
+#   import "query" as query
+#   let people = [{"name": "Ada", "age": 36}, {"name": "Bo", "age": 24}]
+#   let q = query.limit(query.order_by(query.where(query.from_(people),
+#     fn(p) { return p["age"] > 20 }), "age", true), 1)
+#   print(query.pluck(q, "name"))          # ["Ada"]
+#   print(query.avg(query.from_(people), "age"))
+
+fn from_(items) { return {"items": items} }
+
+fn where(q, pred) {
+  let out = []
+  for item in q["items"] { if pred(item) { out.push(item) } }
+  return {"items": out}
+}
+
+# criteria: {"field": value, ...} - every field must match exactly.
+fn matches(record, criteria) {
+  for k in keys(criteria) {
+    if not record.has(k) or record[k] != criteria[k] { return false }
+  }
+  return true
+}
+fn where_all(q, criteria) { return where(q, fn(r) { return matches(r, criteria) }) }
+
+fn order_by(q, key, desc=false) {
+  let items = []
+  for item in q["items"] { items.push(item) }
+  let i = 1
+  while i < len(items) {
+    let cur = items[i]
+    let j = i - 1
+    while j >= 0 and (desc ? items[j][key] < cur[key] : items[j][key] > cur[key]) {
+      items[j + 1] = items[j]
+      j = j - 1
+    }
+    items[j + 1] = cur
+    i = i + 1
+  }
+  return {"items": items}
+}
+
+fn limit(q, n) { return {"items": q["items"][0:n]} }
+fn offset(q, n) { return {"items": q["items"][n:]} }
+
+fn to_list(q) { return q["items"] }
+fn count(q) { return len(q["items"]) }
+
+fn select(q, fn_) {
+  let out = []
+  for item in q["items"] { out.push(fn_(item)) }
+  return out
+}
+fn pluck(q, key) { return select(q, fn(item) { return item[key] }) }
+
+fn sum(q, key) {
+  let total = 0
+  for item in q["items"] { total = total + item[key] }
+  return total
+}
+fn avg(q, key) { return len(q["items"]) == 0 ? 0 : sum(q, key) / len(q["items"]) }
+fn min(q, key) {
+  if len(q["items"]) == 0 { return nil }
+  let best = q["items"][0][key]
+  for item in q["items"] { if item[key] < best { best = item[key] } }
+  return best
+}
+fn max(q, key) {
+  if len(q["items"]) == 0 { return nil }
+  let best = q["items"][0][key]
+  for item in q["items"] { if item[key] > best { best = item[key] } }
+  return best
+}

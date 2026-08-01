@@ -1,0 +1,101 @@
+# cache - an LRU cache with optional per-entry TTL, an on-disk tier you
+# can save()/load() for durability across runs, and memoize() to wrap
+# a single-argument function with a cache automatically. "Thread-safe"
+# in the sense that matters for Larzscript: there's no shared-memory
+# threading in the language, so there's no data race to guard against -
+# every operation here is a single synchronous call, safe to call
+# re-entrantly (e.g. from within a callback) without corrupting state.
+#
+#   import "cache" as cache
+#   let c = cache.new(100)
+#   cache.set(c, "a", 1, 60)     # expires in 60s
+#   print(cache.get(c, "a", nil))
+#   let memo = cache.memoize(fn(n) { return n * n })
+#   print(memo["call"](5))          # computed
+#   print(memo["call"](5))          # cached
+#   print(cache.stats(memo["cache"]))   # {"hits": 1, "misses": 1, ...}
+
+import "json" as json
+
+fn new(capacity=100) {
+  return {"capacity": capacity, "items": {}, "order": [], "hits": 0, "misses": 0}
+}
+
+fn _touch(c, key) {
+  let idx = -1
+  let i = 0
+  while i < len(c["order"]) { if c["order"][i] == key { idx = i; break } i = i + 1 }
+  if idx >= 0 { c["order"] = c["order"][0:idx] + c["order"][idx+1:] }
+  c["order"].push(key)
+}
+
+fn _evict_if_needed(c) {
+  while len(c["order"]) > c["capacity"] {
+    let oldest = c["order"][0]
+    c["order"] = c["order"][1:]
+    c["items"].remove(oldest)
+  }
+}
+
+fn set(c, key, value, ttl=nil) {
+  c["items"][key] = {"value": value, "expires": ttl == nil ? nil : time() + ttl}
+  _touch(c, key)
+  _evict_if_needed(c)
+  return nil
+}
+
+fn has_key(c, key) {
+  if not c["items"].has(key) { return false }
+  let entry = c["items"][key]
+  if entry["expires"] != nil and time() >= entry["expires"] {
+    delete_(c, key)
+    return false
+  }
+  return true
+}
+
+fn get(c, key, default_=nil) {
+  if not has_key(c, key) { c["misses"] = c["misses"] + 1; return default_ }
+  c["hits"] = c["hits"] + 1
+  _touch(c, key)
+  return c["items"][key]["value"]
+}
+
+fn delete_(c, key) {
+  if not c["items"].has(key) { return false }
+  c["items"].remove(key)
+  let idx = -1
+  let i = 0
+  while i < len(c["order"]) { if c["order"][i] == key { idx = i; break } i = i + 1 }
+  if idx >= 0 { c["order"] = c["order"][0:idx] + c["order"][idx+1:] }
+  return true
+}
+
+fn stats(c) {
+  return {"hits": c["hits"], "misses": c["misses"], "size": len(c["order"]), "capacity": c["capacity"]}
+}
+
+# Durable tier: only entries without a still-pending TTL check are
+# meaningful to persist as-is - expires timestamps are absolute unix
+# time, so they remain valid to check after reloading.
+fn save(c, path) { write_file(path, json.stringify({"items": c["items"], "order": c["order"], "capacity": c["capacity"]})) }
+fn load(path) {
+  let data = json.parse(read_file(path))
+  return {"capacity": data["capacity"], "items": data["items"], "order": data["order"], "hits": 0, "misses": 0}
+}
+
+# Wraps a single-argument function with an LRU cache. The cache itself
+# is retrievable so callers can inspect stats() or set a capacity -
+# there's no closure-capture-by-reference trick needed since dicts are
+# already reference types in Larzscript.
+fn memoize(fn_, capacity=1000) {
+  let c = new(capacity)
+  let wrapped = fn(arg) {
+    let key = str(arg)
+    if has_key(c, key) { return get(c, key, nil) }
+    let result = fn_(arg)
+    set(c, key, result)
+    return result
+  }
+  return {"call": wrapped, "cache": c}
+}

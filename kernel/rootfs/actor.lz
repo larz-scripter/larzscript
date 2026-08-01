@@ -1,0 +1,68 @@
+# actor - mailbox actors: each actor owns its state privately and only
+# ever touches it inside its own handler, so there's never a lock to
+# take - Larzscript has no OS threads (a single actor's handler always
+# runs to completion before the next message is processed), which is
+# exactly what makes "no shared-state locks" true here rather than
+# aspirational. tell() queues a fire-and-forget message; ask() calls the
+# handler synchronously and returns its reply; step()/run() drain the
+# mailbox for tell()'d messages; supervise() catches a handler that
+# throws and decides whether to restart or kill the actor.
+#
+#   import "actor" as actor
+#   let counter = actor.spawn(fn(state, msg) {
+#     if msg["op"] == "add" { return {"state": state + msg["n"]} }
+#     if msg["op"] == "get" { return {"state": state, "reply": state} }
+#   }, 0)
+#   actor.tell(counter, {"op": "add", "n": 5})
+#   actor.run(counter)
+#   print(actor.ask(counter, {"op": "get"}))    # 5
+
+fn spawn(handler, initial_state=nil) {
+  return {"mailbox": [], "state": initial_state, "handler": handler, "alive": true, "supervisor": nil}
+}
+
+fn supervise(a, supervisor_fn) { a["supervisor"] = supervisor_fn }
+
+fn tell(a, msg) {
+  if not a["alive"] { return false }
+  a["mailbox"].push(msg)
+  return true
+}
+
+fn _handle(a, msg) {
+  try {
+    let result = a["handler"](a["state"], msg)
+    a["state"] = result["state"]
+    return result.has("reply") ? result["reply"] : nil
+  } catch e {
+    if a["supervisor"] != nil { a["supervisor"](a, e) } else { a["alive"] = false }
+    return nil
+  }
+}
+
+# Synchronous request/response - bypasses the mailbox entirely.
+fn ask(a, msg) {
+  if not a["alive"] { throw {"type": "LarzActorDeadError", "message": "actor is not alive"} }
+  return _handle(a, msg)
+}
+
+fn step(a) {
+  if not a["alive"] or len(a["mailbox"]) == 0 { return false }
+  let msg = a["mailbox"][0]
+  a["mailbox"] = a["mailbox"][1:]
+  _handle(a, msg)
+  return true
+}
+
+fn run(a, max_steps=nil) {
+  let n = 0
+  while step(a) {
+    n = n + 1
+    if max_steps != nil and n >= max_steps { break }
+  }
+  return n
+}
+
+fn state(a) { return a["state"] }
+fn is_alive(a) { return a["alive"] }
+fn mailbox_size(a) { return len(a["mailbox"]) }

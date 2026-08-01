@@ -1,0 +1,53 @@
+# prompt - interactive CLI prompts: free text, yes/no confirm, a
+# numbered select menu, and a password field. Re-prompts on invalid
+# input. The reader is injectable (default input()) so every prompt is
+# unit-testable without a real terminal - pass a function that pops
+# answers off a queue instead.
+#
+#   import "prompt" as prompt
+#   let name = prompt.text("Your name: ")
+#   if prompt.confirm("Continue? ") { ... }
+#   let color = prompt.select("Pick a color:", ["red", "green", "blue"])
+#   let pw = prompt.password("Password: ")   # no real terminal echo
+#                                             # suppression is available -
+#                                             # see the header note below.
+
+fn text(message, reader=input) {
+  return reader(message)
+}
+
+# reader must return a fresh answer each call, or (for tests) pop from a
+# pre-seeded queue.
+fn confirm(message, default_=nil, reader=input) {
+  while true {
+    let raw = reader(message)
+    let ans = raw == nil ? "" : raw.strip().lower()
+    if len(ans) == 0 and default_ != nil { return default_ }
+    if ans == "y" or ans == "yes" { return true }
+    if ans == "n" or ans == "no" { return false }
+  }
+}
+
+fn select(message, options, reader=input) {
+  print(message)
+  let i = 0
+  while i < len(options) {
+    print("  " + str(i + 1) + ") " + str(options[i]))
+    i = i + 1
+  }
+  while true {
+    let raw = reader("> ")
+    if raw == nil { continue }
+    let n = int(raw.strip())
+    if n >= 1 and n <= len(options) { return options[n - 1] }
+  }
+}
+
+# There is no terminal-echo-suppression builtin in Larzscript (no termios
+# access), so this cannot hide typed characters the way a real password
+# prompt does - it is a plain text() call kept as its own named function
+# so callers can find and swap in a hidden-input reader later without
+# changing every call site.
+fn password(message, reader=input) {
+  return reader(message)
+}

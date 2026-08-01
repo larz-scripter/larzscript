@@ -1,0 +1,85 @@
+# watch - poll a directory for created/modified/deleted files matching
+# a glob pattern. Pure poll-based: call poll() yourself in a loop (or
+# hand it to run() to loop with sleep() between passes) - there is no
+# OS-level filesystem-event builtin in Larzscript, so this is honest
+# "check the directory again" polling, not inotify.
+#
+#   import "watch" as watch
+#   let w = watch.new(".", "*.lz")
+#   let changes = watch.poll(w)
+#   for c in changes { print(c["kind"], c["path"]) }   # "created"|"modified"|"deleted"
+#
+#   watch.run(w, fn(c) { print(c["kind"], c["path"]) }, 2, 10)  # every 2s, 10 passes
+
+# `*` matches any run of characters, `?` matches exactly one - the two
+# fnmatch wildcards the stack page promises. No character classes.
+fn matches(name, pattern) {
+  return _glob(name, 0, pattern, 0)
+}
+
+fn _glob(s, si, p, pi) {
+  while pi < len(p) {
+    let pc = p[pi:pi+1]
+    if pc == "*" {
+      let rest = p[pi+1:]
+      let j = si
+      while j <= len(s) {
+        if _glob(s, j, p, pi + 1) { return true }
+        j = j + 1
+      }
+      return false
+    }
+    if si >= len(s) { return false }
+    if pc != "?" and pc != s[si:si+1] { return false }
+    si = si + 1
+    pi = pi + 1
+  }
+  return si == len(s)
+}
+
+# There's no mtime/stat builtin, so "modified" is detected by content
+# length changing since the last poll (a real, if coarse, proxy - a
+# same-length edit won't be flagged as modified, only create/delete and
+# size-changing edits will).
+fn new(dir, pattern="*") {
+  return {"dir": dir, "pattern": pattern, "seen": {}}
+}
+
+fn _snapshot(w) {
+  let snap = {}
+  for name in listdir(w["dir"]) {
+    if not matches(name, w["pattern"]) { continue }
+    let path = w["dir"] + "/" + name
+    snap[path] = len(read_file(path))
+  }
+  return snap
+}
+
+fn poll(w) {
+  let snap = _snapshot(w)
+  let changes = []
+  for path in keys(snap) {
+    if not w["seen"].has(path) {
+      changes.push({"kind": "created", "path": path})
+    } else if w["seen"][path] != snap[path] {
+      changes.push({"kind": "modified", "path": path})
+    }
+  }
+  for path in keys(w["seen"]) {
+    if not snap.has(path) { changes.push({"kind": "deleted", "path": path}) }
+  }
+  w["seen"] = snap
+  return changes
+}
+
+# Calls `callback(change)` for every change on every pass, sleeping
+# `interval` seconds between passes, for `passes` passes (default runs
+# forever - pass an explicit count in tests so they terminate).
+fn run(w, callback, interval, passes=nil) {
+  let n = 0
+  while passes == nil or n < passes {
+    for c in poll(w) { callback(c) }
+    sleep(interval)
+    n = n + 1
+  }
+}

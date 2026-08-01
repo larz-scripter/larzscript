@@ -1,0 +1,59 @@
+# trie - the structure behind autocomplete: insert words, then ask what
+# starts with a given prefix.
+#
+#   import "trie" as trie
+#   let t = trie.new()
+#   for w in ["cat", "car", "card", "dog"] { trie.insert(t, w) }
+#   print(trie.contains(t, "car"))            # true
+#   print(trie.starts_with(t, "ca"))          # true - some word starts with "ca"
+#   print(trie.words_with_prefix(t, "car"))   # ["car", "card"]
+#   print(trie.all_words(t))                  # every inserted word
+
+fn new() { return {"children": {}, "end": false} }
+
+fn insert(t, word) {
+  let node = t
+  for c in word {
+    if not node["children"].has(c) { node["children"][c] = {"children": {}, "end": false} }
+    node = node["children"][c]
+  }
+  node["end"] = true
+}
+
+fn _walk(t, prefix) {
+  let node = t
+  for c in prefix {
+    if not node["children"].has(c) { return nil }
+    node = node["children"][c]
+  }
+  return node
+}
+
+fn contains(t, word) {
+  let node = _walk(t, word)
+  return node != nil and node["end"]
+}
+
+fn starts_with(t, prefix) { return _walk(t, prefix) != nil }
+
+fn _collect(node, prefix, out) {
+  if node["end"] { out.push(prefix) }
+  for c in sorted(keys(node["children"])) { _collect(node["children"][c], prefix + c, out) }
+}
+
+fn words_with_prefix(t, prefix) {
+  let node = _walk(t, prefix)
+  let out = []
+  if node == nil { return out }
+  _collect(node, prefix, out)
+  return out
+}
+
+fn all_words(t) { return words_with_prefix(t, "") }
+
+fn remove(t, word) {
+  if not contains(t, word) { return false }
+  let node = _walk(t, word)
+  node["end"] = false
+  return true
+}

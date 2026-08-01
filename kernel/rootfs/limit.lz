@@ -1,0 +1,67 @@
+# limit - rate limiting: fixed-window, sliding-window, and token-bucket
+# algorithms, all per-key (so one limiter instance can guard many
+# users/IPs/API keys independently). guard() wraps any function with a
+# limit check, throwing when a caller is over budget - the same shape
+# a WSGI 429 middleware would use, minus the WSGI-specific plumbing
+# (Larzscript has no WSGI/ASGI concept of its own to hook into).
+#
+#   import "limit" as limit
+#   let l = limit.token_bucket(5, 1)     # burst 5, refill 1/sec
+#   print(limit.allow(l, "user-1"))       # true, 4 times more before empty
+#   let guarded = limit.guard(l, "user-1", fn() { return "ok" })
+
+fn fixed_window(max_requests, window_seconds) {
+  return {"kind": "fixed", "max": max_requests, "window": window_seconds, "buckets": {}}
+}
+
+fn sliding_window(max_requests, window_seconds) {
+  return {"kind": "sliding", "max": max_requests, "window": window_seconds, "log": {}}
+}
+
+fn token_bucket(capacity, refill_per_second) {
+  return {"kind": "bucket", "capacity": capacity, "refill": refill_per_second, "state": {}}
+}
+
+fn _fixed_allow(l, key, now) {
+  if not l["buckets"].has(key) { l["buckets"][key] = {"window_start": now, "count": 0} }
+  let b = l["buckets"][key]
+  if now - b["window_start"] >= l["window"] { b["window_start"] = now; b["count"] = 0 }
+  if b["count"] >= l["max"] { return false }
+  b["count"] = b["count"] + 1
+  return true
+}
+
+fn _sliding_allow(l, key, now) {
+  if not l["log"].has(key) { l["log"][key] = [] }
+  let cutoff = now - l["window"]
+  let kept = []
+  for t in l["log"][key] { if t > cutoff { kept.push(t) } }
+  if len(kept) >= l["max"] { l["log"][key] = kept; return false }
+  kept.push(now)
+  l["log"][key] = kept
+  return true
+}
+
+fn _bucket_allow(l, key, now) {
+  if not l["state"].has(key) { l["state"][key] = {"tokens": l["capacity"], "last": now} }
+  let s = l["state"][key]
+  let elapsed = now - s["last"]
+  s["tokens"] = s["tokens"] + elapsed * l["refill"]
+  if s["tokens"] > l["capacity"] { s["tokens"] = l["capacity"] }
+  s["last"] = now
+  if s["tokens"] < 1 { return false }
+  s["tokens"] = s["tokens"] - 1
+  return true
+}
+
+fn allow(l, key, now=nil) {
+  let t = now == nil ? time() : now
+  if l["kind"] == "fixed" { return _fixed_allow(l, key, t) }
+  if l["kind"] == "sliding" { return _sliding_allow(l, key, t) }
+  return _bucket_allow(l, key, t)
+}
+
+fn guard(l, key, fn_) {
+  if not allow(l, key) { throw {"type": "LarzRateLimitError", "message": "rate limit exceeded for '" + key + "'", "status": 429} }
+  return fn_()
+}

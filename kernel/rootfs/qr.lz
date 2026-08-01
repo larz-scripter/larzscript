@@ -1,0 +1,444 @@
+# qr - real QR code generation: GF(256) Reed-Solomon error correction,
+# all 8 mask patterns evaluated by the spec's penalty rules (lowest
+# score wins), and spec module placement (finder/timing/format-info
+# patterns + the zigzag data-placement order). Scoped to QR version 1
+# (21x21 modules), error-correction level M, byte mode only - version 1
+# is small enough (max 14 bytes of payload) to implement and verify with
+# real confidence; larger versions/other modes are not supported.
+#
+# There is no camera or QR scanner available to physically verify a
+# generated code actually scans on real hardware. What IS verified: the
+# Reed-Solomon codewords satisfy the mathematical syndrome property (a
+# valid RS codeword evaluates to zero at every one of the 10 generator
+# roots - see verify_syndrome()), and encode/decode round-trips through
+# an independently-written reader (verify_roundtrip()) that walks the
+# same coordinate tables to recover the original bytes. That catches
+# most classes of bug but is not proof against a real scanner - treat
+# output as best-effort spec-accurate, not scanner-guaranteed.
+#
+#   import "qr" as qr
+#   let code = qr.generate("HELLO")
+#   print(qr.to_text(code))
+#   print(qr.verify_roundtrip("HELLO"))   # true
+
+let SIZE = 21
+
+# ---- GF(256) arithmetic (primitive poly 0x11D = 285, generator 2) ----
+fn _xor_int(a, b, bits) {
+  let result = 0
+  let place = 1
+  let x = a
+  let y = b
+  let i = 0
+  while i < bits {
+    if x % 2 != y % 2 { result = result + place }
+    x = x // 2
+    y = y // 2
+    place = place * 2
+    i = i + 1
+  }
+  return result
+}
+
+fn _build_gf_tables() {
+  let exp_ = [0 for _ in range(512)]
+  let log_ = [0 for _ in range(256)]
+  let v = 1
+  let i = 0
+  while i < 255 {
+    exp_[i] = v
+    log_[v] = i
+    v = v * 2
+    if v >= 256 { v = _xor_int(v, 285, 9) }
+    i = i + 1
+  }
+  i = 255
+  while i < 512 { exp_[i] = exp_[i - 255]; i = i + 1 }
+  return {"exp": exp_, "log": log_}
+}
+let _GF = _build_gf_tables()
+
+fn _gf_mul(a, b) {
+  if a == 0 or b == 0 { return 0 }
+  return _GF["exp"][_GF["log"][a] + _GF["log"][b]]
+}
+
+fn _rs_generator(n) {
+  let poly = [1]
+  let i = 0
+  while i < n {
+    let new_poly = [0 for _ in range(len(poly) + 1)]
+    let j = 0
+    while j < len(poly) {
+      new_poly[j] = _xor_int(new_poly[j], poly[j], 9)
+      new_poly[j + 1] = _xor_int(new_poly[j + 1], _gf_mul(poly[j], _GF["exp"][i]), 9)
+      j = j + 1
+    }
+    poly = new_poly
+    i = i + 1
+  }
+  return poly
+}
+
+fn rs_encode(data, ec_count) {
+  let gen = _rs_generator(ec_count)
+  let msg = []
+  for d in data { msg.push(d) }
+  for _ in range(ec_count) { msg.push(0) }
+  let i = 0
+  while i < len(data) {
+    let coef = msg[i]
+    if coef != 0 {
+      let j = 0
+      while j < len(gen) {
+        msg[i + j] = _xor_int(msg[i + j], _gf_mul(gen[j], coef), 9)
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  return msg[len(data):]
+}
+
+fn _poly_eval(coeffs, x) {
+  let result = 0
+  for c in coeffs { result = _xor_int(_gf_mul(result, x), c, 9) }
+  return result
+}
+
+# The mathematical property every valid RS codeword satisfies: evaluated
+# at each of the `ec_count` generator roots (alpha^0..alpha^(ec_count-1)),
+# the result is always 0. True proof of correct GF(256)/generator math,
+# independent of anything QR-specific.
+fn verify_syndrome(data, ec_count) {
+  let ec = rs_encode(data, ec_count)
+  let full = []
+  for d in data { full.push(d) }
+  for c in ec { full.push(c) }
+  let i = 0
+  while i < ec_count {
+    if _poly_eval(full, _GF["exp"][i]) != 0 { return false }
+    i = i + 1
+  }
+  return true
+}
+
+# ---- byte-mode data encoding (version 1-M: 16 data codewords) ----
+fn _bits_of(n, width) {
+  let bits_ = []
+  let i = width - 1
+  while i >= 0 { bits_.push((n // (2 ** i)) % 2); i = i - 1 }
+  return bits_
+}
+
+fn encode_data(text) {
+  if len(text) > 14 { throw {"type": "LarzValueError", "message": "QR version 1-M byte mode holds at most 14 bytes"} }
+  let bits_ = []
+  for b in _bits_of(4, 4) { bits_.push(b) }        # mode indicator 0100 (byte mode)
+  for b in _bits_of(len(text), 8) { bits_.push(b) } # character count (8 bits, version 1-9)
+  for c in text { for b in _bits_of(ord(c), 8) { bits_.push(b) } }
+  let capacity = 128
+  let term = capacity - len(bits_)
+  if term > 4 { term = 4 }
+  let i = 0
+  while i < term { bits_.push(0); i = i + 1 }
+  while len(bits_) % 8 != 0 { bits_.push(0) }
+  let codewords = []
+  let i2 = 0
+  while i2 < len(bits_) {
+    let byte_ = 0
+    let j = 0
+    while j < 8 { byte_ = byte_ * 2 + bits_[i2 + j]; j = j + 1 }
+    codewords.push(byte_)
+    i2 = i2 + 8
+  }
+  let pad = [236, 17]
+  let p = 0
+  while len(codewords) < 16 { codewords.push(pad[p % 2]); p = p + 1 }
+  return codewords
+}
+
+# ---- module placement ----
+fn _in_finder_zone(r, c) {
+  if r < 8 and c < 8 { return true }
+  if r < 8 and c >= SIZE - 8 { return true }
+  if r >= SIZE - 8 and c < 8 { return true }
+  return false
+}
+fn is_function_module(r, c) {
+  if _in_finder_zone(r, c) { return true }
+  if r == 6 or c == 6 { return true }
+  if r == SIZE - 8 and c == 8 { return true }
+  if r == 8 and (c <= 8 or c >= SIZE - 8) { return true }
+  if c == 8 and (r <= 8 or r >= SIZE - 8) { return true }
+  return false
+}
+
+let _FINDER = [
+  [1,1,1,1,1,1,1], [1,0,0,0,0,0,1], [1,0,1,1,1,0,1],
+  [1,0,1,1,1,0,1], [1,0,1,1,1,0,1], [1,0,0,0,0,0,1], [1,1,1,1,1,1,1]
+]
+
+fn _new_matrix() { return [[nil for _ in range(SIZE)] for _ in range(SIZE)] }
+
+fn _place_finder(m, top, left) {
+  let r = 0
+  while r < 7 {
+    let c = 0
+    while c < 7 { m[top + r][left + c] = _FINDER[r][c]; c = c + 1 }
+    r = r + 1
+  }
+  # separator ring (light) - only the parts inside the grid.
+  let dr = -1
+  while dr <= 7 {
+    let dc = -1
+    while dc <= 7 {
+      let rr = top + dr
+      let cc = left + dc
+      if rr >= 0 and rr < SIZE and cc >= 0 and cc < SIZE and (dr == -1 or dr == 7 or dc == -1 or dc == 7) {
+        m[rr][cc] = 0
+      }
+      dc = dc + 1
+    }
+    dr = dr + 1
+  }
+}
+
+fn _place_function_patterns(m) {
+  _place_finder(m, 0, 0)
+  _place_finder(m, 0, SIZE - 7)
+  _place_finder(m, SIZE - 7, 0)
+  let i = 0
+  while i < SIZE {
+    if not _in_finder_zone(6, i) { m[6][i] = (i % 2 == 0) ? 1 : 0 }
+    if not _in_finder_zone(i, 6) { m[i][6] = (i % 2 == 0) ? 1 : 0 }
+    i = i + 1
+  }
+  m[SIZE - 8][8] = 1  # dark module
+}
+
+fn _zigzag_order() {
+  let positions = []
+  let col = SIZE - 1
+  while col >= 1 {
+    if col == 6 { col = col - 1 }
+    let upward = ((SIZE - 1 - col) // 2) % 2 == 0
+    let vert = 0
+    while vert < SIZE {
+      let row = upward ? (SIZE - 1 - vert) : vert
+      let c = col
+      while c >= col - 1 {
+        if not is_function_module(row, c) { positions.push({"r": row, "c": c}) }
+        c = c - 1
+      }
+      vert = vert + 1
+    }
+    col = col - 2
+  }
+  return positions
+}
+
+fn _mask_bit(pattern, r, c) {
+  if pattern == 0 { return (r + c) % 2 == 0 }
+  if pattern == 1 { return r % 2 == 0 }
+  if pattern == 2 { return c % 3 == 0 }
+  if pattern == 3 { return (r + c) % 3 == 0 }
+  if pattern == 4 { return (r // 2 + c // 3) % 2 == 0 }
+  if pattern == 5 { return (r * c) % 2 + (r * c) % 3 == 0 }
+  if pattern == 6 { return ((r * c) % 2 + (r * c) % 3) % 2 == 0 }
+  return ((r + c) % 2 + (r * c) % 3) % 2 == 0
+}
+
+# Format info: 5 data bits (2-bit EC level, always "00" for M here, + 3-bit
+# mask id) -> BCH(15,5) with generator 0x537 -> XOR with mask 0x5412.
+fn _bch_remainder(data5) {
+  let g = 1335
+  let rem = data5 * 1024
+  let d = 14
+  while d >= 10 {
+    if (rem // (2 ** d)) % 2 == 1 { rem = _xor_int(rem, g * (2 ** (d - 10)), 15) }
+    d = d - 1
+  }
+  return rem
+}
+fn _format_bits(mask_id) {
+  let data5 = mask_id
+  let full15 = data5 * 1024 + _bch_remainder(data5)
+  return _xor_int(full15, 21522, 15)
+}
+
+fn _place_format_info(m, mask_id) {
+  let bits_ = _bits_of(_format_bits(mask_id), 15)  # bits_[0] = bit14 (MSB) .. bits_[14] = bit0
+  let i = 0
+  while i <= 5 { m[8][i] = bits_[i]; i = i + 1 }
+  m[8][7] = bits_[6]
+  m[8][8] = bits_[7]
+  m[7][8] = bits_[8]
+  i = 9
+  while i <= 14 { m[14 - i][8] = bits_[i]; i = i + 1 }
+  # Copy B: column 8's "rows >= 13" strip has row 13 taken by the fixed
+  # dark module, so only 7 rows (14-20) are real format-bit positions;
+  # the row-8 "cols >= 13" strip has no such collision, so it gets the
+  # full 8 columns (13-20). 7 + 8 = 15.
+  i = 0
+  while i <= 6 { m[SIZE - 1 - i][8] = bits_[i]; i = i + 1 }
+  i = 7
+  while i <= 14 { m[8][SIZE - 15 + i] = bits_[i]; i = i + 1 }
+}
+
+fn _penalty(m) {
+  let total = 0
+  let r = 0
+  while r < SIZE {
+    let run = 1
+    let c = 1
+    while c < SIZE {
+      if m[r][c] == m[r][c-1] { run = run + 1 } else { if run >= 5 { total = total + (run - 2) } run = 1 }
+      c = c + 1
+    }
+    if run >= 5 { total = total + (run - 2) }
+    r = r + 1
+  }
+  let c = 0
+  while c < SIZE {
+    let run = 1
+    let r2 = 1
+    while r2 < SIZE {
+      if m[r2][c] == m[r2-1][c] { run = run + 1 } else { if run >= 5 { total = total + (run - 2) } run = 1 }
+      r2 = r2 + 1
+    }
+    if run >= 5 { total = total + (run - 2) }
+    c = c + 1
+  }
+  r = 0
+  while r < SIZE - 1 {
+    let c2 = 0
+    while c2 < SIZE - 1 {
+      if m[r][c2] == m[r][c2+1] and m[r][c2] == m[r+1][c2] and m[r][c2] == m[r+1][c2+1] { total = total + 3 }
+      c2 = c2 + 1
+    }
+    r = r + 1
+  }
+  let dark = 0
+  r = 0
+  while r < SIZE { let c3 = 0; while c3 < SIZE { dark = dark + m[r][c3]; c3 = c3 + 1 } r = r + 1 }
+  let pct = (dark * 100) / (SIZE * SIZE)
+  let below = int(pct // 5) * 5
+  let above = below + 5
+  let d1 = below > pct ? below - pct : pct - below
+  let d2 = above > pct ? above - pct : pct - above
+  total = total + int((d1 < d2 ? d1 : d2) / 5) * 10
+  return total
+}
+
+fn _build_matrix(codewords, mask_id) {
+  let m = _new_matrix()
+  _place_function_patterns(m)
+  _place_format_info(m, mask_id)
+  let bits_ = []
+  for cw in codewords { for b in _bits_of(cw, 8) { bits_.push(b) } }
+  let order = _zigzag_order()
+  let i = 0
+  for pos in order {
+    let bit = bits_[i]
+    let flip = _mask_bit(mask_id, pos["r"], pos["c"])
+    m[pos["r"]][pos["c"]] = flip ? (1 - bit) : bit
+    i = i + 1
+  }
+  return m
+}
+
+# Generates a version-1, EC-level-M QR code for `text` (byte mode, <=14
+# bytes). Tries all 8 masks, keeps the lowest-penalty one, per spec.
+fn generate(text) {
+  let data = encode_data(text)
+  let ec = rs_encode(data, 10)
+  let codewords = []
+  for d in data { codewords.push(d) }
+  for c in ec { codewords.push(c) }
+  let best = nil
+  let best_score = nil
+  let best_mask = 0
+  let mask_id = 0
+  while mask_id < 8 {
+    let m = _build_matrix(codewords, mask_id)
+    let score = _penalty(m)
+    if best_score == nil or score < best_score { best_score = score; best = m; best_mask = mask_id }
+    mask_id = mask_id + 1
+  }
+  return {"matrix": best, "mask": best_mask, "size": SIZE, "text": text}
+}
+
+fn to_text(code) {
+  let lines = []
+  for row in code["matrix"] {
+    let line = ""
+    for v in row { line = line + (v == 1 ? "##" : "  ") }
+    lines.push(line)
+  }
+  return join(lines, "\n")
+}
+
+fn to_matrix(code) { return code["matrix"] }
+
+# ---- independent round-trip reader, for self-verification ----
+fn _decode_from_matrix(m) {
+  let bits_ = []
+  let i = 0
+  while i <= 5 { bits_.push(m[8][i]); i = i + 1 }
+  bits_.push(m[8][7])
+  bits_.push(m[8][8])
+  bits_.push(m[7][8])
+  i = 9
+  while i <= 14 { bits_.push(m[14 - i][8]); i = i + 1 }
+  let raw15 = 0
+  for b in bits_ { raw15 = raw15 * 2 + b }
+  let unmasked = _xor_int(raw15, 21522, 15)
+  # mask_id lives in the bottom 3 bits of the 5-bit DATA field (the top
+  # 5 bits of the 15-bit value), not the bottom 3 bits of the whole
+  # 15-bit value - those low bits belong to the BCH remainder.
+  let mask_id = (unmasked // 1024) % 8
+  let order = _zigzag_order()
+  let read_bits = []
+  for pos in order {
+    let v = m[pos["r"]][pos["c"]]
+    let flip = _mask_bit(mask_id, pos["r"], pos["c"])
+    read_bits.push(flip ? (1 - v) : v)
+  }
+  let codewords = []
+  let k = 0
+  while k < len(read_bits) {
+    let byte_ = 0
+    let j = 0
+    while j < 8 { byte_ = byte_ * 2 + read_bits[k + j]; j = j + 1 }
+    codewords.push(byte_)
+    k = k + 8
+  }
+  let data = codewords[0:16]
+  let ec = codewords[16:26]
+  let reencoded_ec = rs_encode(data, 10)
+  if reencoded_ec != ec { return {"ok": false, "reason": "ec_mismatch"} }
+  let mode = data[0] // 16
+  let count = ((data[0] % 16) * 16) + (data[1] // 16)
+  let bytes_ = []
+  let idx = 1
+  let nibble_hi = data[1] % 16
+  let n = 0
+  while n < count {
+    let hi = nibble_hi
+    let lo = data[idx + 1] // 16
+    bytes_.push(hi * 16 + lo)
+    nibble_hi = data[idx + 1] % 16
+    idx = idx + 1
+    n = n + 1
+  }
+  let text = ""
+  for b in bytes_ { text = text + chr(b) }
+  return {"ok": true, "mode": mode, "text": text, "mask": mask_id}
+}
+
+fn verify_roundtrip(text) {
+  let code = generate(text)
+  let decoded = _decode_from_matrix(code["matrix"])
+  return decoded["ok"] and decoded["text"] == text and decoded["mask"] == code["mask"]
+}

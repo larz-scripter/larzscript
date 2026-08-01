@@ -1,0 +1,176 @@
+# db - a log-structured, one-file JSON database. Every write appends a
+# JSON record to a log file (append_file - never rewrites what's already
+# on disk) and is replayed in order on open(), so a crash mid-write
+# loses at most the last unflushed line, never corrupts what came
+# before. Supports named collections, a secondary index per field, and
+# transactions that buffer their writes and only touch the real log
+# (and become visible to readers) on a successful commit.
+#
+#   import "db" as db
+#   let d = db.open("app.dblog")
+#   let id = db.insert(d, "users", {"name": "Ada"})
+#   db.create_index(d, "users", "name")
+#   print(db.find_by(d, "users", "name", "Ada"))
+#   db.transaction(d, fn(tx) {
+#     db.insert(tx, "users", {"name": "Bo"})
+#     db.insert(tx, "users", {"name": "Cy"})
+#   })
+
+import "json" as json
+
+fn _copy(v) {
+  let t = type(v)
+  if t == "dict" { let out = {}; for k in keys(v) { out[k] = _copy(v[k]) } return out }
+  if t == "list" { let out = []; for item in v { out.push(_copy(item)) } return out }
+  return v
+}
+
+fn _get_coll(d, name) {
+  if not d["colls"].has(name) { d["colls"][name] = {"records": {}, "next_id": 1} }
+  return d["colls"][name]
+}
+
+fn _apply(d, entry) {
+  let coll = _get_coll(d, entry["coll"])
+  if entry["op"] == "insert" {
+    coll["records"][entry["id"]] = entry["data"]
+    let n = int(entry["id"]) + 1
+    if n > coll["next_id"] { coll["next_id"] = n }
+  } else if entry["op"] == "update" {
+    if coll["records"].has(entry["id"]) {
+      for k in keys(entry["data"]) { coll["records"][entry["id"]][k] = entry["data"][k] }
+    }
+  } else if entry["op"] == "delete" {
+    coll["records"].remove(entry["id"])
+  }
+}
+
+fn open(path) {
+  let d = {"path": path, "colls": {}, "indexes": {}}
+  if file_exists(path) {
+    for line in read_file(path).split("\n") {
+      if len(line.strip()) == 0 { continue }
+      _apply(d, json.parse(line))
+    }
+  }
+  return d
+}
+
+# A transaction handle (see transaction() below) carries a `_buffer`
+# list instead of writing straight to disk - everything else (insert,
+# update, delete_) is unaware it might be running inside a transaction.
+fn _write_log(d, entry) {
+  if d.has("_buffer") { d["_buffer"].push(entry); return nil }
+  append_file(d["path"], json.stringify(entry) + "\n")
+}
+
+fn _reindex_one(d, coll_name, id, record) {
+  if not d["indexes"].has(coll_name) { return nil }
+  for field in keys(d["indexes"][coll_name]) {
+    let idx = d["indexes"][coll_name][field]
+    if record.has(field) {
+      let val = str(record[field])
+      if not idx.has(val) { idx[val] = [] }
+      if not (id in idx[val]) { idx[val].push(id) }
+    }
+  }
+}
+
+fn insert(d, coll_name, record) {
+  let coll = _get_coll(d, coll_name)
+  let id = str(coll["next_id"])
+  let entry = {"op": "insert", "coll": coll_name, "id": id, "data": _copy(record)}
+  _write_log(d, entry)
+  _apply(d, entry)
+  # A transaction's indexes alias the real db's (not copied - see
+  # transaction() below), so reindexing here would leak into the real
+  # index before commit. Skip it for a tx handle; commit reindexes
+  # instead, once the buffered entries are known to have all succeeded.
+  if not d.has("_buffer") { _reindex_one(d, coll_name, id, coll["records"][id]) }
+  return id
+}
+
+fn update(d, coll_name, id, patch) {
+  let coll = _get_coll(d, coll_name)
+  if not coll["records"].has(id) { return false }
+  let entry = {"op": "update", "coll": coll_name, "id": id, "data": _copy(patch)}
+  _write_log(d, entry)
+  _apply(d, entry)
+  if not d.has("_buffer") { _reindex_one(d, coll_name, id, coll["records"][id]) }
+  return true
+}
+
+fn delete_(d, coll_name, id) {
+  let coll = _get_coll(d, coll_name)
+  let existed = coll["records"].has(id)
+  _write_log(d, {"op": "delete", "coll": coll_name, "id": id, "data": {}})
+  _apply(d, {"op": "delete", "coll": coll_name, "id": id})
+  return existed
+}
+
+fn get(d, coll_name, id) {
+  let coll = _get_coll(d, coll_name)
+  return coll["records"].has(id) ? _copy(coll["records"][id]) : nil
+}
+
+fn all(d, coll_name) {
+  let coll = _get_coll(d, coll_name)
+  let out = []
+  for id in keys(coll["records"]) { out.push(_copy(coll["records"][id])) }
+  return out
+}
+
+fn where(d, coll_name, predicate) {
+  let out = []
+  for rec in all(d, coll_name) { if predicate(rec) { out.push(rec) } }
+  return out
+}
+
+fn create_index(d, coll_name, field) {
+  if not d["indexes"].has(coll_name) { d["indexes"][coll_name] = {} }
+  let idx = {}
+  let coll = _get_coll(d, coll_name)
+  for id in keys(coll["records"]) {
+    let rec = coll["records"][id]
+    if rec.has(field) {
+      let val = str(rec[field])
+      if not idx.has(val) { idx[val] = [] }
+      idx[val].push(id)
+    }
+  }
+  d["indexes"][coll_name][field] = idx
+}
+
+fn find_by(d, coll_name, field, value) {
+  let coll = _get_coll(d, coll_name)
+  if d["indexes"].has(coll_name) and d["indexes"][coll_name].has(field) {
+    let ids = d["indexes"][coll_name][field]
+    let key = str(value)
+    let out = []
+    if ids.has(key) { for id in ids[key] { out.push(_copy(coll["records"][id])) } }
+    return out
+  }
+  return where(d, coll_name, fn(r) { return r.has(field) and r[field] == value })
+}
+
+# Runs `body(tx)` against a working copy of every collection. Every op
+# body performs is buffered, not written - if body throws, the throw
+# propagates and the real log/state are untouched (nothing partial ever
+# lands). Only once body returns normally are the buffered entries
+# appended to the real log and applied to the real in-memory state.
+fn transaction(d, body) {
+  let buffered = []
+  let tx = {"path": d["path"], "colls": {}, "indexes": d["indexes"], "_buffer": buffered}
+  for name in keys(d["colls"]) {
+    tx["colls"][name] = {"records": _copy(d["colls"][name]["records"]), "next_id": d["colls"][name]["next_id"]}
+  }
+  body(tx)
+  for entry in buffered {
+    append_file(d["path"], json.stringify(entry) + "\n")
+    _apply(d, entry)
+    if entry["op"] == "insert" or entry["op"] == "update" {
+      _reindex_one(d, entry["coll"], entry["id"], d["colls"][entry["coll"]]["records"][entry["id"]])
+    }
+  }
+  return nil
+}

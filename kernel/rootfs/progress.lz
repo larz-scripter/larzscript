@@ -1,0 +1,46 @@
+# progress - progress bars and a spinner for long-running CLI work.
+# Renders plain lines (no cursor/erase control codes), so output stays
+# readable piped to a file or another program - "pipe-safe" by
+# construction rather than by detecting a terminal.
+#
+#   import "progress" as progress
+#   let p = progress.bar(100)
+#   for i in range(101) { progress.update(p, i); }
+#   let sp = progress.spinner()
+#   print(progress.spin_frame(sp))   # advances one frame each call
+
+fn bar(total, width=30, label="") {
+  return {"total": total, "width": width, "label": label, "last": nil}
+}
+
+# Renders "[####------] 40% (40/100)" and prints it only when the
+# rendered percentage actually changed, so a tight loop doesn't flood
+# output with identical lines.
+fn render(p, current) {
+  let total = p["total"] <= 0 ? 1 : p["total"]
+  let frac = current / total
+  if frac > 1 { frac = 1 }
+  if frac < 0 { frac = 0 }
+  let filled = int(frac * p["width"])
+  let pct = int(frac * 100)
+  let prefix = len(p["label"]) > 0 ? p["label"] + " " : ""
+  return prefix + "[" + ("#" * filled) + ("-" * (p["width"] - filled)) + "] " +
+         str(pct) + "% (" + str(current) + "/" + str(p["total"]) + ")"
+}
+
+fn update(p, current) {
+  let total = p["total"] <= 0 ? 1 : p["total"]
+  let pct = int((current / total) * 100)
+  if pct == p["last"] { return nil }
+  p["last"] = pct
+  print(render(p, current))
+  return nil
+}
+
+let SPIN_FRAMES = ["|", "/", "-", "\\"]
+fn spinner() { return {"i": 0} }
+fn spin_frame(sp) {
+  let f = SPIN_FRAMES[sp["i"] % len(SPIN_FRAMES)]
+  sp["i"] = sp["i"] + 1
+  return f
+}

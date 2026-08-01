@@ -1,0 +1,144 @@
+# ical - RFC 5545 iCalendar: build a VCALENDAR of VEVENTs (each with an
+# optional VALARM), with correct TEXT escaping (`,` `;` `\` newlines)
+# and line folding (no line exceeds 75 octets - RFC 5545 3.1 - long
+# lines are folded onto a continuation line starting with a single
+# space), for both timed and all-day events, plus a raw RRULE string.
+# Round-trips via parse().
+#
+#   import "ical" as ical
+#   let cal = ical.calendar([
+#     ical.event("Standup", "20260801T090000Z", "20260801T093000Z", {
+#       "description": "Daily sync", "location": "Room 4",
+#       "alarm": ical.alarm(-900)   # 15 min before, in seconds
+#     }),
+#     ical.event("Launch Day", "20260901", nil, {"all_day": true})
+#   ])
+#   print(cal)
+#   print(ical.parse(cal)[0]["summary"])   # "Standup"
+
+fn _escape(text) {
+  return text.replace("\\", "\\\\").replace(",", "\\,").replace(";", "\\;").replace("\n", "\\n")
+}
+fn _unescape(text) {
+  return text.replace("\\n", "\n").replace("\\;", ";").replace("\\,", ",").replace("\\\\", "\\")
+}
+
+# RFC 5545 line folding: a "line" (property + value) longer than 75
+# octets is split with a CRLF + single leading space before each
+# continuation chunk.
+fn _fold(line) {
+  if len(line) <= 75 { return line }
+  let out = line[0:75]
+  let i = 75
+  while i < len(line) {
+    let chunk_end = i + 74
+    if chunk_end > len(line) { chunk_end = len(line) }
+    out = out + "\r\n " + line[i:chunk_end]
+    i = chunk_end
+  }
+  return out
+}
+
+fn _unfold(text) {
+  return text.replace("\r\n ", "").replace("\n ", "")
+}
+
+fn alarm(trigger_seconds, description="Reminder") {
+  return {"trigger": trigger_seconds, "description": description}
+}
+
+# `start`/`end` are either "YYYYMMDDTHHMMSSZ" (timed, UTC) or
+# "YYYYMMDD" (all-day, when opts.all_day is true). `end` may be nil for
+# a point-in-time/all-day-single-day event.
+fn event(summary, start, end=nil, opts={}) {
+  return {
+    "summary": summary, "start": start, "end": end,
+    "all_day": opts.has("all_day") ? opts["all_day"] : false,
+    "description": opts.has("description") ? opts["description"] : nil,
+    "location": opts.has("location") ? opts["location"] : nil,
+    "rrule": opts.has("rrule") ? opts["rrule"] : nil,
+    "alarm": opts.has("alarm") ? opts["alarm"] : nil,
+    "uid": opts.has("uid") ? opts["uid"] : nil
+  }
+}
+
+fn _uid_of(ev, idx) { return ev["uid"] != nil ? ev["uid"] : "larzical-" + str(idx) + "@larzscript" }
+
+fn _event_lines(ev, idx) {
+  let lines = ["BEGIN:VEVENT", "UID:" + _uid_of(ev, idx)]
+  if ev["all_day"] {
+    lines.push("DTSTART;VALUE=DATE:" + ev["start"])
+    if ev["end"] != nil { lines.push("DTEND;VALUE=DATE:" + ev["end"]) }
+  } else {
+    lines.push("DTSTART:" + ev["start"])
+    if ev["end"] != nil { lines.push("DTEND:" + ev["end"]) }
+  }
+  lines.push("SUMMARY:" + _escape(ev["summary"]))
+  if ev["description"] != nil { lines.push("DESCRIPTION:" + _escape(ev["description"])) }
+  if ev["location"] != nil { lines.push("LOCATION:" + _escape(ev["location"])) }
+  if ev["rrule"] != nil { lines.push("RRULE:" + ev["rrule"]) }
+  if ev["alarm"] != nil {
+    lines.push("BEGIN:VALARM")
+    lines.push("ACTION:DISPLAY")
+    lines.push("DESCRIPTION:" + _escape(ev["alarm"]["description"]))
+    let secs = ev["alarm"]["trigger"]
+    let sign = secs < 0 ? "-" : ""
+    let mag = secs < 0 ? -secs : secs
+    lines.push("TRIGGER:" + sign + "PT" + str(mag) + "S")
+    lines.push("END:VALARM")
+  }
+  lines.push("END:VEVENT")
+  return lines
+}
+
+fn calendar(events) {
+  let lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Larzscript//larzical//EN"]
+  let i = 0
+  for ev in events {
+    for l in _event_lines(ev, i) { lines.push(l) }
+    i = i + 1
+  }
+  lines.push("END:VCALENDAR")
+  let folded = []
+  for l in lines { folded.push(_fold(l)) }
+  return join(folded, "\r\n")
+}
+
+fn parse(text) {
+  let unfolded = _unfold(text)
+  let events = []
+  let cur = nil
+  let in_alarm = false
+  for raw_line in unfolded.split("\r\n") {
+    let line = raw_line.strip()
+    if len(line) == 0 { continue }
+    if line == "BEGIN:VEVENT" { cur = {"description": nil, "location": nil, "rrule": nil, "alarm": nil, "all_day": false}; continue }
+    if line == "END:VEVENT" { events.push(cur); cur = nil; continue }
+    if line == "BEGIN:VALARM" { in_alarm = true; cur["alarm"] = {"trigger": 0, "description": "Reminder"}; continue }
+    if line == "END:VALARM" { in_alarm = false; continue }
+    if cur == nil { continue }
+    let colon = line.find(":")
+    if colon < 0 { continue }
+    let key_part = line[0:colon]
+    let value = line[colon+1:]
+    let key = key_part.find(";") >= 0 ? key_part[0:key_part.find(";")] : key_part
+    if in_alarm {
+      if key == "DESCRIPTION" { cur["alarm"]["description"] = _unescape(value) }
+      else if key == "TRIGGER" {
+        let sign = value[0:1] == "-" ? -1 : 1
+        let digits = ""
+        for c in value { if "0123456789".find(c) >= 0 { digits = digits + c } }
+        cur["alarm"]["trigger"] = sign * int(digits)
+      }
+      continue
+    }
+    if key == "UID" { cur["uid"] = value }
+    else if key == "DTSTART" { cur["start"] = value; if key_part.find("VALUE=DATE") >= 0 { cur["all_day"] = true } }
+    else if key == "DTEND" { cur["end"] = value }
+    else if key == "SUMMARY" { cur["summary"] = _unescape(value) }
+    else if key == "DESCRIPTION" { cur["description"] = _unescape(value) }
+    else if key == "LOCATION" { cur["location"] = _unescape(value) }
+    else if key == "RRULE" { cur["rrule"] = value }
+  }
+  return events
+}

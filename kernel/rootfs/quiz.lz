@@ -1,0 +1,76 @@
+# quiz - self-grading quizzes: multiple-choice by text or by index, and
+# a Leitner spaced-repetition deck (5 boxes, wrong answers drop back to
+# box 1, right answers advance - the classic flashcard algorithm). I/O
+# is injectable (ask_fn/print_fn) so a whole quiz session is testable
+# without a real terminal.
+#
+#   import "quiz" as quiz
+#   let q = quiz.mc("2 + 2?", ["3", "4", "5"], "4")
+#   print(quiz.grade(q, "4"))          # true
+#   print(quiz.grade(q, 1))            # true (1-based index also accepted)
+#
+#   let deck = quiz.leitner_new()
+#   quiz.leitner_add(deck, "capital of France", "Paris")
+#   let card = quiz.leitner_next(deck)
+#   quiz.leitner_answer(deck, card, "Paris")   # correct -> box 2
+
+fn mc(question, options, answer) {
+  return {"question": question, "options": options, "answer": answer}
+}
+
+fn grade(q, response) {
+  if type(response) == "number" {
+    let idx = int(response) - 1
+    if idx >= 0 and idx < len(q["options"]) { return q["options"][idx] == q["answer"] }
+    return false
+  }
+  return response == q["answer"]
+}
+
+fn run_quiz(questions, ask_fn) {
+  let score = 0
+  for q in questions {
+    let response = ask_fn(q)
+    if grade(q, response) { score = score + 1 }
+  }
+  return {"score": score, "total": len(questions)}
+}
+
+# ---- Leitner spaced repetition (5 boxes; box 1 = due every session,
+# higher boxes = due less often) ----
+fn leitner_new() { return {"cards": [], "next_id": 1} }
+
+fn leitner_add(deck, front, back) {
+  let id = deck["next_id"]
+  deck["next_id"] = deck["next_id"] + 1
+  deck["cards"].push({"id": id, "front": front, "back": back, "box": 1})
+  return id
+}
+
+# Simple due rule: box N cards come up every N reviews - approximated
+# here as "box 1 is always due; box N (N>1) is due every N calls to
+# leitner_next()", tracked via a per-deck review counter.
+fn leitner_next(deck) {
+  if not deck.has("_reviews") { deck["_reviews"] = 0 }
+  deck["_reviews"] = deck["_reviews"] + 1
+  for card in deck["cards"] {
+    if card["box"] == 1 or deck["_reviews"] % card["box"] == 0 { return card }
+  }
+  return nil
+}
+
+fn leitner_answer(deck, card, response) {
+  let correct = response == card["back"]
+  for c in deck["cards"] {
+    if c["id"] == card["id"] {
+      c["box"] = correct ? (c["box"] < 5 ? c["box"] + 1 : 5) : 1
+    }
+  }
+  return correct
+}
+
+fn leitner_stats(deck) {
+  let by_box = {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0}
+  for c in deck["cards"] { by_box[str(c["box"])] = by_box[str(c["box"])] + 1 }
+  return by_box
+}

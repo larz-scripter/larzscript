@@ -1,0 +1,50 @@
+# command - the trick behind every undo button: wrap each action as a
+# {do, undo} pair of functions, run it through a history that supports
+# do/undo/redo with a bounded size.
+#
+#   import "command" as command
+#   let h = command.new(50)     # keep at most 50 commands
+#   let doc = {"text": ""}
+#   fn append(doc, s) {
+#     let before = doc["text"]
+#     command.run(h, fn() { doc["text"] = before + s }, fn() { doc["text"] = before })
+#   }
+#   append(doc, "Hello")
+#   append(doc, " World")
+#   command.undo(h)
+#   print(doc["text"])            # "Hello"
+#   command.redo(h)
+#   print(doc["text"])            # "Hello World"
+
+fn new(limit=100) { return {"done": [], "undone": [], "limit": limit} }
+
+# Executes `do_fn` immediately and records the pair for later undo/redo.
+# Running a new command clears the redo stack, matching every real
+# undo/redo UI (you can't redo past a new edit).
+fn run(h, do_fn, undo_fn) {
+  do_fn()
+  h["done"].push({"do": do_fn, "undo": undo_fn})
+  if len(h["done"]) > h["limit"] { h["done"] = h["done"][1:] }
+  h["undone"] = []
+}
+
+fn can_undo(h) { return len(h["done"]) > 0 }
+fn can_redo(h) { return len(h["undone"]) > 0 }
+
+fn undo(h) {
+  if not can_undo(h) { return false }
+  let cmd = h["done"][len(h["done"]) - 1]
+  h["done"] = h["done"][0:len(h["done"]) - 1]
+  cmd["undo"]()
+  h["undone"].push(cmd)
+  return true
+}
+
+fn redo(h) {
+  if not can_redo(h) { return false }
+  let cmd = h["undone"][len(h["undone"]) - 1]
+  h["undone"] = h["undone"][0:len(h["undone"]) - 1]
+  cmd["do"]()
+  h["done"].push(cmd)
+  return true
+}

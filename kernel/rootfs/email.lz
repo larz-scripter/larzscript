@@ -1,0 +1,159 @@
+# email - build a valid MIME message from one object (text and/or HTML
+# body plus attachments -> multipart/alternative or multipart/mixed as
+# needed), parse() a raw message back into that same shape, and send()
+# over real SMTP with an injectable transport for tests.
+#
+#   import "email" as email
+#   let msg = email.build({
+#     "from": "a@example.com", "to": ["b@example.com"], "subject": "Hi",
+#     "text": "plain body", "html": "<p>html body</p>",
+#     "attachments": [{"filename": "note.txt", "content": "hello", "mime": "text/plain"}]
+#   })
+#   print(msg)                          # raw MIME source
+#   print(email.parse(msg)["subject"])   # "Hi"
+#   email.send(msg, {"host": "smtp.example.com"}, fn(m, cfg) { return "sent" })
+
+import "base64" as b64
+
+fn _boundary(seed) { return "==larzmail-" + str(seed) + "==" }
+
+fn _header_block(headers) {
+  let lines = []
+  for k in keys(headers) { lines.push(k + ": " + headers[k]) }
+  return join(lines, "\r\n")
+}
+
+# Builds the message body(ies): plain text only, HTML only, or a
+# multipart/alternative of both, then wraps in multipart/mixed if there
+# are attachments.
+fn build(spec) {
+  let has_text = spec.has("text")
+  let has_html = spec.has("html")
+  let attachments = spec.has("attachments") ? spec["attachments"] : []
+  let alt_boundary = _boundary(1)
+  let mixed_boundary = _boundary(2)
+
+  let alt_parts = []
+  if has_text {
+    alt_parts.push("--" + alt_boundary + "\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + spec["text"])
+  }
+  if has_html {
+    alt_parts.push("--" + alt_boundary + "\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + spec["html"])
+  }
+  let body_content = ""
+  let body_content_type = ""
+  if has_text and has_html {
+    body_content = join(alt_parts, "\r\n") + "\r\n--" + alt_boundary + "--"
+    body_content_type = "multipart/alternative; boundary=\"" + alt_boundary + "\""
+  } else if has_html {
+    body_content = spec["html"]
+    body_content_type = "text/html; charset=utf-8"
+  } else {
+    body_content = spec.has("text") ? spec["text"] : ""
+    body_content_type = "text/plain; charset=utf-8"
+  }
+
+  let to_line = type(spec["to"]) == "list" ? join(spec["to"], ", ") : spec["to"]
+  let headers = {"From": spec["from"], "To": to_line, "Subject": spec["subject"], "MIME-Version": "1.0"}
+
+  if len(attachments) == 0 {
+    headers["Content-Type"] = body_content_type
+    return _header_block(headers) + "\r\n\r\n" + body_content
+  }
+
+  headers["Content-Type"] = "multipart/mixed; boundary=\"" + mixed_boundary + "\""
+  let parts = ["--" + mixed_boundary + "\r\nContent-Type: " + body_content_type + "\r\n\r\n" + body_content]
+  for att in attachments {
+    let encoded = b64.encode(att["content"])
+    parts.push("--" + mixed_boundary + "\r\nContent-Type: " + att["mime"] +
+      "\r\nContent-Disposition: attachment; filename=\"" + att["filename"] + "\"" +
+      "\r\nContent-Transfer-Encoding: base64\r\n\r\n" + encoded)
+  }
+  return _header_block(headers) + "\r\n\r\n" + join(parts, "\r\n") + "\r\n--" + mixed_boundary + "--"
+}
+
+fn _parse_headers(text) {
+  let headers = {}
+  for line in text.split("\r\n") {
+    let colon = line.find(":")
+    if colon > 0 { headers[line[0:colon]] = line[colon+1:].strip() }
+  }
+  return headers
+}
+
+fn _boundary_of(content_type) {
+  let marker = "boundary=\""
+  let i = content_type.find(marker)
+  if i < 0 { return nil }
+  let start = i + len(marker)
+  let end = content_type.find("\"", start)
+  return content_type[start:end]
+}
+
+fn _split_parts(body, boundary) {
+  let sep = "--" + boundary
+  let parts = []
+  for chunk in body.split(sep) {
+    let c = chunk.strip()
+    if len(c) == 0 or c == "--" { continue }
+    parts.push(c)
+  }
+  return parts
+}
+
+fn _parse_part(raw) {
+  let split_at = raw.find("\r\n\r\n")
+  let head = split_at < 0 ? raw : raw[0:split_at]
+  let content = split_at < 0 ? "" : raw[split_at+4:]
+  return {"headers": _parse_headers(head), "content": content}
+}
+
+# Round-trips build()'s output back into {"from","to","subject","text",
+# "html","attachments"}.
+fn parse(raw) {
+  let split_at = raw.find("\r\n\r\n")
+  let head = raw[0:split_at]
+  let body = raw[split_at+4:]
+  let headers = _parse_headers(head)
+  let result = {"from": headers.has("From") ? headers["From"] : nil, "to": headers.has("To") ? headers["To"] : nil,
+    "subject": headers.has("Subject") ? headers["Subject"] : nil, "text": nil, "html": nil, "attachments": []}
+  let ct = headers.has("Content-Type") ? headers["Content-Type"] : "text/plain"
+  if ct.find("multipart/mixed") == 0 {
+    let boundary = _boundary_of(ct)
+    let parts = _split_parts(body, boundary)
+    let body_part = _parse_part(parts[0])
+    _fill_body(result, body_part)
+    let i = 1
+    while i < len(parts) {
+      let att = _parse_part(parts[i])
+      let disp = att["headers"].has("Content-Disposition") ? att["headers"]["Content-Disposition"] : ""
+      let fn_marker = "filename=\""
+      let fi = disp.find(fn_marker)
+      let filename = fi >= 0 ? disp[fi + len(fn_marker):disp.find("\"", fi + len(fn_marker))] : "attachment"
+      let content = b64.decode(att["content"].strip())
+      result["attachments"].push({"filename": filename, "content": content, "mime": att["headers"].has("Content-Type") ? att["headers"]["Content-Type"] : "application/octet-stream"})
+      i = i + 1
+    }
+  } else {
+    _fill_body(result, {"headers": headers, "content": body})
+  }
+  return result
+}
+
+fn _fill_body(result, part) {
+  let ct = part["headers"].has("Content-Type") ? part["headers"]["Content-Type"] : "text/plain"
+  if ct.find("multipart/alternative") == 0 {
+    let boundary = _boundary_of(ct)
+    for raw_part in _split_parts(part["content"], boundary) {
+      let p = _parse_part(raw_part)
+      let pct = p["headers"].has("Content-Type") ? p["headers"]["Content-Type"] : ""
+      if pct.find("text/html") == 0 { result["html"] = p["content"] }
+      else if pct.find("text/plain") == 0 { result["text"] = p["content"] }
+    }
+  } else if ct.find("text/html") == 0 { result["html"] = part["content"] }
+  else { result["text"] = part["content"] }
+}
+
+# `transport(message, config)` actually delivers the message (e.g. a
+# real SMTP client) - injected so tests never touch a network.
+fn send(message, config, transport) { return transport(message, config) }

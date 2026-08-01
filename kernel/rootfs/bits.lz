@@ -1,0 +1,62 @@
+# bits - bitwise operations made visible. Wraps the language's own
+# integer math (Larzscript has no native &/|/^/~/<</>> operators) with
+# real bit-twiddling implementations plus an explain() that lines up the
+# operands and result in binary, so you can actually see what happened.
+#
+#   import "bits" as bits
+#   print(bits.b_and(12, 10))    # 8
+#   print(bits.b_or(12, 10))     # 14
+#   print(bits.b_xor(12, 10))    # 6
+#   print(bits.shift_left(1, 4)) # 16
+#   print(bits.to_bits(-5, 8))   # "11111011" (two's complement, 8-bit)
+#   print(bits.explain_and(12, 10))
+
+fn _bit(n, i) { return (n // _pow2(i)) % 2 }
+# `for...from...to` is inclusive-both-ends and auto-reverses direction - it
+# suits "visit every value from A to B" but not "repeat N times, N might be
+# 0" (there's no clean zero-iteration form of that). range(n) handles the
+# zero case correctly, so this stays a for-in-range loop, not for-from-to.
+fn _pow2(n) {
+  let r = 1
+  for _ in range(n) { r = r * 2 }
+  return r
+}
+
+fn b_and(a, b) {
+  let result = 0
+  for i from 0 to 31 {
+    if _bit(a, i) is 1 and _bit(b, i) is 1 { result = result + _pow2(i) }
+  }
+  return result
+}
+fn b_or(a, b) {
+  let result = 0
+  for i from 0 to 31 {
+    if _bit(a, i) is 1 or _bit(b, i) is 1 { result = result + _pow2(i) }
+  }
+  return result
+}
+fn b_xor(a, b) {
+  let result = 0
+  for i from 0 to 31 {
+    if _bit(a, i) is not _bit(b, i) { result = result + _pow2(i) }
+  }
+  return result
+}
+fn shift_left(a, n) { return a * _pow2(n) }
+fn shift_right(a, n) { return a // _pow2(n) }
+
+# Two's-complement binary string, `width` bits wide.
+fn to_bits(n, width) {
+  let v = n
+  if v < 0 { v = _pow2(width) + v }
+  let out = ""
+  for i from width - 1 to 0 { out = out + str(_bit(v, i)) }
+  return out
+}
+
+fn explain_and(a, b) {
+  return "  " + to_bits(a, 8) + "  (" + str(a) + ")\n" +
+         "& " + to_bits(b, 8) + "  (" + str(b) + ")\n" +
+         "  " + to_bits(b_and(a, b), 8) + "  (" + str(b_and(a, b)) + ")"
+}

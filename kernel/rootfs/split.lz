@@ -1,0 +1,91 @@
+# split - divide a bill among people so it reconciles exactly to the
+# cent, using the largest-remainder method: give everyone the floor of
+# their fair share, then hand out the leftover pennies one at a time to
+# whoever's fair share had the biggest fractional remainder. Naive
+# per-person rounding (round each share independently) can lose or gain
+# a cent versus the real total - this never does.
+#
+# NOTE: `split` is a reserved language keyword (the `split AMOUNT from
+# WALLET { legs }` revenue-split statement) - `import "split" as split`
+# will fail to parse (it lexes as a keyword token, not an identifier, so
+# it can never be referenced afterward). Use any other alias:
+#
+#   import "split" as billsplit
+#   print(billsplit.evenly(1000, 3))     # [334, 333, 333] - sums to 1000 exactly
+#   print(billsplit.proportional(1000, [1, 1, 2]))  # weighted by share, exact
+#   let bill = billsplit.itemized([{"amount": 1200, "sharers": ["a","b"]}, {"amount": 600, "sharers": ["a","b","c"]}], 825, 1500)
+#   # per-item sharing + proportional tax(8.25%)/tip(15%) allocation
+
+fn _largest_remainder(total, weights) {
+  let wsum = sum(weights)
+  if wsum == 0 { return [0 for _ in weights] }
+  let shares = []
+  let remainders = []
+  let allocated = 0
+  for w in weights {
+    let exact = total * w
+    let base = exact // wsum
+    shares.push(base)
+    remainders.push(exact - base * wsum)
+    allocated = allocated + base
+  }
+  let leftover = total - allocated
+  # order[] = indices sorted by remainder, largest first - no key-function
+  # sort builtin exists, so this is a plain insertion sort over indices.
+  let order = list(range(len(weights)))
+  let oi = 1
+  while oi < len(order) {
+    let cur = order[oi]
+    let oj = oi - 1
+    while oj >= 0 and remainders[order[oj]] < remainders[cur] {
+      order[oj + 1] = order[oj]
+      oj = oj - 1
+    }
+    order[oj + 1] = cur
+    oi = oi + 1
+  }
+  let k = 0
+  while k < leftover {
+    shares[order[k % len(order)]] = shares[order[k % len(order)]] + 1
+    k = k + 1
+  }
+  return shares
+}
+
+fn evenly(total, n) {
+  let weights = [1 for _ in range(n)]
+  return _largest_remainder(total, weights)
+}
+
+fn proportional(total, weights) {
+  return _largest_remainder(total, weights)
+}
+
+# items: [{"amount": cents, "sharers": [names]}]. tax_bp/tip_bp are basis
+# points applied proportionally to each person's share of the subtotal.
+fn itemized(items, tax_bp, tip_bp) {
+  let subtotal = 0
+  let owed = {}
+  for item in items {
+    subtotal = subtotal + item["amount"]
+    let per_person = _largest_remainder(item["amount"], [1 for _ in item["sharers"]])
+    let i = 0
+    for person in item["sharers"] {
+      owed[person] = owed.get(person, 0) + per_person[i]
+      i = i + 1
+    }
+  }
+  let people = sorted(keys(owed))
+  let weights = [owed[p] for p in people]
+  let tax_total = (subtotal * tax_bp) // 10000
+  let tip_total = (subtotal * tip_bp) // 10000
+  let tax_shares = _largest_remainder(tax_total, weights)
+  let tip_shares = _largest_remainder(tip_total, weights)
+  let result = []
+  let i = 0
+  for p in people {
+    result.push({"person": p, "subtotal": owed[p], "tax": tax_shares[i], "tip": tip_shares[i], "total": owed[p] + tax_shares[i] + tip_shares[i]})
+    i = i + 1
+  }
+  return {"subtotal": subtotal, "tax": tax_total, "tip": tip_total, "total": subtotal + tax_total + tip_total, "people": result}
+}

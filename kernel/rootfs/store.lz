@@ -1,0 +1,83 @@
+# store - a tiny document store: insert/get/find/update/delete with
+# auto-assigned ids, JSON persistence to a file (or none, for a pure
+# in-memory store). Every read returns a deep copy, never the stored
+# record itself, so callers can't accidentally mutate the store by
+# editing a value they got back from it.
+#
+#   import "store" as store
+#   let s = store.open("users.json")     # store.open(nil) for in-memory only
+#   let id = store.insert(s, {"name": "Ada"})
+#   print(store.get(s, id))
+#   store.update(s, id, {"name": "Ada Lovelace"})
+#   print(store.find(s, fn(r) { return r["name"].find("Ada") >= 0 }))
+#   store.delete_(s, id)
+#   store.save(s)
+
+import "json" as json
+
+fn _copy(v) {
+  let t = type(v)
+  if t == "dict" { let out = {}; for k in keys(v) { out[k] = _copy(v[k]) } return out }
+  if t == "list" { let out = []; for item in v { out.push(_copy(item)) } return out }
+  return v
+}
+
+fn open(path=nil) {
+  let records = {}
+  let next_id = 1
+  if path != nil and file_exists(path) {
+    let loaded = json.parse(read_file(path))
+    records = loaded["records"]
+    next_id = loaded["next_id"]
+  }
+  return {"path": path, "records": records, "next_id": next_id}
+}
+
+fn save(s) {
+  if s["path"] == nil { return nil }
+  write_file(s["path"], json.stringify({"records": s["records"], "next_id": s["next_id"]}))
+  return nil
+}
+
+fn insert(s, record) {
+  let id = str(s["next_id"])
+  s["next_id"] = s["next_id"] + 1
+  s["records"][id] = _copy(record)
+  save(s)
+  return id
+}
+
+fn get(s, id) {
+  return s["records"].has(id) ? _copy(s["records"][id]) : nil
+}
+
+fn all(s) {
+  let out = []
+  for id in keys(s["records"]) { out.push(_copy(s["records"][id])) }
+  return out
+}
+
+fn find(s, predicate) {
+  let out = []
+  for id in keys(s["records"]) {
+    if predicate(s["records"][id]) { out.push(_copy(s["records"][id])) }
+  }
+  return out
+}
+
+fn update(s, id, patch) {
+  if not s["records"].has(id) { return false }
+  let rec = s["records"][id]
+  for k in keys(patch) { rec[k] = _copy(patch[k]) }
+  save(s)
+  return true
+}
+
+fn delete_(s, id) {
+  let existed = s["records"].has(id)
+  s["records"].remove(id)
+  save(s)
+  return existed
+}
+
+fn count(s) { return len(keys(s["records"])) }

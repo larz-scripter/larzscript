@@ -1,0 +1,65 @@
+# struct - a few essential data structures not big enough to deserve
+# their own package: a Bloom filter, a disjoint-set (union-find), and a
+# ring buffer. (A trie is its own package - `trie` - reused here, not
+# duplicated.)
+#
+#   import "struct" as ds
+#
+#   let bf = ds.bloom_new(1000, 3)          # ~1000 items, 3 hash functions
+#   ds.bloom_add(bf, "hello")
+#   print(ds.bloom_might_contain(bf, "hello"))   # true (never a false negative)
+#   print(ds.bloom_might_contain(bf, "nope"))    # almost certainly false
+#
+#   let ds_set = ds.dsu_new(5)              # 5 elements, 0..4
+#   ds.dsu_union(ds_set, 0, 1)
+#   print(ds.dsu_connected(ds_set, 0, 1))   # true
+#   print(ds.dsu_connected(ds_set, 0, 2))   # false
+#
+#   let rb = ds.ring_new(3)
+#   ds.ring_push(rb, 1); ds.ring_push(rb, 2); ds.ring_push(rb, 3); ds.ring_push(rb, 4)
+#   print(ds.ring_to_list(rb))              # [2, 3, 4] - oldest (1) evicted
+
+# ---- Bloom filter ----
+fn _hash(s, seed) {
+  let h = seed
+  for c in s { h = (h * 31 + ord(c)) % 1000000007 }
+  return h
+}
+fn bloom_new(size, k) { return {"bits": [false for _ in range(size)], "size": size, "k": k} }
+fn bloom_add(bf, s) {
+  let i = 0
+  while i < bf["k"] { bf["bits"][_hash(s, i) % bf["size"]] = true; i = i + 1 }
+}
+fn bloom_might_contain(bf, s) {
+  let i = 0
+  while i < bf["k"] { if not bf["bits"][_hash(s, i) % bf["size"]] { return false } i = i + 1 }
+  return true
+}
+
+# ---- Disjoint-set / union-find, with path compression + union by rank ----
+fn dsu_new(n) { return {"parent": list(range(n)), "rank": [0 for _ in range(n)]} }
+fn dsu_find(dsu, x) {
+  while dsu["parent"][x] != x {
+    dsu["parent"][x] = dsu["parent"][dsu["parent"][x]]
+    x = dsu["parent"][x]
+  }
+  return x
+}
+fn dsu_union(dsu, a, b) {
+  let ra = dsu_find(dsu, a)
+  let rb = dsu_find(dsu, b)
+  if ra == rb { return }
+  if dsu["rank"][ra] < dsu["rank"][rb] { let t = ra; ra = rb; rb = t }
+  dsu["parent"][rb] = ra
+  if dsu["rank"][ra] == dsu["rank"][rb] { dsu["rank"][ra] = dsu["rank"][ra] + 1 }
+}
+fn dsu_connected(dsu, a, b) { return dsu_find(dsu, a) == dsu_find(dsu, b) }
+
+# ---- Ring buffer (fixed capacity, oldest evicted on overflow) ----
+fn ring_new(capacity) { return {"items": [], "cap": capacity} }
+fn ring_push(rb, v) {
+  rb["items"].push(v)
+  if len(rb["items"]) > rb["cap"] { rb["items"] = rb["items"][1:] }
+}
+fn ring_to_list(rb) { return rb["items"] }
+fn ring_is_full(rb) { return len(rb["items"]) == rb["cap"] }

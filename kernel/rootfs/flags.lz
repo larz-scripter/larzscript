@@ -1,0 +1,44 @@
+# flags - feature flags: allow/deny lists, stable percentage rollouts,
+# and weighted A/B variants, all deterministically bucketed by user id
+# (same user, same flag -> same bucket, every time, no storage needed).
+#
+#   import "flags" as flags
+#   let f = flags.rule("new-checkout", 25)          # 25% rollout
+#   print(flags.enabled(f, "user-42"))
+#   let v = flags.variant("button-color", {"blue": 50, "green": 50}, "user-42")
+
+fn _hash(s) {
+  let h = 0
+  for c in s { h = (h * 31 + ord(c)) % 1000000007 }
+  return h
+}
+
+# A stable bucket in [0, 100) for (flag_name, subject) - same inputs
+# always give the same bucket.
+fn bucket(flag_name, subject) { return _hash(flag_name + ":" + subject) % 100 }
+
+fn rule(name, percent, allow=[], deny=[]) {
+  return {"name": name, "percent": percent, "allow": allow, "deny": deny}
+}
+
+fn enabled(f, subject) {
+  if subject in f["deny"] { return false }
+  if subject in f["allow"] { return true }
+  return bucket(f["name"], subject) < f["percent"]
+}
+
+# variants: {"name": weight, ...}, weights need not sum to 100. Returns
+# the variant name the subject falls into - deterministic per subject.
+fn variant(flag_name, variants, subject) {
+  let names = sorted(keys(variants))
+  let total = 0
+  for name in names { total = total + variants[name] }
+  if total <= 0 { throw {"type": "LarzValueError", "message": "variant weights must sum > 0"} }
+  let point = _hash(flag_name + ":" + subject) % total
+  let acc = 0
+  for name in names {
+    acc = acc + variants[name]
+    if point < acc { return name }
+  }
+  return names[len(names) - 1]
+}

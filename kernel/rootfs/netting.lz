@@ -1,0 +1,53 @@
+# netting - settle a tangle of mutual debts with the fewest payments.
+# Nets out mutual debts first (if A owes B and B owes A, only the
+# difference is a real debt), then greedily matches the biggest debtor
+# to the biggest creditor repeatedly - a classic, well-known approach
+# that needs at most (n-1) payments for n people with nonzero net
+# balances, though not always the true minimum (that's NP-hard in
+# general - this is the practical, honestly-documented greedy version).
+# Amounts in integer cents.
+#
+#   import "netting" as netting
+#   let debts = [
+#     {"from": "alice", "to": "bob", "amount": 1000},
+#     {"from": "bob", "to": "carol", "amount": 1000},
+#     {"from": "carol", "to": "alice", "amount": 400}
+#   ]
+#   print(netting.settle(debts))
+#   # alice net: -1000+400=-600 (owed), bob net: 1000-1000=0, carol net: 1000-400=600 (owes)
+#   # -> [{"from":"alice","to":"carol","amount":600}]
+
+fn _net_balances(debts) {
+  let bal = {}
+  for d in debts {
+    bal[d["from"]] = bal.get(d["from"], 0) - d["amount"]
+    bal[d["to"]] = bal.get(d["to"], 0) + d["amount"]
+  }
+  return bal
+}
+
+# Returns the minimal set of settling payments (a list of {from, to, amount}).
+fn settle(debts) {
+  let bal = _net_balances(debts)
+  let people = keys(bal)
+  let payments = []
+  let n = len(people)
+  let i = 0
+  while i < n {
+    # find the biggest debtor (most negative) and biggest creditor (most positive)
+    let debtor = nil
+    let creditor = nil
+    for p in people {
+      if bal[p] < 0 and (debtor == nil or bal[p] < bal[debtor]) { debtor = p }
+      if bal[p] > 0 and (creditor == nil or bal[p] > bal[creditor]) { creditor = p }
+    }
+    if debtor == nil or creditor == nil { break }
+    let amount = -bal[debtor] < bal[creditor] ? -bal[debtor] : bal[creditor]
+    if amount <= 0 { break }
+    payments.push({"from": debtor, "to": creditor, "amount": amount})
+    bal[debtor] = bal[debtor] + amount
+    bal[creditor] = bal[creditor] - amount
+    i = i + 1
+  }
+  return payments
+}

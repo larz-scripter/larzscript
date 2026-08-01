@@ -1,0 +1,64 @@
+# type - typing-test scoring: net/gross WPM, accuracy, a per-character
+# diff (ok/wrong/missing/extra) against the target text, and drill
+# generation from a word pool. Deterministic when the drill generator is
+# seeded (via the `random` package underneath).
+#
+#   import "type" as typing
+#   let d = typing.diff("the qick fox", "the quick fox")
+#   print(d)     # per-char verdicts
+#   let score = typing.score("the quick fox", "the qick fox", 12.0)
+#   print(score["wpm_gross"], score["wpm_net"], score["accuracy"])
+
+import "random" as rng
+
+# Longest-common-subsequence-free, position-by-position diff: "ok" where
+# characters match, "wrong" where both have a character but they differ,
+# "missing" where the target has more characters than typed, "extra"
+# where typed has more than the target.
+fn diff(target, typed) {
+  let out = []
+  let n = len(target) > len(typed) ? len(target) : len(typed)
+  let i = 0
+  while i < n {
+    if i >= len(target) { out.push({"char": typed[i:i+1], "verdict": "extra"}) }
+    else if i >= len(typed) { out.push({"char": target[i:i+1], "verdict": "missing"}) }
+    else if target[i:i+1] == typed[i:i+1] { out.push({"char": typed[i:i+1], "verdict": "ok"}) }
+    else { out.push({"char": typed[i:i+1], "verdict": "wrong"}) }
+    i = i + 1
+  }
+  return out
+}
+
+fn accuracy(target, typed) {
+  let d = diff(target, typed)
+  if len(d) == 0 { return 1.0 }
+  let ok = 0
+  for entry in d { if entry["verdict"] == "ok" { ok = ok + 1 } }
+  return ok / len(d)
+}
+
+# Standard typing-test WPM: "words" = characters / 5. Gross counts every
+# typed character; net subtracts the wrong/extra ones (errors), floored
+# at 0.
+fn score(target, typed, seconds) {
+  let minutes = seconds / 60.0
+  let gross_words = len(typed) / 5.0
+  let d = diff(target, typed)
+  let errors = 0
+  for entry in d { if entry["verdict"] == "wrong" or entry["verdict"] == "extra" { errors = errors + 1 } }
+  let net_words = gross_words - errors
+  if net_words < 0 { net_words = 0 }
+  return {
+    "wpm_gross": minutes == 0 ? 0 : gross_words / minutes,
+    "wpm_net": minutes == 0 ? 0 : net_words / minutes,
+    "accuracy": accuracy(target, typed),
+    "errors": errors
+  }
+}
+
+fn drill(words, word_count=10) {
+  let out = []
+  let i = 0
+  while i < word_count { out.push(rng.choice(words)); i = i + 1 }
+  return join(out, " ")
+}

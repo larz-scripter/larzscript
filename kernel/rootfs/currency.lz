@@ -1,0 +1,93 @@
+# currency - locale-flavored money formatting/parsing on integer minor
+# units (cents). A curated subset of currencies/locales, not every ISO
+# 4217 code - each entry just needs {symbol, decimals, grouping}.
+#
+#   import "currency" as currency
+#   print(currency.format(123456789, "USD"))   # "$1,234,567.89"
+#   print(currency.format(123456789, "INR"))   # "₹12,34,567.89" (lakh/crore)
+#   print(currency.format(500, "JPY"))          # "¥500" (0 decimals)
+#   print(currency.format(100000000, "BTC"))    # "₿1.00000000" (8 decimals)
+#   print(currency.parse("$1,234,567.89", "USD"))  # 123456789
+
+let INFO = {
+  "USD": {"symbol": "$", "decimals": 2, "grouping": "western"},
+  "EUR": {"symbol": "€", "decimals": 2, "grouping": "western"},
+  "GBP": {"symbol": "£", "decimals": 2, "grouping": "western"},
+  "JPY": {"symbol": "¥", "decimals": 0, "grouping": "western"},
+  "INR": {"symbol": "₹", "decimals": 2, "grouping": "indian"},
+  "BTC": {"symbol": "₿", "decimals": 8, "grouping": "western"}
+}
+
+# Group digit string `s` (no sign, no separators) with commas.
+fn _group_western(s) {
+  let out = ""
+  let n = len(s)
+  let i = 0
+  while i < n {
+    if i > 0 and (n - i) % 3 == 0 { out = out + "," }
+    out = out + s[i:i+1]
+    i = i + 1
+  }
+  return out
+}
+
+# Indian numbering: last 3 digits, then groups of 2 (1,23,45,678).
+fn _group_indian(s) {
+  let n = len(s)
+  if n <= 3 { return s }
+  let head = s[0:n-3]
+  let tail = s[n-3:n]
+  let out = ""
+  let hn = len(head)
+  let i = 0
+  while i < hn {
+    if i > 0 and (hn - i) % 2 == 0 { out = out + "," }
+    out = out + head[i:i+1]
+    i = i + 1
+  }
+  return out + "," + tail
+}
+
+fn format(minor_units, code) {
+  let info = INFO.get(code, {"symbol": code + " ", "decimals": 2, "grouping": "western"})
+  let neg = minor_units < 0
+  let v = neg ? -minor_units : minor_units
+  let d = info["decimals"]
+  let scale = 1
+  let k = 0
+  while k < d { scale = scale * 10; k = k + 1 }
+  let whole = v // scale
+  let frac = v % scale
+  let whole_s = str(whole)
+  let grouped = info["grouping"] == "indian" ? _group_indian(whole_s) : _group_western(whole_s)
+  let out = info["symbol"] + grouped
+  if d > 0 {
+    let frac_s = str(frac)
+    while len(frac_s) < d { frac_s = "0" + frac_s }
+    out = out + "." + frac_s
+  }
+  return neg ? "-" + out : out
+}
+
+# Parse a formatted string back into minor units. Strips symbol/commas.
+fn parse(text, code) {
+  let info = INFO.get(code, {"symbol": code + " ", "decimals": 2, "grouping": "western"})
+  let s = text.strip()
+  let neg = s[0:1] == "-"
+  if neg { s = s[1:] }
+  s = s.replace(info["symbol"], "").replace(",", "").strip()
+  let d = info["decimals"]
+  let parts = s.split(".")
+  let scale = 1
+  let k = 0
+  while k < d { scale = scale * 10; k = k + 1 }
+  let whole = int(parts[0])
+  let frac = 0
+  if d > 0 and len(parts) > 1 {
+    let frac_s = parts[1]
+    while len(frac_s) < d { frac_s = frac_s + "0" }
+    frac = int(frac_s[0:d])
+  }
+  let total = whole * scale + frac
+  return neg ? -total : total
+}

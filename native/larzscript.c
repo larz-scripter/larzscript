@@ -166,7 +166,12 @@ static long long money_round(double x){ return (long long)(x>=0 ? x+0.5 : x-0.5)
 
 static int is_num(Value v){ return v.t==V_NUM; }
 
-/* value equality (used by ==, dict keys, list contains) - by value, not identity */
+/* value equality (used by ==, dict keys, list contains) - by value, not
+ * identity: lists/dicts recurse into their elements instead of comparing
+ * pointers, so `[1,2] == [1,2]` is true for two separately-built lists
+ * (matches the doc comment above, which the V_LIST/V_DICT cases used to
+ * violate by comparing container identity instead). */
+static Value *dict_find(Dict *d, Value key);
 static int values_equal(Value a, Value b){
   if(a.t!=b.t) return 0;
   switch(a.t){
@@ -178,8 +183,21 @@ static int values_equal(Value a, Value b){
     case V_STR: return strcmp(a.str,b.str)==0;
     case V_WALLET: return a.wal==b.wal;
     case V_PAYWALL: return a.pw==b.pw;
-    case V_LIST: return a.list==b.list;
-    case V_DICT: return a.dict==b.dict;
+    case V_LIST: {
+      if(a.list==b.list) return 1;
+      if(a.list->n!=b.list->n) return 0;
+      for(int i=0;i<a.list->n;i++) if(!values_equal(a.list->items[i],b.list->items[i])) return 0;
+      return 1;
+    }
+    case V_DICT: {
+      if(a.dict==b.dict) return 1;
+      if(a.dict->n!=b.dict->n) return 0;
+      for(int i=0;i<a.dict->n;i++){
+        Value *bv=dict_find(b.dict, a.dict->items[i].key);
+        if(!bv || !values_equal(a.dict->items[i].val, *bv)) return 0;
+      }
+      return 1;
+    }
     case V_MODULE: return a.mod==b.mod;
     case V_RANGE: return a.rng->start==b.rng->start && a.rng->stop==b.rng->stop && a.rng->step==b.rng->step;
     default: return 0;
@@ -1683,8 +1701,33 @@ static Value bi_join(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); 
 static Value bi_enumerate(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","enumerate() expects a list"); List *r=list_new(); for(int i=0;i<a[0].list->n;i++){ List *pair=list_new(); list_push(pair,V_number(i)); list_push(pair,a[0].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
 static Value bi_zip(Interp *ip, Value *a, int n){ if(n>=2){ a[0]=derange(a[0]); a[1]=derange(a[1]); } if(n!=2||a[0].t!=V_LIST||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","zip() expects two lists"); int m=a[0].list->n<a[1].list->n?a[0].list->n:a[1].list->n; List *r=list_new(); for(int i=0;i<m;i++){ List *pair=list_new(); list_push(pair,a[0].list->items[i]); list_push(pair,a[1].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
 static Value bi_read_file(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","read_file() expects a path string"); FILE *f=fopen(a[0].str,"rb"); if(!f) runtime_error(ip,"IOError","cannot read file '%s'", a[0].str); size_t cap=1<<16,len=0; char *b=xmalloc(cap); size_t r; while((r=fread(b+len,1,cap-len,f))>0){ len+=r; if(len==cap){ cap*=2; b=realloc(b,cap); } } b[len]=0; fclose(f); return V_take(b); }
-static Value bi_write_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","write_file() expects a path and content"); FILE *f=fopen(a[0].str,"wb"); if(!f) runtime_error(ip,"IOError","cannot write file '%s'", a[0].str); char *s=str_of(a[1]); fputs(s,f); fclose(f); return V_nil(); }
-static Value bi_append_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","append_file() expects a path and content"); FILE *f=fopen(a[0].str,"ab"); if(!f) runtime_error(ip,"IOError","cannot append to file '%s'", a[0].str); char *s=str_of(a[1]); fputs(s,f); fclose(f); return V_nil(); }
+/* Binary-safe counterpart to read_file(): returns a list of ints 0-255
+ * instead of a (NUL-truncating) string - the read-side match for
+ * write_file()'s byte-list support, so a real binary file (zip, tar,
+ * anything with 0x00 bytes) can round-trip through this language at all. */
+static Value bi_read_file_bytes(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","read_file_bytes() expects a path string"); FILE *f=fopen(a[0].str,"rb"); if(!f) runtime_error(ip,"IOError","cannot read file '%s'", a[0].str); size_t cap=1<<16,len=0; unsigned char *b=xmalloc(cap); size_t r; while((r=fread(b+len,1,cap-len,f))>0){ len+=r; if(len==cap){ cap*=2; b=realloc(b,cap); } } fclose(f); List *out=list_new(); for(size_t i=0;i<len;i++) list_push(out,V_number((double)b[i])); free(b); return V_list(out); }
+/* Writes a V_LIST of ints 0-255 as raw bytes via fwrite (binary-safe,
+ * including 0x00) instead of the fputs() string path, which stops dead
+ * at the first NUL - real binary formats (zip, tar, any packed byte
+ * protocol) routinely contain 0x00 and would otherwise silently
+ * truncate on write. Returns 1 if `v` was a byte list and was written,
+ * 0 if the caller should fall back to the string path. */
+static int write_bytes_if_list(Value v, FILE *f){
+  if(v.t!=V_LIST) return 0;
+  int n=v.list->n;
+  unsigned char *buf=xmalloc(n>0?n:1);
+  for(int i=0;i<n;i++){
+    Value it=v.list->items[i];
+    if(!is_num(it)) { free(buf); return 0; }
+    long b=(long)it.num;
+    buf[i]=(unsigned char)(b & 0xff);
+  }
+  if(n>0) fwrite(buf,1,n,f);
+  free(buf);
+  return 1;
+}
+static Value bi_write_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","write_file() expects a path and content"); FILE *f=fopen(a[0].str,"wb"); if(!f) runtime_error(ip,"IOError","cannot write file '%s'", a[0].str); if(!write_bytes_if_list(a[1],f)){ char *s=str_of(a[1]); fputs(s,f); } fclose(f); return V_nil(); }
+static Value bi_append_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","append_file() expects a path and content"); FILE *f=fopen(a[0].str,"ab"); if(!f) runtime_error(ip,"IOError","cannot append to file '%s'", a[0].str); if(!write_bytes_if_list(a[1],f)){ char *s=str_of(a[1]); fputs(s,f); } fclose(f); return V_nil(); }
 static Value bi_file_exists(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","file_exists() expects a path string"); struct stat st; return V_bool(stat(a[0].str,&st)==0); }
 static Value bi_exit(Interp *ip, Value *a, int n){ (void)ip; int code = (n>=1&&is_num(a[0]))?(int)a[0].num:0; exit(code); }
 static Value bi_all(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","all() expects a list"); for(int i=0;i<a[0].list->n;i++) if(!truthy(a[0].list->items[i])) return V_bool(0); return V_bool(1); }
@@ -1903,7 +1946,7 @@ static Builtin B_floor={"floor",bi_floor}, B_ceil={"ceil",bi_ceil}, B_round={"ro
 static Builtin B_chr={"chr",bi_chr}, B_ord={"ord",bi_ord}, B_assert={"assert",bi_assert}, B_input={"input",bi_input};
 static Builtin B_keys={"keys",bi_keys}, B_values={"values",bi_values};
 static Builtin B_map={"map",bi_map}, B_filter={"filter",bi_filter}, B_reduce={"reduce",bi_reduce}, B_join={"join",bi_join}, B_enumerate={"enumerate",bi_enumerate};
-static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_write_file={"write_file",bi_write_file}, B_append_file={"append_file",bi_append_file}, B_file_exists={"file_exists",bi_file_exists}, B_exit={"exit",bi_exit};
+static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_read_file_bytes={"read_file_bytes",bi_read_file_bytes}, B_write_file={"write_file",bi_write_file}, B_append_file={"append_file",bi_append_file}, B_file_exists={"file_exists",bi_file_exists}, B_exit={"exit",bi_exit};
 static Builtin B_all={"all",bi_all}, B_any={"any",bi_any}, B_count={"count",bi_count}, B_unique={"unique",bi_unique};
 static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct}, B_gcd={"gcd",bi_gcd}, B_factorial={"factorial",bi_factorial}, B_sign={"sign",bi_sign}, B_clamp={"clamp",bi_clamp}, B_list={"list",bi_list}, B_dict={"dict",bi_dict};
 static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
@@ -2001,6 +2044,7 @@ static void define_builtins(Env *g){
   env_define(g, "enumerate", V_builtin(&B_enumerate));
   env_define(g, "zip",    V_builtin(&B_zip));
   env_define(g, "read_file",   V_builtin(&B_read_file));
+  env_define(g, "read_file_bytes", V_builtin(&B_read_file_bytes));
   env_define(g, "write_file",  V_builtin(&B_write_file));
   env_define(g, "append_file", V_builtin(&B_append_file));
   env_define(g, "file_exists", V_builtin(&B_file_exists));

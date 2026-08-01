@@ -1,0 +1,36 @@
+# discount - apply a sequence of discounts honestly: each one applies to
+# whatever's left after the previous ones, never lets the total go below
+# zero, and respects an optional cap (max cents off) and min_spend gate.
+# All amounts in integer cents.
+#
+#   import "discount" as discount
+#   let rules = [
+#     {"type": "percent", "value": 10, "min_spend": 0, "cap": nil},
+#     {"type": "fixed", "value": 500, "min_spend": 2000, "cap": nil}
+#   ]
+#   let r = discount.apply(10000, rules)
+#   print(r["total"])         # 10000 - 1000 - 500 = 8500
+#   print(r["applied"])       # which rules actually fired
+
+fn apply(subtotal, rules) {
+  let remaining = subtotal
+  let total_off = 0
+  let applied = []
+  for rule in rules {
+    if remaining <= 0 { break }
+    let min_spend = rule.get("min_spend", 0)
+    if remaining < min_spend { continue }
+    let off = 0
+    if rule["type"] == "percent" { off = (remaining * rule["value"]) // 100 }
+    else { off = rule["value"] }
+    let cap = rule.get("cap", nil)
+    if cap != nil and off > cap { off = cap }
+    if off > remaining { off = remaining }
+    if off > 0 {
+      remaining = remaining - off
+      total_off = total_off + off
+      applied.push({"rule": rule, "off": off})
+    }
+  }
+  return {"subtotal": subtotal, "total_off": total_off, "total": subtotal - total_off, "applied": applied}
+}

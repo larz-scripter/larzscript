@@ -1,0 +1,155 @@
+# matrix - dense matrix math: determinant, inverse, and linear-system
+# solving, via Gaussian elimination with partial pivoting. No numpy - a
+# few hundred lines of real, if not BLAS-fast, linear algebra.
+#
+#   import "matrix" as matrix
+#   let a = [[2, 1], [1, 3]]
+#   print(matrix.determinant(a))          # 5
+#   print(matrix.inverse(a))
+#   print(matrix.solve(a, [5, 10]))        # x such that a*x = [5, 10]
+#   print(matrix.identity(3))
+
+fn identity(n) {
+  let m = [[0.0 for _ in range(n)] for _ in range(n)]
+  let i = 0
+  while i < n { m[i][i] = 1.0; i = i + 1 }
+  return m
+}
+
+fn _copy(m) {
+  let out = []
+  for row in m { let r = []; for v in row { r.push(v) } out.push(r) }
+  return out
+}
+
+fn multiply(a, b) {
+  let ra = len(a)
+  let ca = len(a[0])
+  let cb = len(b[0])
+  let out = [[0.0 for _ in range(cb)] for _ in range(ra)]
+  let i = 0
+  while i < ra {
+    let j = 0
+    while j < cb {
+      let sum_ = 0.0
+      let k = 0
+      while k < ca { sum_ = sum_ + a[i][k] * b[k][j]; k = k + 1 }
+      out[i][j] = sum_
+      j = j + 1
+    }
+    i = i + 1
+  }
+  return out
+}
+
+fn transpose(a) {
+  let rows = len(a)
+  let cols = len(a[0])
+  let out = [[0.0 for _ in range(rows)] for _ in range(cols)]
+  let i = 0
+  while i < rows { let j = 0; while j < cols { out[j][i] = a[i][j]; j = j + 1 } i = i + 1 }
+  return out
+}
+
+# Gaussian elimination with partial pivoting on [A|B] (B can be an
+# identity matrix, for inverse, or a single column, for solve). Returns
+# {"ok": bool, "reduced": [...]} - ok=false means A is singular.
+fn _eliminate(a_in, b_in) {
+  let n = len(a_in)
+  let a = _copy(a_in)
+  let b = _copy(b_in)
+  let col = 0
+  while col < n {
+    let pivot_row = col
+    let best = a[col][col] < 0 ? -a[col][col] : a[col][col]
+    let r = col + 1
+    while r < n {
+      let v = a[r][col] < 0 ? -a[r][col] : a[r][col]
+      if v > best { best = v; pivot_row = r }
+      r = r + 1
+    }
+    if best < 0.0000000001 { return {"ok": false, "reduced": nil} }
+    if pivot_row != col {
+      let tmp = a[col]; a[col] = a[pivot_row]; a[pivot_row] = tmp
+      let tmpb = b[col]; b[col] = b[pivot_row]; b[pivot_row] = tmpb
+    }
+    let piv = a[col][col]
+    let j = 0
+    while j < n { a[col][j] = a[col][j] / piv; j = j + 1 }
+    j = 0
+    while j < len(b[col]) { b[col][j] = b[col][j] / piv; j = j + 1 }
+    let rr = 0
+    while rr < n {
+      if rr != col {
+        let factor = a[rr][col]
+        j = 0
+        while j < n { a[rr][j] = a[rr][j] - factor * a[col][j]; j = j + 1 }
+        j = 0
+        while j < len(b[rr]) { b[rr][j] = b[rr][j] - factor * b[col][j]; j = j + 1 }
+      }
+      rr = rr + 1
+    }
+    col = col + 1
+  }
+  return {"ok": true, "reduced": b}
+}
+
+fn determinant(a) {
+  let n = len(a)
+  if n == 1 { return a[0][0] }
+  if n == 2 { return a[0][0] * a[1][1] - a[0][1] * a[1][0] }
+  # cofactor expansion along row 0 - simple and correct, O(n!) but fine
+  # for the small matrices this package targets.
+  let det = 0.0
+  let sign = 1
+  let j = 0
+  while j < n {
+    let minor = []
+    let i = 1
+    while i < n {
+      let row = []
+      let k = 0
+      while k < n { if k != j { row.push(a[i][k]) } k = k + 1 }
+      minor.push(row)
+      i = i + 1
+    }
+    det = det + sign * a[0][j] * determinant(minor)
+    sign = -sign
+    j = j + 1
+  }
+  return det
+}
+
+fn inverse(a) {
+  let n = len(a)
+  let result = _eliminate(a, identity(n))
+  if not result["ok"] { throw {"type": "LarzValueError", "message": "matrix is singular"} }
+  return result["reduced"]
+}
+
+fn solve(a, b) {
+  let n = len(a)
+  let col_b = []
+  for v in b { col_b.push([v]) }
+  let result = _eliminate(a, col_b)
+  if not result["ok"] { throw {"type": "LarzValueError", "message": "matrix is singular"} }
+  let out = []
+  for row in result["reduced"] { out.push(row[0]) }
+  return out
+}
+
+fn is_identity(a, tolerance=0.000001) {
+  let n = len(a)
+  let i = 0
+  while i < n {
+    let j = 0
+    while j < n {
+      let expected = i == j ? 1.0 : 0.0
+      let diff = a[i][j] - expected
+      if (diff < 0 ? -diff : diff) > tolerance { return false }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  return true
+}

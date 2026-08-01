@@ -1,0 +1,60 @@
+# bus - an in-process message bus: dot-segmented topics ("orders.created"),
+# wildcard subscriptions (`*` matches exactly one segment, `**` matches
+# any number of remaining segments), and a dead-letter list for anything
+# published with no matching subscriber. No broker - delivery is a
+# direct, synchronous, in-process function call to each matching
+# subscriber (Larzscript has no OS threads to deliver on asynchronously;
+# "no broker" is the honest claim this package can make).
+#
+#   import "bus" as bus
+#   let b = bus.new()
+#   bus.subscribe(b, "orders.*", fn(topic, payload) { print(topic, payload) })
+#   bus.subscribe(b, "orders.**", fn(topic, payload) { print("catch-all", topic) })
+#   print(bus.publish(b, "orders.created", {"id": 1}))   # 2 delivered
+#   bus.publish(b, "unrelated.thing", {})                 # -> dead_letters
+
+fn new() { return {"subs": [], "next_id": 1, "dead_letters": []} }
+
+fn subscribe(b, pattern, callback) {
+  let id = b["next_id"]
+  b["next_id"] = b["next_id"] + 1
+  b["subs"].push({"id": id, "pattern": pattern.split("."), "fn": callback})
+  return id
+}
+
+fn unsubscribe(b, id) {
+  let out = []
+  for s in b["subs"] { if s["id"] != id { out.push(s) } }
+  let removed = len(out) != len(b["subs"])
+  b["subs"] = out
+  return removed
+}
+
+fn _match(pattern_parts, topic_parts, pi, ti) {
+  if pi == len(pattern_parts) { return ti == len(topic_parts) }
+  let seg = pattern_parts[pi]
+  if seg == "**" {
+    let j = ti
+    while j <= len(topic_parts) {
+      if _match(pattern_parts, topic_parts, pi + 1, j) { return true }
+      j = j + 1
+    }
+    return false
+  }
+  if ti >= len(topic_parts) { return false }
+  if seg != "*" and seg != topic_parts[ti] { return false }
+  return _match(pattern_parts, topic_parts, pi + 1, ti + 1)
+}
+
+fn publish(b, topic, payload=nil) {
+  let topic_parts = topic.split(".")
+  let delivered = 0
+  for s in b["subs"] {
+    if _match(s["pattern"], topic_parts, 0, 0) {
+      s["fn"](topic, payload)
+      delivered = delivered + 1
+    }
+  }
+  if delivered == 0 { b["dead_letters"].push({"topic": topic, "payload": payload}) }
+  return delivered
+}

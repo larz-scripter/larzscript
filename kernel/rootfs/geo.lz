@@ -1,0 +1,130 @@
+# geo - geographic math: great-circle distance (Haversine) and bearing
+# between two points, geohash encode/decode, and point-in-polygon.
+# Verified against well-known reference distances (see the package's
+# tests) rather than a single unchecked formula transcription.
+#
+#   import "geo" as geo
+#   print(geo.haversine(51.5074, -0.1278, 48.8566, 2.3522))  # London-Paris km
+#   print(geo.bearing(51.5074, -0.1278, 48.8566, 2.3522))
+#   print(geo.geohash_encode(57.64911, 10.40744, 6))          # "u4pruy"
+#   print(geo.point_in_polygon(1, 1, [[0,0],[2,0],[2,2],[0,2]]))  # true
+
+let PI = 3.141592653589793
+let EARTH_RADIUS_KM = 6371.0
+
+fn _rad(deg) { return deg * PI / 180.0 }
+
+fn _sin(x) {
+  let term = x
+  let total = x
+  let n = 1
+  while n <= 12 { term = term * (-1) * x * x / ((2 * n) * (2 * n + 1)); total = total + term; n = n + 1 }
+  return total
+}
+fn _cos(x) { return _sin(x + PI / 2) }
+fn _atan2_approx(y, x) {
+  # atan(y/x) via a fast rational approximation, quadrant-corrected -
+  # accurate to ~0.005 rad, plenty for distance/bearing at this scale.
+  if x == 0 and y == 0 { return 0.0 }
+  let ax = x < 0 ? -x : x
+  let ay = y < 0 ? -y : y
+  let a = ax > ay ? ay / ax : ax / ay
+  let s = a * a
+  let r = ((-0.0464964749 * s + 0.15931422) * s - 0.327622764) * s * a + a
+  if ay > ax { r = PI / 2 - r }
+  if x < 0 { r = PI - r }
+  if y < 0 { r = -r }
+  return r
+}
+fn _sqrt(x) {
+  if x <= 0 { return 0.0 }
+  let guess = x
+  let i = 0
+  while i < 40 { guess = (guess + x / guess) / 2; i = i + 1 }
+  return guess
+}
+fn _asin(x) { return _atan2_approx(x, _sqrt(1 - x * x)) }
+
+fn haversine(lat1, lon1, lat2, lon2) {
+  let dlat = _rad(lat2 - lat1)
+  let dlon = _rad(lon2 - lon1)
+  let a = _sin(dlat / 2) ** 2 + _cos(_rad(lat1)) * _cos(_rad(lat2)) * _sin(dlon / 2) ** 2
+  let c = 2 * _atan2_approx(_sqrt(a), _sqrt(1 - a))
+  return EARTH_RADIUS_KM * c
+}
+
+fn bearing(lat1, lon1, lat2, lon2) {
+  let phi1 = _rad(lat1)
+  let phi2 = _rad(lat2)
+  let dlon = _rad(lon2 - lon1)
+  let y = _sin(dlon) * _cos(phi2)
+  let x = _cos(phi1) * _sin(phi2) - _sin(phi1) * _cos(phi2) * _cos(dlon)
+  let theta = _atan2_approx(y, x)
+  let deg = theta * 180.0 / PI
+  return (deg + 360) % 360
+}
+
+let _GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+
+fn geohash_encode(lat, lon, precision=9) {
+  let lat_range = [-90.0, 90.0]
+  let lon_range = [-180.0, 180.0]
+  let out = ""
+  let bit = 0
+  let ch = 0
+  let even = true
+  while len(out) < precision {
+    if even {
+      let mid = (lon_range[0] + lon_range[1]) / 2
+      if lon >= mid { ch = ch * 2 + 1; lon_range[0] = mid } else { ch = ch * 2; lon_range[1] = mid }
+    } else {
+      let mid = (lat_range[0] + lat_range[1]) / 2
+      if lat >= mid { ch = ch * 2 + 1; lat_range[0] = mid } else { ch = ch * 2; lat_range[1] = mid }
+    }
+    even = not even
+    bit = bit + 1
+    if bit == 5 { out = out + _GEOHASH_BASE32[ch:ch+1]; bit = 0; ch = 0 }
+  }
+  return out
+}
+
+fn geohash_decode(hash) {
+  let lat_range = [-90.0, 90.0]
+  let lon_range = [-180.0, 180.0]
+  let even = true
+  for c in hash {
+    let idx = _GEOHASH_BASE32.find(c)
+    let i = 4
+    while i >= 0 {
+      let bit = (idx // (2 ** i)) % 2
+      if even {
+        let mid = (lon_range[0] + lon_range[1]) / 2
+        if bit == 1 { lon_range[0] = mid } else { lon_range[1] = mid }
+      } else {
+        let mid = (lat_range[0] + lat_range[1]) / 2
+        if bit == 1 { lat_range[0] = mid } else { lat_range[1] = mid }
+      }
+      even = not even
+      i = i - 1
+    }
+  }
+  return {"lat": (lat_range[0] + lat_range[1]) / 2, "lon": (lon_range[0] + lon_range[1]) / 2}
+}
+
+# Ray-casting algorithm. `polygon` is a list of [x, y] pairs.
+fn point_in_polygon(x, y, polygon) {
+  let inside = false
+  let n = len(polygon)
+  let j = n - 1
+  let i = 0
+  while i < n {
+    let xi = polygon[i][0]
+    let yi = polygon[i][1]
+    let xj = polygon[j][0]
+    let yj = polygon[j][1]
+    if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi) { inside = not inside }
+    j = i
+    i = i + 1
+  }
+  return inside
+}

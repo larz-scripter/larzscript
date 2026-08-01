@@ -1,0 +1,117 @@
+# toml - read AND write a real TOML subset: `key = value` pairs,
+# `[section]` and `[section.sub]` headers (dotted -> nested dict),
+# strings/ints/floats/bools/arrays-of-scalars, and `#` comments.
+# NOT full TOML - no inline tables, no array-of-tables (`[[x]]`), no
+# multi-line strings. A deliberately small, correct subset, matching the
+# rest of this estate's data-format packages (`yaml`, `json`).
+#
+#   import "toml" as toml
+#   let data = toml.parse("title = \"demo\"\n\n[db]\nport = 5432\ntags = [\"a\", \"b\"]\n")
+#   print(data["db"]["port"])          # 5432
+#   print(toml.stringify(data))
+
+fn _scalar(raw) {
+  let t = raw.strip()
+  if len(t) >= 2 and t[0:1] == "\"" and t[len(t)-1:] == "\"" { return t[1:len(t)-1] }
+  if len(t) >= 2 and t[0:1] == "'" and t[len(t)-1:] == "'" { return t[1:len(t)-1] }
+  if t == "true" { return true }
+  if t == "false" { return false }
+  if t[0:1] == "[" and t[len(t)-1:] == "]" {
+    let inner = t[1:len(t)-1].strip()
+    if len(inner) == 0 { return [] }
+    let items = []
+    for part in inner.split(",") {
+      let p = part.strip()
+      if len(p) > 0 { items.push(_scalar(p)) }
+    }
+    return items
+  }
+  let looks_num = len(t) > 0
+  for c in t {
+    if "0123456789.-+".find(c) < 0 { looks_num = false }
+  }
+  if looks_num {
+    if t.find(".") >= 0 { return float(t) }
+    return int(t)
+  }
+  return t
+}
+
+fn _strip_comment(line) {
+  let in_str = false
+  let quote = ""
+  let i = 0
+  while i < len(line) {
+    let c = line[i:i+1]
+    if in_str {
+      if c == quote { in_str = false }
+    } else if c == "\"" or c == "'" {
+      in_str = true
+      quote = c
+    } else if c == "#" {
+      return line[0:i]
+    }
+    i = i + 1
+  }
+  return line
+}
+
+fn _get_path(root, path_parts) {
+  let cur = root
+  for part in path_parts {
+    if not cur.has(part) { cur[part] = {} }
+    cur = cur[part]
+  }
+  return cur
+}
+
+fn parse(text) {
+  let root = {}
+  let cur = root
+  for raw_line in text.split("\n") {
+    let line = _strip_comment(raw_line).strip()
+    if len(line) == 0 { continue }
+    if line[0:1] == "[" and line[len(line)-1:] == "]" {
+      let section = line[1:len(line)-1].strip()
+      cur = _get_path(root, section.split("."))
+      continue
+    }
+    let eq = line.find("=")
+    if eq < 0 { continue }
+    let key = line[0:eq].strip()
+    let val = line[eq+1:].strip()
+    cur[key] = _scalar(val)
+  }
+  return root
+}
+
+fn _fmt_scalar(v) {
+  if type(v) == "string" { return "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\"" }
+  if type(v) == "bool" { return v ? "true" : "false" }
+  if type(v) == "list" {
+    let parts = []
+    for item in v { parts.push(_fmt_scalar(item)) }
+    return "[" + join(parts, ", ") + "]"
+  }
+  return str(v)
+}
+
+fn _stringify_section(prefix, d, out) {
+  let scalar_keys = []
+  let dict_keys = []
+  for k in keys(d) {
+    if type(d[k]) == "dict" { dict_keys.push(k) } else { scalar_keys.push(k) }
+  }
+  if len(prefix) > 0 and len(scalar_keys) > 0 { out.push("[" + prefix + "]") }
+  for k in scalar_keys { out.push(k + " = " + _fmt_scalar(d[k])) }
+  for k in dict_keys {
+    let next_prefix = len(prefix) == 0 ? k : prefix + "." + k
+    _stringify_section(next_prefix, d[k], out)
+  }
+}
+
+fn stringify(data) {
+  let out = []
+  _stringify_section("", data, out)
+  return join(out, "\n") + "\n"
+}

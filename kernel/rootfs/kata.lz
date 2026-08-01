@@ -1,0 +1,68 @@
+# kata - coding-exercise autograding: define an exercise as a solution
+# function + a list of (args, expected) cases, check() runs them all and
+# reports friendly pass/fail with a hint on failure, and a KataSet
+# tracks progress across many exercises. Safe against a submission that
+# throws - a crash on one case is just another failure, not a fatal
+# error for the whole run.
+#
+#   import "kata" as kata
+#   let ex = kata.exercise("double", fn(n) { return n * 2 }, [
+#     {"args": [3], "expected": 6}, {"args": [5], "expected": 10}
+#   ], "double(n) should return n * 2")
+#   let result = kata.check(ex, fn(n) { return n * 2 })   # the learner's fn
+#   print(result["passed"], result["total"])
+
+fn exercise(name, reference, cases, hint="") {
+  return {"name": name, "reference": reference, "cases": cases, "hint": hint}
+}
+
+fn check(ex, submission) {
+  let results = []
+  let passed = 0
+  for c in ex["cases"] {
+    let outcome = {"args": c["args"], "expected": c["expected"]}
+    try {
+      let got = _apply(submission, c["args"])
+      outcome["got"] = got
+      outcome["ok"] = got == c["expected"]
+    } catch e {
+      outcome["ok"] = false
+      outcome["error"] = str(e)
+    }
+    if outcome["ok"] { passed = passed + 1 }
+    results.push(outcome)
+  }
+  return {"name": ex["name"], "passed": passed, "total": len(ex["cases"]), "results": results, "hint": passed < len(ex["cases"]) ? ex["hint"] : ""}
+}
+
+# Larzscript functions have fixed arity - this dispatches by case-args
+# length (1-4 args) so an exercise can cover multi-argument submissions.
+fn _apply(fn_, args) {
+  if len(args) == 1 { return fn_(args[0]) }
+  if len(args) == 2 { return fn_(args[0], args[1]) }
+  if len(args) == 3 { return fn_(args[0], args[1], args[2]) }
+  return fn_(args[0], args[1], args[2], args[3])
+}
+
+fn kata_set() { return {"exercises": [], "results": {}} }
+fn add(ks, ex) { ks["exercises"].push(ex) }
+
+fn run_all(ks, submissions) {
+  for ex in ks["exercises"] {
+    if submissions.has(ex["name"]) {
+      ks["results"][ex["name"]] = check(ex, submissions[ex["name"]])
+    }
+  }
+  return ks["results"]
+}
+
+fn progress(ks) {
+  let done = 0
+  let total = len(ks["exercises"])
+  for ex in ks["exercises"] {
+    if ks["results"].has(ex["name"]) and ks["results"][ex["name"]]["passed"] == ks["results"][ex["name"]]["total"] {
+      done = done + 1
+    }
+  }
+  return {"done": done, "total": total}
+}
