@@ -1,5 +1,17 @@
-# ping - send an ICMP echo request.  usage: ping [IP]   (default: gateway)
+# ping - shell command: real ICMP ping over LarzOS's own network stack
+# (kernel/net.c, via the `net` package).
+#
+#   ping HOST_OR_IP
+
+import "net" as net
+import "ip" as ip
+
 fn run(args) {
-  let ip = len(args) > 0 ? args[0] : "10.0.2.2"
-  print(ip + ": " + read_file("/net/ping/" + ip).strip())
+  if len(args) == 0 { print("usage: ping HOST_OR_IP"); return }
+  if not net.status()["up"] { print("ping: no network link"); return }
+  let target = args[0]
+  let addr = ip.is_valid(target) ? target : net.resolve(target)
+  if addr == nil { print("ping: could not resolve " + target); return }
+  print("PING " + target + " (" + addr + ")")
+  if net.ping(addr) { print("reply from " + addr) } else { print("timeout: no reply from " + addr) }
 }

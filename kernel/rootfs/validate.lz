@@ -1,0 +1,43 @@
+# validate - input validation and hygiene checks, pure Larzscript. ⚠ the
+# SQLi/XSS checks are heuristic pattern-matching (defense-in-depth), NOT a
+# guarantee - always use parameterized queries and proper output encoding;
+# this catches obvious cases, not everything. Named "looks_like", not
+# "is_safe", on purpose.
+#
+#   import "validate" as validate
+#   validate.is_email("a@b.com")            # true
+#   validate.is_url("https://x.com/y")      # true
+#   validate.has_path_traversal("../etc")   # true
+#   validate.looks_like_sqli(input)
+#   validate.looks_like_xss(input)
+
+fn is_email(s) {
+  let parts = s.split("@")
+  if len(parts) != 2 { return false }
+  let local = parts[0]
+  let domain = parts[1]
+  if len(local) == 0 or len(domain) == 0 { return false }
+  if not domain.contains(".") { return false }
+  if domain.starts_with(".") or domain.ends_with(".") { return false }
+  if s.contains(" ") { return false }
+  return true
+}
+
+fn is_url(s) { return s.starts_with("http://") or s.starts_with("https://") }
+
+fn has_path_traversal(s) { return s.contains("..") }
+
+let _SQLI_PATTERNS = ["' or '", "\" or \"", "--", ";--", "/*", "*/", "xp_",
+                       "union select", "drop table", "' or 1=1", "\" or 1=1"]
+fn looks_like_sqli(s) {
+  let low = s.lower()
+  for p in _SQLI_PATTERNS { if low.contains(p) { return true } }
+  return false
+}
+
+let _XSS_PATTERNS = ["<script", "onerror=", "onload=", "javascript:", "<iframe", "<svg"]
+fn looks_like_xss(s) {
+  let low = s.lower()
+  for p in _XSS_PATTERNS { if low.contains(p) { return true } }
+  return false
+}

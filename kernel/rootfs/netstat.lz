@@ -1,2 +1,15 @@
-# netstat - show LarzOS network status
-fn run(args) { print(read_file("/net/status").strip()) }
+# netstat - shell command: show LarzOS's real network status (kernel/net.c,
+# via the `net` package).
+#
+#   netstat
+
+import "net" as net
+
+fn run(args) {
+  let s = net.status()
+  if not s["up"] { print("link: down (no NIC)"); return }
+  print("link: up")
+  print("mac:  " + s["mac"])
+  print("ip:   " + s["ip"])
+  print("gw:   " + s["gw"])
+}

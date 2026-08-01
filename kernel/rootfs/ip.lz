@@ -1,0 +1,63 @@
+# ip - IPv4 address parsing, validation, and CIDR matching, pure Larzscript.
+#
+#   import "ip" as ip
+#   ip.parse("192.168.1.1")                       # [192, 168, 1, 1]
+#   ip.is_valid("1.2.3.4")                         # true
+#   ip.in_cidr("192.168.1.5", "192.168.1.0/24")    # true
+#   ip.is_private("10.0.0.5")                      # true
+
+fn _is_num(s) {
+  if len(s) == 0 { return false }
+  for c in s { if not (c >= "0" and c <= "9") { return false } }
+  return true
+}
+
+fn parse(addr) {
+  let parts = addr.split(".")
+  if len(parts) != 4 { return nil }
+  let out = []
+  for p in parts {
+    if not _is_num(p) { return nil }
+    let n = int(p)
+    if n < 0 or n > 255 { return nil }
+    out.push(n)
+  }
+  return out
+}
+
+fn is_valid(addr) { return parse(addr) != nil }
+
+fn format(octets) {
+  return str(octets[0]) + "." + str(octets[1]) + "." + str(octets[2]) + "." + str(octets[3])
+}
+
+fn to_int(addr) {
+  let o = parse(addr)
+  if o == nil { return nil }
+  return o[0] * 16777216 + o[1] * 65536 + o[2] * 256 + o[3]
+}
+
+fn _pow2(n) {
+  let r = 1
+  let i = 0
+  while i < n { r = r * 2; i = i + 1 }
+  return r
+}
+
+fn in_cidr(addr, cidr) {
+  let parts = cidr.split("/")
+  if len(parts) != 2 { throw {"type": "IpError", "message": "bad CIDR: " + cidr} }
+  let base = to_int(parts[0])
+  let target = to_int(addr)
+  if base == nil or target == nil { return false }
+  let prefix = int(parts[1])
+  if prefix <= 0 { return true }
+  if prefix >= 32 { return base == target }
+  let divisor = _pow2(32 - prefix)
+  return (base // divisor) == (target // divisor)
+}
+
+fn is_private(addr) {
+  return in_cidr(addr, "10.0.0.0/8") or in_cidr(addr, "172.16.0.0/12") or
+         in_cidr(addr, "192.168.0.0/16") or in_cidr(addr, "127.0.0.0/8")
+}

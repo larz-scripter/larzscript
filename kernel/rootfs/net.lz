@@ -1,0 +1,46 @@
+# net - LarzOS's own real networking, wrapped from the kernel's `/net/`
+# virtual files (RTL8139 driver + ARP/IPv4/ICMP/DNS/HTTP - kernel/net.c).
+# ⚠ KERNEL-ONLY - native/hosted Larzscript has no `/net/` VFS; use the
+# `http` package + your real OS's own tools there instead.
+#
+#   import "net" as net
+#   net.status()                          # {"up":true,"mac":"...","ip":"...","gw":"..."}
+#   net.ping("10.0.2.2")                  # true/false
+#   net.resolve("example.com")            # "93.184.216.34" or nil
+#   net.get("93.184.216.34", 80, "/")     # HTTP GET body, or nil
+#   net.serve(fn(req) { return "hello" }) # accept/handle/reply loop
+
+fn status() {
+  let raw = read_file("/net/status")
+  let out = {"up": false, "mac": "", "ip": "", "gw": ""}
+  for line in raw.split("\n") {
+    if line.starts_with("link: ") { out["up"] = line.contains("up") }
+    else if line.starts_with("mac: ") { out["mac"] = line[5:] }
+    else if line.starts_with("ip: ") { out["ip"] = line[4:] }
+    else if line.starts_with("gw: ") { out["gw"] = line[4:] }
+  }
+  return out
+}
+
+fn ping(addr) { return read_file("/net/ping/" + addr).strip() == "reply" }
+
+fn resolve(host) {
+  let out = read_file("/net/resolve/" + host).strip()
+  return out == "resolve failed" ? nil : out
+}
+
+# path must include the leading "/" (e.g. "/index.html").
+fn get(addr, port, path) {
+  let target = addr + (port == 80 ? "" : ":" + str(port)) + path
+  let body = read_file("/net/get/" + target)
+  return body == "ERR" ? nil : body
+}
+
+fn accept() { return read_file("/net/http/accept") }
+fn reply(data) { write_file("/net/http/reply", data) }
+
+# Blocking accept/handle/reply loop - `handler(request_text)` returns the
+# raw response text to send back.
+fn serve(handler) {
+  while true { reply(handler(accept())) }
+}

@@ -1,0 +1,32 @@
+# acl - simple IP allow/deny access control lists, built on `ip.in_cidr`.
+# For a script's own access control (gating your own server by IP range),
+# not for scanning or targeting third-party hosts.
+#
+#   import "acl" as acl
+#   let list = acl.new()
+#   acl.allow(list, "10.0.0.0/8")
+#   acl.deny(list, "10.0.0.66")
+#   acl.check(list, "10.0.0.5")     # true  - in the allowed range
+#   acl.check(list, "10.0.0.66")    # false - explicitly denied
+#   acl.check(list, "8.8.8.8")      # false - not in any allow rule
+
+import "ip" as ip
+
+fn new() { return {"allow": [], "deny": []} }
+
+fn allow(list, cidr_or_ip) { list["allow"].push(cidr_or_ip) }
+fn deny(list, cidr_or_ip) { list["deny"].push(cidr_or_ip) }
+
+fn _matches(addr, rule) {
+  return rule.contains("/") ? ip.in_cidr(addr, rule) : addr == rule
+}
+
+# Deny rules always win. If the allow list is empty, everything not denied
+# is allowed (permissive default) - otherwise an address must match at
+# least one allow rule.
+fn check(list, addr) {
+  for rule in list["deny"] { if _matches(addr, rule) { return false } }
+  if len(list["allow"]) == 0 { return true }
+  for rule in list["allow"] { if _matches(addr, rule) { return true } }
+  return false
+}

@@ -298,6 +298,11 @@ void kernel_main(uint64_t mb_info){
     gfx_init();
     sched_init();
     vfs_init();                    /* login_screen()/launch_app()'s apps open .lz files - FS must be mounted first */
+    net_selftest();                /* detect the NIC + ping the gateway - this branch never fell through to
+                                     * the general path's own net_selftest() call below, so any script reading
+                                     * from the net-VFS (net.lz) always saw "no NIC" on this boot target even
+                                     * with a real one attached; output only reaches the serial log post-
+                                     * gfx_init(), invisible on screen, same as every other printf() here on */
     login_screen();                /* blocks here until real credentials verify - see its own comment */
     gfx_desktop_icons_init(g_app_manifest_labels, APP_MANIFEST_COUNT);
     gfx_windows_redraw_all();

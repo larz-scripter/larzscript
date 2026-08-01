@@ -37,4 +37,11 @@ loan        packages/loan
 markov      packages/markov
 sentiment   packages/sentiment
 ai          packages/ai
+net              packages/net
+ip               packages/ip
+acl              packages/acl
+validate         packages/validate
+password_strength  packages/password_strength
+totp             packages/totp
+jwt              packages/jwt
 example-external  https://github.com/larz-scripter/lz-example-external
