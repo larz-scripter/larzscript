@@ -176,3 +176,5 @@ dispatch          packages/dispatch
 tcp               packages/tcp
 orbits            packages/orbits
 neows             packages/neows
+dsp               packages/dsp
+wav               packages/wav
