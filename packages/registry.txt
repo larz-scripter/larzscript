@@ -155,3 +155,8 @@ money             packages/money
 logic             packages/logic
 units             packages/units
 netbridge         packages/netbridge
+neural            packages/neural
+raytrace          packages/raytrace
+crdt              packages/crdt
+genetic           packages/genetic
+pathfind          packages/pathfind
