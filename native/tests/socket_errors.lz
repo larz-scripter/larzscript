@@ -1,0 +1,18 @@
+# Socket errors are real, catchable LarzScript errors (SocketError), not
+# crashes - a double-bind on the same port and an operation on a bogus
+# handle both need to fail cleanly and stay catchable with try/catch.
+let fd = socket_listen(19346)
+try {
+  socket_listen(19346)
+  print("FAIL: double-bind should have thrown")
+} catch e {
+  print("double-bind rejected:", e["type"])
+}
+try {
+  socket_read(999999, 10)
+  print("FAIL: read on a bogus handle should have thrown")
+} catch e {
+  print("bad-handle read rejected:", e["type"])
+}
+socket_close(fd)
+print("done")
