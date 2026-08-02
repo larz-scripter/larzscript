@@ -211,6 +211,35 @@ code) · `capture(cmd)` (returns stdout) · `cwd()` · `chdir(path)` ·
 `listdir(path)` · `mkdir(path)` · `remove(path)` · `rename(from, to)` ·
 `time()` (unix seconds) · `clock()` (monotonic seconds) · `sleep(seconds)`.
 
+### TCP sockets
+
+Real listening sockets - `socket_listen(port)` (returns a handle),
+`socket_accept(fd)` (blocks for the next client, returns its handle),
+`socket_read(fd, max_bytes)`, `socket_write(fd, data)` (returns bytes
+actually sent - may be less than asked, same as a real `send()`),
+`socket_close(fd)`. A handle is a plain number, the OS fd/`SOCKET` value.
+Errors (bind failure, a bad handle, ...) throw a catchable `SocketError`.
+
+These are deliberately low-level, the same way `read_file`/`write_file`
+are - the `tcp` package builds the ergonomic layer (`tcp.serve(port,
+handler)`, a real loop that answers one request at a time, forever):
+
+```
+import "tcp" as tcp
+tcp.serve(8080, fn(request) {
+  return "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+})
+```
+
+Hosted only (Linux/macOS/Windows) - LarzOS's kernel build has its own real
+networking already (`kernel/net.c`, a from-scratch driver-level stack, the
+`net`/`fetch` packages), a completely different, unrelated code path; the
+browser/wasm build has no raw TCP at all by sandbox design, so every one of
+these throws a clear `SocketError` there instead of failing unpredictably.
+One connection at a time by design too - this is a single-threaded
+interpreter with no concurrency primitive, so a real production server
+needs more than this; a real *server that works at all* is what this adds.
+
 ---
 
 ## 9. Money (the money-native core)

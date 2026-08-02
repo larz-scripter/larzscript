@@ -76,6 +76,36 @@
 #ifdef __APPLE__
 #include <mach-o/dyld.h>      /* _NSGetExecutablePath - macOS's answer to Linux's /proc/self/exe (larzscript update) */
 #endif
+/* Hosted-only TCP sockets (socket_listen/accept/read/write/close, below).
+ * The LarzOS kernel build (__STDC_HOSTED__==0) has its OWN real networking
+ * (kernel/net.c, a from-scratch driver-level stack exposed via /net/ VFS
+ * files as the `net`/`fetch` packages) - it has no <sys/socket.h> to
+ * include (kernel/libc/ is a hand-written freestanding stub libc with no
+ * socket.h in it), so this whole feature is compiled out there rather than
+ * faking BSD socket semantics on top of a differently-shaped real stack.
+ * Emscripten/wasm gets real headers (its libc has them) but every builtin
+ * below still throws immediately - browsers have no raw TCP by sandbox
+ * design, full stop, so pretending otherwise would just fail unpredictably
+ * at runtime instead of with one clear error. */
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
+#ifndef __EMSCRIPTEN__
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+typedef SOCKET larz_sock_t;
+#define LARZ_INVALID_SOCK INVALID_SOCKET
+#define larz_sock_close closesocket
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+typedef int larz_sock_t;
+#define LARZ_INVALID_SOCK (-1)
+#define larz_sock_close close
+#endif
+#endif /* !__EMSCRIPTEN__ */
+#endif /* hosted */
 #if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
 #include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
 #include "console.h"          /* task_exit()/launch_app() - needed by ui.close()/ui.launch() below */
@@ -1936,6 +1966,112 @@ static Value bi_time(Interp *ip, Value *a, int n){ (void)ip;(void)a;(void)n; ret
 static Value bi_clock(Interp *ip, Value *a, int n){ (void)ip;(void)a;(void)n; struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts); return V_number((double)ts.tv_sec + ts.tv_nsec/1e9); }
 static Value bi_sleep(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","sleep() expects a number of seconds"); double s=a[0].num; if(s>0) usleep((useconds_t)(s*1e6)); return V_nil(); }
 
+/* ---- TCP sockets (hosted only; see the header-guard block near the top
+ * of this file for why the kernel/emscripten builds don't get real
+ * syscalls here). Deliberately small and low-level, the same shape
+ * run()/capture() already expose raw OS primitives at - a `tcp` package
+ * built on these is what most scripts should actually import, the same
+ * way nobody calls read_file/write_file directly once `fs` exists. A
+ * socket handle is just a plain number (the OS fd/SOCKET), like every
+ * other OS-ish value already flowing through this interpreter's one
+ * numeric (double) type. */
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
+static Value bi_socket_listen(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","socket_listen() expects a port number");
+  int port=(int)a[0].num;
+#ifdef _WIN32
+  static int wsa_started=0;
+  if(!wsa_started){ WSADATA wsa; WSAStartup(MAKEWORD(2,2),&wsa); wsa_started=1; }
+#endif
+  larz_sock_t fd=socket(AF_INET,SOCK_STREAM,0);
+  if(fd==LARZ_INVALID_SOCK) runtime_error(ip,"SocketError","could not create a socket");
+  int yes=1; setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,(const char*)&yes,sizeof(yes));
+  struct sockaddr_in addr; memset(&addr,0,sizeof(addr));
+  addr.sin_family=AF_INET; addr.sin_addr.s_addr=INADDR_ANY; addr.sin_port=htons((unsigned short)port);
+  if(bind(fd,(struct sockaddr*)&addr,sizeof(addr))!=0){ larz_sock_close(fd); runtime_error(ip,"SocketError","could not bind to port %d",port); }
+  if(listen(fd,16)!=0){ larz_sock_close(fd); runtime_error(ip,"SocketError","could not listen on port %d",port); }
+  return V_number((double)fd);
+#endif
+}
+static Value bi_socket_accept(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","socket_accept() expects a listening socket handle");
+  larz_sock_t listen_fd=(larz_sock_t)a[0].num;
+  larz_sock_t client_fd=accept(listen_fd,NULL,NULL);
+  if(client_fd==LARZ_INVALID_SOCK) runtime_error(ip,"SocketError","accept() failed");
+  return V_number((double)client_fd);
+#endif
+}
+static Value bi_socket_read(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","socket_read() expects a socket handle and a max byte count");
+  larz_sock_t fd=(larz_sock_t)a[0].num;
+  long maxlen=(long)a[1].num;
+  if(maxlen<0) maxlen=0;
+  char *buf=xmalloc((size_t)maxlen>0?(size_t)maxlen:1);
+#ifdef _WIN32
+  int r=recv(fd,buf,(int)maxlen,0);
+#else
+  long r=(long)recv(fd,buf,(size_t)maxlen,0);
+#endif
+  if(r<0){ free(buf); runtime_error(ip,"SocketError","read failed"); }
+  /* mkstr_n (not V_take) - copies exactly r bytes, so a recv() that
+   * happens to contain an embedded NUL doesn't get silently truncated
+   * by a strlen() call before the caller ever sees it. (len()/other
+   * string builtins DO still use strlen() throughout this language, so
+   * that's the point embedded-NUL binary data stops being byte-exact -
+   * a whole-language limitation this doesn't introduce, just doesn't
+   * make needlessly worse on the way in.) */
+  Value v=mkstr_n(buf,(size_t)r);
+  free(buf);
+  return v;
+#endif
+}
+static Value bi_socket_write(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=2||!is_num(a[0])||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","socket_write() expects a socket handle and a string");
+  larz_sock_t fd=(larz_sock_t)a[0].num;
+  size_t len=strlen(a[1].str);
+#ifdef _WIN32
+  int sent=send(fd,a[1].str,(int)len,0);
+#else
+  long sent=(long)send(fd,a[1].str,len,0);
+#endif
+  if(sent<0) runtime_error(ip,"SocketError","write failed");
+  return V_number((double)sent);
+#endif
+}
+static Value bi_socket_close(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","socket_close() expects a socket handle");
+  larz_sock_t fd=(larz_sock_t)a[0].num;
+  larz_sock_close(fd);
+  return V_nil();
+#endif
+}
+#endif /* hosted */
+
 static Builtin B_print = {"print", bi_print};
 static Builtin B_money = {"money", bi_money};
 static Builtin B_len   = {"len",   bi_len};
@@ -1953,6 +2089,9 @@ static Builtin B_zip={"zip",bi_zip}, B_read_file={"read_file",bi_read_file}, B_r
 static Builtin B_all={"all",bi_all}, B_any={"any",bi_any}, B_count={"count",bi_count}, B_unique={"unique",bi_unique};
 static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct}, B_gcd={"gcd",bi_gcd}, B_factorial={"factorial",bi_factorial}, B_sign={"sign",bi_sign}, B_clamp={"clamp",bi_clamp}, B_list={"list",bi_list}, B_dict={"dict",bi_dict};
 static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
+static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close};
+#endif
 static Builtin B_regex_match={"regex_match",bi_regex_match}, B_regex_find={"regex_find",bi_regex_find}, B_regex_replace={"regex_replace",bi_regex_replace}, B_regex_split={"regex_split",bi_regex_split};
 static Builtin B_date={"date",bi_date}, B_datetime={"datetime",bi_datetime};
 
@@ -2077,6 +2216,13 @@ static void define_builtins(Env *g){
   env_define(g, "time",   V_builtin(&B_time));
   env_define(g, "clock",  V_builtin(&B_clock));
   env_define(g, "sleep",  V_builtin(&B_sleep));
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
+  env_define(g, "socket_listen", V_builtin(&B_socket_listen));
+  env_define(g, "socket_accept", V_builtin(&B_socket_accept));
+  env_define(g, "socket_read",   V_builtin(&B_socket_read));
+  env_define(g, "socket_write",  V_builtin(&B_socket_write));
+  env_define(g, "socket_close",  V_builtin(&B_socket_close));
+#endif
   env_define(g, "regex_match",   V_builtin(&B_regex_match));
   env_define(g, "regex_find",    V_builtin(&B_regex_find));
   env_define(g, "regex_replace", V_builtin(&B_regex_replace));

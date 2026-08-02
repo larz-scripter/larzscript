@@ -93,7 +93,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine
       - name: Build (static)
         run: |
-          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -static -o larzscript-windows-x86_64.exe native/larzscript.c -lwinpthread
+          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -static -o larzscript-windows-x86_64.exe native/larzscript.c -lwinpthread -lws2_32
       - name: Wine warm-up (creates the wine prefix + first-run noise once, outside the test loop)
         # `wine --version` alone does NOT trigger the same wineboot/prefix
         # initialization as running an actual PE binary - the "created the

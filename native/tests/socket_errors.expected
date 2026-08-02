@@ -1,0 +1,3 @@
+double-bind rejected: SocketError
+bad-handle read rejected: SocketError
+done
