@@ -170,3 +170,5 @@ imap              packages/imap
 logtail           packages/logtail
 sitemap           packages/sitemap
 seen              packages/seen
+anomaly           packages/anomaly
+accesslog         packages/accesslog
