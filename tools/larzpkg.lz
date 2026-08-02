@@ -6,12 +6,16 @@
 # direct git URL to anyone's own repo - own it, version it, run it
 # yourself, no monorepo write access needed. See packages/PUBLISHING.md.
 #
-#   larzscript larzpkg.lz install <name>
-#   larzscript larzpkg.lz update [name]
-#   larzscript larzpkg.lz list
-#   larzscript larzpkg.lz remove <name>
-#   larzscript larzpkg.lz search <term>
-#   larzscript larzpkg.lz publish <git-url> [as <name>]
+# `larzscript pkg ...` (built into the interpreter) finds this file at
+# ~/.larzscript/larzpkg.lz for you from any directory - the same as
+# running `larzscript ~/.larzscript/larzpkg.lz ...` yourself:
+#
+#   larzscript pkg install <name>
+#   larzscript pkg update [name]
+#   larzscript pkg list
+#   larzscript pkg remove <name>
+#   larzscript pkg search <term>
+#   larzscript pkg publish <git-url> [as <name>]
 
 let HOME = env("HOME", ".")
 let LIB = HOME + "/.larzscript/lib"
@@ -212,12 +216,12 @@ fn publish(url, name) {
 fn usage() {
   print("larzpkg - the Larzscript package manager")
   print("usage:")
-  print("  larzscript larzpkg.lz install <name>")
-  print("  larzscript larzpkg.lz update [name]   (all installed packages if name omitted)")
-  print("  larzscript larzpkg.lz remove <name>")
-  print("  larzscript larzpkg.lz list")
-  print("  larzscript larzpkg.lz search [term]")
-  print("  larzscript larzpkg.lz publish <git-url> [as <name>]")
+  print("  larzscript pkg install <name>")
+  print("  larzscript pkg update [name]   (all installed packages if name omitted)")
+  print("  larzscript pkg remove <name>")
+  print("  larzscript pkg list")
+  print("  larzscript pkg search [term]")
+  print("  larzscript pkg publish <git-url> [as <name>]")
 }
 
 if len(args) == 0 {

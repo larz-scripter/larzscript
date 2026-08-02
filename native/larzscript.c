@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.24.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.25.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -2609,6 +2609,7 @@ static const char *USAGE =
   "  larzscript --emit-c <file.lz>  compile to C (larzc: gcc it for a native binary)\n"
   "  larzscript [--ledger] <file>   also print the money ledger afterwards\n"
   "  larzscript update              check for and install the latest release\n"
+  "  larzscript pkg <args...>       run the package manager (install/list/publish/...)\n"
   "  larzscript --version | --help\n";
 
 /* ======================================================================
@@ -3490,6 +3491,21 @@ int main(int argc, char **argv){
     if(strcmp(a,"--emit-c")==0){ want_emit_c=1; continue; }
     if(strcmp(a,"-e")==0 || strcmp(a,"--eval")==0){ if(i+1>=argc){ fprintf(stderr,"larzscript: -e needs code\n"); return 1; } eval_code=argv[++i]; i++; break; }
     if(strcmp(a,"repl")==0){ want_repl=1; i++; break; }
+    /* `larzscript pkg install X` resolves to the copy of larzpkg.lz that
+     * install.sh drops at $HOME/.larzscript/larzpkg.lz, from ANY working
+     * directory - previously the only way to run it was to know and
+     * type that full path yourself (`larzscript larzpkg.lz install X`
+     * only worked if you happened to be sitting in that directory),
+     * which is exactly the kind of thing a real package manager command
+     * shouldn't require. */
+    if(strcmp(a,"pkg")==0){
+      const char *home=getenv("HOME");
+      if(!home){ fprintf(stderr,"larzscript pkg: $HOME is not set, can't find larzpkg.lz\n"); return 1; }
+      static char pkgpath[4096];
+      snprintf(pkgpath,sizeof pkgpath,"%s/.larzscript/larzpkg.lz",home);
+      if(access(pkgpath,0)!=0){ fprintf(stderr,"larzscript pkg: %s not found - re-run the installer (curl -fsSL <install-url> | sh)\n", pkgpath); return 1; }
+      path=pkgpath; i++; break;
+    }
     path=a; i++; break;                 /* the source file; the rest are program args */
   }
   /* remaining argv[i..] are the program's own arguments */

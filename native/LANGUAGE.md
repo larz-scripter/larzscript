@@ -190,12 +190,15 @@ Modules are executed once and cached.
 
 ### Packages (larzpkg)
 
-`larzpkg` is the package manager (itself written in Larzscript, `tools/larzpkg.lz`):
+`larzpkg` is the package manager (itself written in Larzscript,
+`tools/larzpkg.lz`, installed by `install.sh` to `~/.larzscript/larzpkg.lz`).
+`larzscript pkg ...` resolves that path for you from any directory - the
+same as running `larzscript ~/.larzscript/larzpkg.lz ...` yourself:
 
 ```
-larzscript larzpkg.lz install mathx     # git-clones into ~/.larzscript/lib
-larzscript larzpkg.lz list
-larzscript larzpkg.lz search math
+larzscript pkg install mathx     # git-clones into ~/.larzscript/lib
+larzscript pkg list
+larzscript pkg search math
 ```
 
 Then `import "mathx"` just works. Packages are git repos with a `main.lz` (or

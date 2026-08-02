@@ -21,5 +21,5 @@ case ":$PATH:" in *":$bindir:"*) ;; *) echo "add $bindir to your PATH, e.g.:  ex
 echo ""
 echo "try it:"
 echo "  larzscript repl"
-echo "  larzscript \$HOME/.larzscript/larzpkg.lz install mathx"
+echo "  larzscript pkg install mathx"
 echo "  larzscript -e 'print(\"hello from larzscript\")'"
