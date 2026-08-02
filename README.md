@@ -8,10 +8,6 @@ Larzscript is its own language, implemented in C and shipped as a single
 **statically-linked binary with zero dependencies** (no Python, no runtime, no
 pip). You write `.lz` files and run them — just like any other language.
 
-> **The official Larzscript is the native standalone** (`native/`). The Python
-> package under `larzscript/` is now a **legacy reference implementation**, kept
-> for study — new work targets the native binary so there is one language, not two.
-
 ## Get it & run it
 
 **Linux / macOS** (one-line install, x86_64 or ARM64/Apple Silicon):
@@ -49,67 +45,27 @@ cc -O2 -o larzscript native/larzscript.c     # or: make -C native
 ./larzscript tools/larzdoc.lz module.lz        # generate Markdown API docs
 ```
 
-**Docs & site:** [larz-scripter.github.io/larzscript](https://larz-scripter.github.io/larzscript/) · [language reference](native/LANGUAGE.md) · [browser playground](https://larzos.com/larzscript/)
+**Docs & site:** [larz-scripter.github.io/larzscript](https://larz-scripter.github.io/larzscript/) · [language reference](native/LANGUAGE.md) · [browser playground](https://larzos.com/larzscript/) · [cookbook](https://larzos.com/stack/cookbook/)
 
-## Packages
+## Why it exists — the selling point
 
-Larzscript has a package manager (`larzpkg`) that installs libraries into
-`~/.larzscript/lib`, where `import` finds them:
+A new general-purpose language competing with Python or Rust is dead on arrival.
+Larzscript wins by owning a niche no mainstream language does: **money as a
+first-class concern.**
 
-```bash
-larzscript pkg install json
-larzscript pkg list
-```
-
-```
-import "http" as http
-import "json" as json
-let repo = json.parse(http.get("https://api.github.com/repos/larz-scripter/larzscript"))
-print(repo["full_name"])                       # larz-scripter/larzscript
-```
-
-Available packages:
-
-| Package | What it does |
-|---|---|
-| **json** | parse & stringify JSON (pure Larzscript) |
-| **http** | HTTP client (get/post/status/download, via curl) |
-| **csv** | parse & write CSV, handles quoted fields |
-| **args** | command-line argument parsing |
-| **color** | ANSI terminal colors |
-| **test** | a tiny test framework (assert/report) |
-| **time** | time & duration helpers (`humanize`, stopwatch) |
-| **string** | string helpers (center, wrap, reverse, snake, ...) |
-| **random** | a small seeded PRNG (deterministic) |
-| **fs** | filesystem helpers (read/write/ls/copy/...) |
-| **base64** | base64 encode/decode (pure Larzscript) |
-| **cli** | build CLI tools (subcommands + help) |
-| **html** | build HTML safely (auto-escaping) |
-| **table** | render tabular data as an aligned ASCII table |
-| **log** | leveled logging with timestamps |
-| **mathx** | small math helpers (mean, fib, primes) |
-| **greet** | a tiny example package |
-
-They compose — e.g. `json.parse(http.get(url))`, or CSV → list-of-dicts → JSON.
-**Publish your own** — host it yourself, no write access to anything here
-needed: `larzscript pkg publish <your-git-url>`. See
-[`packages/PUBLISHING.md`](packages/PUBLISHING.md).
-
-**Larzscript compiles to native code.** `larzscript --emit-c program.lz` emits C; `tools/larzc program.lz` gcc's it into a native binary that runs ~130x faster than the interpreter (a general-purpose subset today). This is the path toward the LarzOS kernel being written in Larzscript itself.
-
-## LarzOS — an OS written in Larzscript
-
-There's an operating system taking shape in [`os/`](os/): its init, shell
-(`larzsh`) and utilities are written **entirely in Larzscript**, and it's
-money-native at the core — compute is metered in a built-in wallet that fails
-closed. Boot the Stage 0 userland (on Linux) today:
-
-```bash
-larzscript os/init.lz     # provisions the system and drops you into larzsh
-```
-
-The [roadmap](os/ROADMAP.md) lifts the same Larzscript userland onto a
-freestanding kernel and, ultimately, real laptops and servers.
+- **Money-native primitives** — `price`, `wallet`, `pay`, `require`, and metered
+  `fn ... gas N`. The runtime *guarantees* a payment can't partially settle and
+  a split is enforced — because they're language semantics, not code you might
+  forget to write.
+- **Paywalls and subscriptions as keywords** — `paywall`/`subscribe` charge,
+  record a ledger entry, and grant access in one statement, enforced by
+  `require ... has ...` at the call site.
+- **Reads like English where it matters** — `unless x is at least $1.00 { ... }`,
+  `for i from 1 to 3 { ... }` — natural-language guardrails around the money
+  logic, not just symbols.
+- **Compiles to real native code** — `--emit-c` emits portable C; a compiled
+  program runs tens of times faster than the interpreter on CPU-bound work (see
+  [benchmarks](native/BENCHMARKS.md) for real, measured numbers — not a guess).
 
 ## A taste — general-purpose *and* money-native
 
@@ -145,18 +101,10 @@ unless customer.balance is at least $1.00 {
 for i from 1 to 3 { say "reminder " + str(i) }
 ```
 
-See **[native/README.md](native/README.md)** for the full language reference.
+*(Every example on this page was run against the current release before being
+committed here - not illustrative pseudocode.)*
 
-### Gas-metered execution (fails closed)
-
-```
-fn scan() gas 500 { return 1 }
-scan()
-scan()
-scan()          # OutOfGasError: out of gas calling 'scan'  (with gas budget 1200)
-```
-
-### Subscriptions & paywalls
+### Paywalls and subscriptions
 
 ```
 wallet customer = $20.00
@@ -171,134 +119,83 @@ fn premium(user) {
 }
 ```
 
-### Run it
+### Gas-metered functions
+
+```
+fn scan() gas 500 { return 1 }
+```
+
+`gas N` annotates a function's cost and every call is tracked (`gas_used` in
+the runtime). Real enforcement - a call failing closed once a budget is
+exhausted - is wired up when Larzscript is embedded as a host language (this
+is how [LarzOS](os/) meters compute at the kernel level, failing closed on a
+program that overspends). The standalone CLI doesn't yet expose a way to set
+an enforced budget from a plain script - tracked as an open interpreter gap,
+not shipped as if it already works end to end.
+
+### Two ways to run: interpret or compile
 
 ```bash
-larzscript program.lz     # run a file
-larzscript repl           # interactive REPL (state persists across lines)
+larzscript program.lz            # tree-walking interpreter (default) - instant, no build step
+larzscript --emit-c program.lz   # emit portable C - compile it yourself for a fast native binary
 ```
 
-## Lists & loops (new in 0.4)
+Both share one runtime - output, ledger, balances and gas are identical
+either way; `--emit-c` just skips re-parsing and re-walking the AST on every
+run. (The legacy Python package has a separate bytecode-VM backend of its
+own - see [LEGACY.md](LEGACY.md) - unrelated to this.)
 
-```
-let basket = [$3.50, $12.00, $4.25]     # lists (money too)
-for item in basket {                    # for-loops
-    pay item from customer to shop
-}
-print(len(basket), basket[0])           # 3  $3.50
-```
+## Packages — 160+ zero-dependency libraries
 
-Plus `range(n)` and `push(list, item)`.
-
-## Two backends: interpret or compile (new in 0.3)
-
-The same program runs two ways, producing identical results:
-
-```python
-from larzscript import run
-run(program)                    # tree-walking interpreter (default)
-run(program, backend="vm")      # compile to bytecode, run on a stack VM
+```bash
+larzscript pkg install json
+larzscript pkg list
 ```
 
-`larzscript --vm file.lz` runs the compiled path. Both share one runtime, so
-output, ledger, balances and gas are identical whichever you pick.
-
-## Pluggable settlement (new in 1.0)
-
-This is what makes Larzscript more than a toy. A program never moves money
-directly — `pay` and `subscribe` ask the program's **settlement backend** to do
-it. The default settles in memory (byte-identical to before), but you can plug
-in a real one and run the *same, unchanged program* against it:
-
-```python
-from larzscript import run, Settlement, CallbackSettlement, SettlementError
-
-# Quick: attach callbacks — no subclass.
-run(program, settlement=CallbackSettlement(
-    on_record=lambda txn, kind, memo: audit_log.append(txn)))
-
-# Real: authorize against external state, then broadcast what settles.
-class OnChainSettlement(Settlement):
-    def authorize(self, src, dst, amount, kind):
-        return chain.balance(src.name) >= amount.cents   # decline before money moves
-    def record(self, txn, kind, memo):
-        chain.submit(txn.src, txn.dst, txn.amount.cents)  # broadcast the settled tx
-
-run(program, settlement=OnChainSettlement())
+```
+import "http" as http
+import "json" as json
+let repo = json.parse(http.get("https://api.github.com/repos/larz-scripter/larzscript"))
+print(repo["full_name"])                       # larz-scripter/larzscript
 ```
 
-- `authorize()` runs **before** any debit — a declined payment raises
-  `SettlementError` and **never partially settles**. This is where an on-chain
-  balance check, a fiat funds-hold, KYC, or fraud rules live.
-- `record()` runs **after** a successful move — persist or broadcast it to a real
-  ledger (a LarzChain transaction, a GemVault fiat charge, an audit log).
-- Works identically on both backends. See `examples/settlement_backend.py`.
+They compose — e.g. `json.parse(http.get(url))`, or a full ops-alerting
+pipeline out of four separately-installable packages. Browse all of them,
+with a real tested example on every page, at
+**[larzos.com/stack/](https://larzos.com/stack/)** - or see 8 real multi-package
+recipes solved end to end in the **[cookbook](https://larzos.com/stack/cookbook/)**.
 
-### Ready-made rails (`larzscript.adapters`)
+A representative slice: `money`/`ledger`/`invoice`/`escrow` (payments),
+`crypto`/`jwt`/`apikey`/`acl` (security), `http`/`webhook`/`dispatch`/`imap`
+(networking, all built on `curl` - no bundled runtime), `neural`/`genetic`/`raytrace`
+(from-scratch AI/graphics), `db`/`sql`/`cache` (data). **Publish your own** -
+host it yourself, no write access to anything here needed:
+`larzscript pkg publish <your-git-url>`. See
+[`packages/PUBLISHING.md`](packages/PUBLISHING.md).
 
-Two backends ship ready to use (opt-in imports; core stays zero-dependency):
+## Built with it
 
-- **Fiat / credit** — `CreditSettlement` settles payments instantly against
-  pre-funded per-wallet credit; the only real charge is a top-up **checkout a
-  human completes**, so a program never triggers a silent charge.
-  `GemVaultSettlement` sells that credit via the GemVault hub (card / PayPal /
-  crypto), verifying the signed webhook. See `examples/fiat_settlement.py`.
+- **[larzscript-budget](https://github.com/larz-scripter/larzscript-budget)** -
+  a real personal budget tracker CLI. Budget categories *are* `wallet`s; every
+  expense is a real `pay`; every spending limit is a real `require` guardrail
+  the runtime enforces, not application code you could forget to write. Real
+  GitHub Actions CI, green.
 
-  ```python
-  from larzscript.adapters.credit import CreditSettlement
-  settle = CreditSettlement(balances={"customer": 5000})   # $50.00 of credit
-  run(program, settlement=settle)                           # pays draw it down
-  ```
+(Building something real with Larzscript? Open a PR adding it here.)
 
-- **On-chain** — `LarzChainSettlement` (in the
-  [LarzChain](https://github.com/larz-scripter/larzchain) package) settles every
-  payment as a real signed LARZ transaction.
+## LarzOS — an OS written in Larzscript
 
-## Contracts (new in 1.2)
+There's an operating system taking shape in [`os/`](os/): its init, shell
+(`larzsh`) and utilities are written **entirely in Larzscript**, and it's
+money-native at the core — compute is metered in a built-in wallet that fails
+closed. Boot the Stage 0 userland (on Linux) today:
 
-Deploy a `.lz` program as a persistent, callable **contract**. Because the
-language is deterministic and I/O-free, a contract's state is a pure function of
-its ordered calls — so it's replayable and hashes to a commitment you can anchor
-on-chain, while every payment settles through your chosen rail.
-
-```python
-from larzscript.contract import Contract
-
-c = Contract('''
-    wallet treasury
-    paywall pro = $9.00 / month to treasury
-    fn join(user) gas 20 {
-        require user.balance >= $9.00, "need $9.00 to join"
-        subscribe user to pro
-    }
-''')
-
-alice = c.new_wallet("alice", "$20.00")
-c.call("join", alice)          # metered, settling call; state persists
-c.balance("treasury")          # Money(900)
-c.state_hash()                 # sha256 commitment — anchor it on-chain
+```bash
+larzscript os/init.lz     # provisions the system and drops you into larzsh
 ```
 
-Full *in-consensus* execution is a separate frontier; this gives deterministic
-state + real settlement + an anchorable commitment with no consensus changes.
-
-## Why it exists — the selling point
-
-A new general-purpose language competing with Python or Rust is dead on arrival.
-Larzscript wins by owning a niche no mainstream language does: **money as a
-first-class concern.**
-
-- **Money-native primitives** — `price`, `wallet`, `pay`, `require`, and metered
-  `fn ... gas N`. The runtime *guarantees* an endpoint can't run without payment,
-  a function can't exceed its gas, and a split is enforced — because they're
-  language semantics, not code you might forget.
-- **Pluggable settlement** *(shipped in 1.0)* — `pay`/`subscribe` run through a
-  swappable `Settlement` backend that can authorize and record every movement.
-  Point it at a payments hub for fiat/card or a chain for on-chain settlement and
-  the same program settles for real — the program itself doesn't change.
-- **Gas-metering built in** — makes "pay-per-execution" and "run untrusted code
-  safely" natural, and makes Larzscript a natural smart-contract language that
-  *also* speaks fiat.
+The [roadmap](os/ROADMAP.md) lifts the same Larzscript userland onto a
+freestanding kernel and, ultimately, real laptops and servers.
 
 ## Language at a glance
 
@@ -312,30 +209,20 @@ price coffee   = $3.50            # money is a value type ($ = cents)
 wallet shop                       # a balance you can credit/debit
 pay coffee from customer to shop  # moves money, records a ledger entry
 require shop.balance >= $10, "min"   # a guardrail the runtime enforces
-fn analyze(img) gas 500 { ... }   # metered: each call costs gas
+fn analyze(img) gas 500 { ... }   # gas-annotated: see "Gas-metered functions" above
 ```
 
-## Roadmap
+See **[native/LANGUAGE.md](native/LANGUAGE.md)** for the full language reference.
 
-The **native standalone** (`native/`) is the official implementation and where
-all development happens:
+## Legacy Python reference
 
-- **native v1.0** — grew from money-native core into a real general-purpose
-  language: dictionaries, element assignment, `break`/`continue`, a full standard
-  library, line-numbered errors.
-- **native v1.1** — `try`/`catch`/`throw`, f-strings, slicing, lambdas +
-  `map`/`filter`/`reduce`, and the `**` `//` `in` operators.
-- **Next** — string interpolation extras, modules/`import`, a real allocator,
-  and tooling (formatter, spec, editor support). Money-native primitives
-  (`pay`/`require`/`paywall`/`subscribe`) remain first-class throughout.
-
-### Legacy Python reference (`larzscript/`)
-
-The original implementation was a pure-Python interpreter/VM plus settlement
-adapters (in-memory, fiat via GemVault, on-chain via
-[LarzChain](https://github.com/larz-scripter/larzchain)). It's **kept as a
-reference** but is no longer the standard — the native binary is. Its docs and
-tests live under `larzscript/` and `tests/`.
+The original implementation was a pure-Python interpreter/VM plus a pluggable
+settlement-backend framework (in-memory, fiat via GemVault, on-chain via
+[LarzChain](https://github.com/larz-scripter/larzchain)) and a deterministic
+contracts layer. It's **kept for study, not the standard** - the native binary
+above is. Its docs, API and code examples now live in
+**[LEGACY.md](LEGACY.md)**, so they don't get mixed up with the current
+language's own version history.
 
 ## Learn to code with Larz
 
@@ -345,8 +232,8 @@ Part of the [Larz stack](https://github.com/larz-scripter) — see the
 ## Tests
 
 ```bash
-sh native/run_tests.sh                    # the official native language: 14 tests
-python -m unittest discover -s tests -v   # legacy Python reference: 53 tests
+sh native/run_tests.sh                    # the official native language
+python -m unittest discover -s tests -v   # legacy Python reference
 ```
 
 ## License
