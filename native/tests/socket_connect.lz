@@ -1,0 +1,23 @@
+# socket_connect() is the outbound half socket_listen()/accept() never had -
+# a plain socket_listen()/accept() pair can only ever be dialed INTO, never
+# used to reach back out anywhere. Also covers a real, catchable failure
+# (nothing listening on the target port), not a crash - same convention as
+# socket_errors.lz.
+let listener = socket_listen(19501)
+let client = socket_connect("127.0.0.1", 19501)
+print(type(client))
+let server_side = socket_accept(listener)
+socket_write(server_side, "hi")
+print(socket_read(client, 10))
+socket_close(client)
+socket_close(server_side)
+
+try {
+  socket_connect("127.0.0.1", 19502)
+  print("FAIL: connecting to a closed port should have thrown")
+} catch e {
+  print("refused connect rejected:", e["type"])
+}
+
+socket_close(listener)
+print("done")

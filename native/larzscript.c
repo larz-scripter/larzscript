@@ -100,6 +100,8 @@ typedef SOCKET larz_sock_t;
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>            /* getaddrinfo - socket_connect()'s DNS resolution */
+#include <sys/select.h>       /* select()/fd_set - socket_poll() */
 typedef int larz_sock_t;
 #define LARZ_INVALID_SOCK (-1)
 #define larz_sock_close close
@@ -2070,6 +2072,78 @@ static Value bi_socket_close(Interp *ip, Value *a, int n){
   return V_nil();
 #endif
 }
+/* Outbound TCP dial - the counterpart socket_listen()/socket_accept() never
+ * had: nothing before this builtin let a Larzscript program connect OUT to
+ * an address, only accept incoming connections. Resolves `host` (hostname
+ * or literal IP) via getaddrinfo and connects to the first address that
+ * works. */
+static Value bi_socket_connect(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=2||a[0].t!=V_STR||!is_num(a[1])) runtime_error(ip,"LarzTypeError","socket_connect() expects a host string and a port number");
+  const char *host=a[0].str;
+  char portbuf[16]; snprintf(portbuf,sizeof(portbuf),"%d",(int)a[1].num);
+#ifdef _WIN32
+  static int wsa_started=0;
+  if(!wsa_started){ WSADATA wsa; WSAStartup(MAKEWORD(2,2),&wsa); wsa_started=1; }
+#endif
+  struct addrinfo hints; memset(&hints,0,sizeof(hints));
+  hints.ai_family=AF_INET; hints.ai_socktype=SOCK_STREAM;
+  struct addrinfo *res=NULL;
+  int gai=getaddrinfo(host,portbuf,&hints,&res);
+  if(gai!=0||!res) runtime_error(ip,"SocketError","could not resolve host '%s'",host);
+  larz_sock_t fd=LARZ_INVALID_SOCK;
+  for(struct addrinfo *rp=res; rp; rp=rp->ai_next){
+    fd=socket(rp->ai_family,rp->ai_socktype,rp->ai_protocol);
+    if(fd==LARZ_INVALID_SOCK) continue;
+    if(connect(fd,rp->ai_addr,(int)rp->ai_addrlen)==0) break;
+    larz_sock_close(fd); fd=LARZ_INVALID_SOCK;
+  }
+  freeaddrinfo(res);
+  if(fd==LARZ_INVALID_SOCK) runtime_error(ip,"SocketError","could not connect to %s:%s",host,portbuf);
+  return V_number((double)fd);
+#endif
+}
+/* select()-based readiness check over a list of socket handles - lets one
+ * single-threaded Larzscript process service multiple live sockets (e.g. a
+ * control connection and a forwarded data connection) without a blocking
+ * socket_read() on one starving the other. Returns the subset of `fds` that
+ * are readable within `timeout_ms` (an empty list on timeout, not an
+ * error - timing out with nothing ready is the normal case in a poll loop). */
+static Value bi_socket_poll(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=2||a[0].t!=V_LIST||!is_num(a[1])) runtime_error(ip,"LarzTypeError","socket_poll() expects a list of socket handles and a timeout in milliseconds");
+  List *fds=a[0].list;
+  for(int i=0;i<fds->n;i++) if(!is_num(fds->items[i])) runtime_error(ip,"LarzTypeError","socket_poll() expects a list of socket handles");
+  int timeout_ms=(int)a[1].num;
+  if(timeout_ms<0) timeout_ms=0;
+  fd_set readfds; FD_ZERO(&readfds);
+  larz_sock_t maxfd=0;
+  for(int i=0;i<fds->n;i++){
+    larz_sock_t fd=(larz_sock_t)fds->items[i].num;
+    FD_SET(fd,&readfds);
+    if(fd>maxfd) maxfd=fd;
+  }
+  struct timeval tv; tv.tv_sec=timeout_ms/1000; tv.tv_usec=(timeout_ms%1000)*1000;
+  int r=select((int)maxfd+1,&readfds,NULL,NULL,&tv);
+  if(r<0) runtime_error(ip,"SocketError","poll failed");
+  List *out=list_new();
+  if(r>0){
+    for(int i=0;i<fds->n;i++){
+      larz_sock_t fd=(larz_sock_t)fds->items[i].num;
+      if(FD_ISSET(fd,&readfds)) list_push(out,fds->items[i]);
+    }
+  }
+  return V_list(out);
+#endif
+}
 #endif /* hosted */
 
 static Builtin B_print = {"print", bi_print};
@@ -2090,7 +2164,7 @@ static Builtin B_all={"all",bi_all}, B_any={"any",bi_any}, B_count={"count",bi_c
 static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct}, B_gcd={"gcd",bi_gcd}, B_factorial={"factorial",bi_factorial}, B_sign={"sign",bi_sign}, B_clamp={"clamp",bi_clamp}, B_list={"list",bi_list}, B_dict={"dict",bi_dict};
 static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
-static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close};
+static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
 #endif
 static Builtin B_regex_match={"regex_match",bi_regex_match}, B_regex_find={"regex_find",bi_regex_find}, B_regex_replace={"regex_replace",bi_regex_replace}, B_regex_split={"regex_split",bi_regex_split};
 static Builtin B_date={"date",bi_date}, B_datetime={"datetime",bi_datetime};
@@ -2222,6 +2296,8 @@ static void define_builtins(Env *g){
   env_define(g, "socket_read",   V_builtin(&B_socket_read));
   env_define(g, "socket_write",  V_builtin(&B_socket_write));
   env_define(g, "socket_close",  V_builtin(&B_socket_close));
+  env_define(g, "socket_connect",V_builtin(&B_socket_connect));
+  env_define(g, "socket_poll",   V_builtin(&B_socket_poll));
 #endif
   env_define(g, "regex_match",   V_builtin(&B_regex_match));
   env_define(g, "regex_find",    V_builtin(&B_regex_find));

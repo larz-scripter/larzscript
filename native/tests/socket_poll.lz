@@ -1,0 +1,22 @@
+# socket_poll() lets one single-threaded process service multiple live
+# sockets without a blocking socket_read() on an idle one starving a ready
+# one. Verifies both directions of that claim: nothing ready reports empty
+# (not a hang, not an error), and it correctly tells apart which of two
+# sockets actually has data waiting.
+let listener = socket_listen(19503)
+let client = socket_connect("127.0.0.1", 19503)
+let server_side = socket_accept(listener)
+
+let ready0 = socket_poll([client, server_side], 100)
+print("nothing ready:", len(ready0))
+
+socket_write(server_side, "hello")
+let ready1 = socket_poll([client, server_side], 1000)
+print("client ready:", ready1.contains(client))
+print("server ready:", ready1.contains(server_side))
+print("payload:", socket_read(client, 100))
+
+socket_close(client)
+socket_close(server_side)
+socket_close(listener)
+print("done")

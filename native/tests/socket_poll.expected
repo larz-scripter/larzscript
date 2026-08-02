@@ -1,0 +1,5 @@
+nothing ready: 0
+client ready: true
+server ready: false
+payload: hello
+done

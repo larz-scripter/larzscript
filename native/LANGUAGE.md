@@ -220,6 +220,15 @@ actually sent - may be less than asked, same as a real `send()`),
 `socket_close(fd)`. A handle is a plain number, the OS fd/`SOCKET` value.
 Errors (bind failure, a bad handle, ...) throw a catchable `SocketError`.
 
+The outbound half: `socket_connect(host, port)` resolves `host` (hostname or
+literal IP) and dials out, returning a connected handle - the counterpart
+`socket_listen`/`socket_accept` never had, since those can only be dialed
+*into*. And `socket_poll(fds, timeout_ms)` - a `select()` wrapper - takes a
+list of handles and returns the subset that are readable within
+`timeout_ms` (empty on timeout, not an error), so one single-threaded
+program can service several live sockets without a blocking `socket_read()`
+on an idle one starving a ready one.
+
 These are deliberately low-level, the same way `read_file`/`write_file`
 are - the `tcp` package builds the ergonomic layer (`tcp.serve(port,
 handler)`, a real loop that answers one request at a time, forever):
