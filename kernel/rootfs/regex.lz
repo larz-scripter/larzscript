@@ -20,8 +20,87 @@
 #   regex.matched_text("[0-9]+", "abc123")                # "123"
 #   regex.replace("[^a-z0-9]+", "Hello, World!".lower(), "-")  # "hello-world-"
 #   regex.split("\\s+", "a   b\tc")                      # ["a", "b", "c"]
+#   regex.find_all("[0-9]+", "a1 b22 c333")               # [[1,2],[4,6],[8,11]]
+#   print(regex.explain("[0-9]+\\s?"))
+#   print(regex.highlight("[0-9]+", "a1 b22"))             # "a**1** b**22**"
 
 fn test(pattern, text) { return regex_match(pattern, text) }
+
+# Every non-overlapping match, as [start, end] spans, left to right.
+fn find_all(pattern, text) {
+  let out = []
+  let start = 0
+  while start <= len(text) {
+    let m = regex_find(pattern, text, start)
+    if m == nil { break }
+    out.push(m)
+    start = m[1] > m[0] ? m[1] : m[1] + 1
+  }
+  return out
+}
+
+# Wraps every match in `before`/`after` markers (default markdown-bold).
+fn highlight(pattern, text, before="**", after="**") {
+  let matches = find_all(pattern, text)
+  if len(matches) == 0 { return text }
+  let out = ""
+  let last = 0
+  for m in matches {
+    out = out + text[last:m[0]] + before + text[m[0]:m[1]] + after
+    last = m[1]
+  }
+  return out + text[last:]
+}
+
+let _CLASS_NAMES = {"d": "a digit", "D": "a non-digit", "w": "a word character", "W": "a non-word character", "s": "whitespace", "S": "non-whitespace"}
+
+# A plain-English, token-by-token breakdown of a pattern.
+fn explain(pattern) {
+  let lines = []
+  let i = 0
+  let n = len(pattern)
+  while i < n {
+    let c = pattern[i:i+1]
+    if c == "\\" and i + 1 < n {
+      let e = pattern[i+1:i+2]
+      let desc = _CLASS_NAMES.has(e) ? _CLASS_NAMES[e] : "a literal '" + e + "'"
+      lines.push("\\" + e + ": " + desc)
+      i = i + 2
+    } else if c == "." {
+      lines.push(".: any character")
+      i = i + 1
+    } else if c == "^" {
+      lines.push("^: start of the text")
+      i = i + 1
+    } else if c == "$" {
+      lines.push("$: end of the text")
+      i = i + 1
+    } else if c == "*" {
+      lines.push("*: zero or more of the previous")
+      i = i + 1
+    } else if c == "+" {
+      lines.push("+: one or more of the previous")
+      i = i + 1
+    } else if c == "?" {
+      lines.push("?: zero or one of the previous")
+      i = i + 1
+    } else if c == "[" {
+      let close_ = pattern.find("]", i)
+      if close_ < 0 { lines.push("[: literal '[' (unclosed class)"); i = i + 1 }
+      else {
+        let inner = pattern[i+1:close_]
+        let negate = len(inner) > 0 and inner[0:1] == "^"
+        let body = negate ? inner[1:] : inner
+        lines.push(pattern[i:close_+1] + ": " + (negate ? "any character NOT in " : "any character in ") + "[" + body + "]")
+        i = close_ + 1
+      }
+    } else {
+      lines.push("'" + c + "': the literal character '" + c + "'")
+      i = i + 1
+    }
+  }
+  return join(lines, "\n")
+}
 
 fn find(pattern, text, start=0) { return regex_find(pattern, text, start) }
 

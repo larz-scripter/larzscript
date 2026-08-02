@@ -1,18 +1,67 @@
-# slugify - turn text into a clean URL slug: lowercase, non-alphanumeric
-# runs collapsed to a single "-", edges trimmed, optional max length.
+# slugify - turn text into a clean URL slug: common accented Latin
+# characters transliterated to their ASCII base letter first (so "café"
+# becomes "cafe", not just "caf"), lowercase, non-alphanumeric runs
+# collapsed to a configurable separator, edges trimmed, optional max
+# length. unique_slug() appends -2/-3/... until the result isn't
+# already in a given set of existing slugs.
 #
 #   import "slugify" as slugify
 #   print(slugify.slug("What Is Larzscript? A Guide"))   # "what-is-larzscript-a-guide"
 #   print(slugify.slug("Hello, World!", 5))               # "hello"
+#   print(slugify.slug("café résumé"))                    # "cafe-resume"
+#   print(slugify.slug("a b", 70, "_"))                    # "a_b"
+#   print(slugify.unique_slug("Hello", ["hello", "hello-2"]))  # "hello-3"
 
 import "regex" as regex
 
-fn slug(text, max_len=70) {
-  let s = regex.replace("[^a-z0-9]+", text.lower(), "-")
-  while len(s) > 0 and s[0] == "-" { s = s[1:] }
-  while len(s) > 0 and s[len(s) - 1] == "-" { s = s[0:len(s) - 1] }
+let _TRANSLIT = {
+  "à": "a", "á": "a", "â": "a", "ã": "a", "ä": "a", "å": "a",
+  "è": "e", "é": "e", "ê": "e", "ë": "e",
+  "ì": "i", "í": "i", "î": "i", "ï": "i",
+  "ò": "o", "ó": "o", "ô": "o", "õ": "o", "ö": "o",
+  "ù": "u", "ú": "u", "û": "u", "ü": "u",
+  "ý": "y", "ÿ": "y", "ñ": "n", "ç": "c", "ß": "ss",
+  "æ": "ae", "œ": "oe",
+  "À": "A", "Á": "A", "Â": "A", "Ã": "A", "Ä": "A", "Å": "A",
+  "È": "E", "É": "E", "Ê": "E", "Ë": "E",
+  "Ì": "I", "Í": "I", "Î": "I", "Ï": "I",
+  "Ò": "O", "Ó": "O", "Ô": "O", "Õ": "O", "Ö": "O",
+  "Ù": "U", "Ú": "U", "Û": "U", "Ü": "U",
+  "Ý": "Y", "Ñ": "N", "Ç": "C"
+}
+
+# `for c in text` walks bytes, not Unicode codepoints - a multi-byte
+# UTF-8 character (which every accented Latin letter here is) would be
+# split into unmatched byte fragments that way. .replace() works on
+# whole substrings regardless of byte width, so each accented character
+# is replaced as a complete unit instead.
+fn _transliterate(text) {
+  let out = text
+  for k in keys(_TRANSLIT) { out = out.replace(k, _TRANSLIT[k]) }
+  return out
+}
+
+fn slug(text, max_len=70, separator="-") {
+  let translit = _transliterate(text)
+  let s = regex.replace("[^a-z0-9]+", translit.lower(), separator)
+  while len(s) > 0 and s[0] == separator { s = s[1:] }
+  while len(s) > 0 and s[len(s) - 1] == separator { s = s[0:len(s) - 1] }
   if len(s) > max_len { s = s[0:max_len] }
-  # a truncation could leave a trailing "-" - trim once more
-  while len(s) > 0 and s[len(s) - 1] == "-" { s = s[0:len(s) - 1] }
+  # a truncation could leave a trailing separator - trim once more
+  while len(s) > 0 and s[len(s) - 1] == separator { s = s[0:len(s) - 1] }
   return s
+}
+
+# `existing` is a list of already-used slugs (or anything supporting
+# `in`). Appends "-2", "-3", ... (using the same separator) until the
+# result isn't in `existing`.
+fn unique_slug(text, existing, max_len=70, separator="-") {
+  let base = slug(text, max_len, separator)
+  if not (base in existing) { return base }
+  let n = 2
+  while true {
+    let candidate = base + separator + str(n)
+    if not (candidate in existing) { return candidate }
+    n = n + 1
+  }
 }

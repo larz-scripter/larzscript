@@ -1,21 +1,63 @@
-# html - build HTML safely, with automatic escaping.
+# html - build HTML safely, with automatic escaping. Text content is
+# escaped by default (XSS-safe by default) - to embed HTML you already
+# trust (usually the output of another html.* call), wrap it in
+# markup() to mark it as pre-escaped instead of re-escaping it. Boolean
+# attributes (disabled, checked, required, ...) take a real Larzscript
+# bool: true renders the bare attribute name, false/nil omits it
+# entirely - never a stray `="true"`. void_el() renders self-closing
+# elements (br, img, input, hr, meta - no children, no closing tag).
 #
 #   import "html" as html
-#   html.el("a", {"href": "/x"}, html.escape("A & B"))   # <a href="/x">A &amp; B</a>
+#   html.el("a", {"href": "/x"}, "A & B")                # escaped: A &amp; B
+#   html.el("input", {"disabled": true, "type": "text"})  # <input disabled type="text"/>
+#   html.void_el("br", {})                                 # <br/>
 #   html.page("Hi", html.tag("h1", "Hello <world>"))
+#   let trusted = html.markup(html.tag("b", "bold"))
+#   html.el("div", {}, trusted)                            # embeds <b>bold</b> raw
 
 fn escape(s) {
   return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 }
-fn tag(name, content) { return "<" + name + ">" + escape(content) + "</" + name + ">" }
-fn raw(name, content) { return "<" + name + ">" + content + "</" + name + ">" }
-fn el(name, attrs, content) {
-  let a = ""
-  for k in keys(attrs) { a = a + " " + k + "=\"" + escape(attrs[k]) + "\"" }
-  return "<" + name + a + ">" + content + "</" + name + ">"
+
+# Marks a string as already-safe HTML, so el()/tag() embed it as-is
+# instead of escaping it - the one deliberate way to opt out of the
+# safe-by-default behavior.
+fn markup(s) { return {"__html__": s} }
+fn is_markup(v) { return type(v) == "dict" and v.has("__html__") }
+
+fn _render(content) {
+  if is_markup(content) { return content["__html__"] }
+  if type(content) == "list" {
+    let parts = []
+    for c in content { parts.push(_render(c)) }
+    return join(parts, "")
+  }
+  return escape(content)
 }
-fn link(href, text) { return el("a", {"href": href}, escape(text)) }
-fn ul(items) { return "<ul>" + join([tag("li", it) for it in items], "") + "</ul>" }
+
+fn _attrs_str(attrs) {
+  let a = ""
+  for k in keys(attrs) {
+    let v = attrs[k]
+    if v == false or v == nil { continue }
+    if v == true { a = a + " " + k }
+    else { a = a + " " + k + "=\"" + escape(v) + "\"" }
+  }
+  return a
+}
+
+fn el(name, attrs={}, content="") { return "<" + name + _attrs_str(attrs) + ">" + _render(content) + "</" + name + ">" }
+fn tag(name, content) { return el(name, {}, content) }
+fn raw(name, content) { return el(name, {}, markup(content)) }
+fn void_el(name, attrs={}) { return "<" + name + _attrs_str(attrs) + "/>" }
+
+fn link(href, text) { return el("a", {"href": href}, text) }
+fn ul(items) {
+  let parts = []
+  for it in items { parts.push(tag("li", it)) }
+  return "<ul>" + join(parts, "") + "</ul>"
+}
 fn page(title, body) {
-  return "<!doctype html><html><head><meta charset=\"utf-8\"><title>" + escape(title) + "</title></head><body>" + body + "</body></html>"
+  let body_html = is_markup(body) ? body["__html__"] : body
+  return "<!doctype html><html><head><meta charset=\"utf-8\"><title>" + escape(title) + "</title></head><body>" + body_html + "</body></html>"
 }

@@ -1,27 +1,98 @@
-# uuid - RFC 4122 version 4 (random) UUID generation, built on `random`.
+# uuid - RFC 4122 v4 (random) and v7 (time-sortable) UUIDs, plus ULID
+# and nanoid - two other time-sortable/URL-safe id formats that solve
+# the same "id" problem with a different shape. v7/ULID are
+# time-sortable: generate a batch and sorting them as plain strings
+# sorts them by creation time too, which a v4/random id can't do.
 #
 #   import "uuid" as uuid
-#   uuid.v4()   # e.g. "3f8a1c2e-9b4d-4f7a-8c1e-2b6d9f0a1234"
+#   uuid.v4()    # "3f8a1c2e-9b4d-4f7a-8c1e-2b6d9f0a1234" - fully random
+#   uuid.v7()    # "0189f3b2-1a4c-7f21-8abc-1234567890ab" - time-sortable
+#   uuid.ulid()  # "01H8XGJWBWBAQ4Z1M0M4G6EQXG" - time-sortable, base32
+#   uuid.nanoid()          # "V1StGXR8_Z5jdHi6B-myT" - 21 chars, URL-safe
+#   uuid.nanoid(10)        # a shorter one
 
 import "random" as rng
 
 let _HEX = "0123456789abcdef"
-
 fn _hx(b) { return _HEX[b // 16] + _HEX[b % 16] }
 
-fn v4() {
-  rng.seed(int(clock() * 1000000) % 2147483646 + 1)
-  let bytes_ = []
+fn _seed_fresh() { rng.seed(int(clock() * 1000000) % 2147483646 + 1) }
+
+fn _random_bytes(n) {
+  let out = []
   let i = 0
-  while i < 16 { bytes_.push(rng.randint(0, 255)); i = i + 1 }
+  while i < n { out.push(rng.randint(0, 255)); i = i + 1 }
+  return out
+}
+
+fn v4() {
+  _seed_fresh()
+  let bytes_ = _random_bytes(16)
   bytes_[6] = (bytes_[6] % 16) + 64    # version 4 -> high nibble 0100
   bytes_[8] = (bytes_[8] % 64) + 128   # variant   -> high 2 bits 10
+  let out = ""
+  let i = 0
+  while i < 16 {
+    out = out + _hx(bytes_[i])
+    if i == 3 or i == 5 or i == 7 or i == 9 { out = out + "-" }
+    i = i + 1
+  }
+  return out
+}
 
+# 48-bit unix ms timestamp + version/variant + 74 bits random - sorts
+# lexicographically in creation order, unlike v4.
+fn v7() {
+  _seed_fresh()
+  let ms = int(time() * 1000)
+  let bytes_ = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  let t = ms
+  let k = 5
+  while k >= 0 { bytes_[k] = t % 256; t = t // 256; k = k - 1 }
+  let r = _random_bytes(10)
+  bytes_[6] = 112 + (r[0] % 16)   # version 7 -> high nibble 0111 (112 = 0x70)
+  bytes_[7] = r[1]
+  bytes_[8] = 128 + (r[2] % 64)           # variant 10
+  let i = 9
+  while i < 16 { bytes_[i] = r[i - 6]; i = i + 1 }
   let out = ""
   i = 0
   while i < 16 {
     out = out + _hx(bytes_[i])
     if i == 3 or i == 5 or i == 7 or i == 9 { out = out + "-" }
+    i = i + 1
+  }
+  return out
+}
+
+# Crockford base32 (excludes I, L, O, U - avoids look-alike confusion).
+let _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+# 26 chars: 10-char 48-bit ms timestamp + 16-char 80-bit random.
+# Time-sortable as a plain string, like v7 but base32 and no dashes.
+fn ulid() {
+  _seed_fresh()
+  let ms = int(time() * 1000)
+  let ts_chars = ""
+  let t = ms
+  let i = 0
+  while i < 10 { ts_chars = _CROCKFORD[t % 32:t % 32 + 1] + ts_chars; t = t // 32; i = i + 1 }
+  let rand_chars = ""
+  i = 0
+  while i < 16 { let d = rng.randint(0, 31); rand_chars = rand_chars + _CROCKFORD[d:d+1]; i = i + 1 }
+  return ts_chars + rand_chars
+}
+
+let _NANOID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+
+fn nanoid(length=21, alphabet=nil) {
+  _seed_fresh()
+  let chars_ = alphabet == nil ? _NANOID_ALPHABET : alphabet
+  let out = ""
+  let i = 0
+  while i < length {
+    let d = rng.randint(0, len(chars_) - 1)
+    out = out + chars_[d:d+1]
     i = i + 1
   }
   return out

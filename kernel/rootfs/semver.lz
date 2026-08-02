@@ -1,6 +1,9 @@
 # semver - semantic version (major.minor.patch) parse and compare.
 # No pre-release/build-metadata suffixes (1.2.3-beta.1+build) - a
-# deliberately small subset covering the common case.
+# deliberately small subset covering the common case. satisfies()
+# understands >=/<=/>/</^/~ ranges, x-ranges ("1.2.x", "1.x"), and
+# "||" to OR multiple ranges together; max_satisfying() picks the
+# highest version in a list that matches a constraint.
 #
 #   import "semver" as semver
 #   let v = semver.parse("1.24.0")
@@ -8,6 +11,9 @@
 #   print(semver.compare("1.2.0", "1.10.0"))    # -1 (1.2.0 < 1.10.0)
 #   print(semver.gt("2.0.0", "1.9.9"))          # true
 #   print(semver.satisfies("1.5.0", ">=1.0.0"))  # true
+#   print(semver.satisfies("1.5.0", "1.x"))      # true
+#   print(semver.satisfies("1.5.0", "<1.0.0 || >=1.5.0"))  # true
+#   print(semver.max_satisfying(["1.0.0", "1.5.0", "2.0.0"], "^1.0.0"))  # "1.5.0"
 
 fn parse(v) {
   let parts = v.strip().split(".")
@@ -31,10 +37,25 @@ fn lt(a, b) { return compare(a, b) < 0 }
 fn gte(a, b) { return compare(a, b) >= 0 }
 fn lte(a, b) { return compare(a, b) <= 0 }
 
-# satisfies(v, ">=1.0.0") / satisfies(v, "^1.2.0") (same-major, >= given) /
-# satisfies(v, "~1.2.0") (same-major.minor, >= given patch).
-fn satisfies(v, constraint) {
+fn _is_x(s) { return s == "x" or s == "X" or s == "*" }
+
+# "1.2.x" -> any patch; "1.x" / "1.x.x" -> any minor.patch; "*" -> any version.
+fn _matches_x_range(v, range_) {
+  let parts = range_.strip().split(".")
+  let pv = parse(v)
+  let pv_parts = [pv["major"], pv["minor"], pv["patch"]]
+  let i = 0
+  while i < len(parts) {
+    if _is_x(parts[i]) { return true }
+    if int(parts[i]) != pv_parts[i] { return false }
+    i = i + 1
+  }
+  return true
+}
+
+fn _satisfies_one(v, constraint) {
   let c = constraint.strip()
+  if c == "*" or _is_x(c) { return true }
   if c[0:2] == ">=" { return gte(v, c[2:]) }
   if c[0:2] == "<=" { return lte(v, c[2:]) }
   if c[0:1] == ">" { return gt(v, c[1:]) }
@@ -49,5 +70,26 @@ fn satisfies(v, constraint) {
     let pv = parse(v)
     return pv["major"] == base["major"] and pv["minor"] == base["minor"] and gte(v, c[1:])
   }
+  if c.find("x") >= 0 or c.find("X") >= 0 { return _matches_x_range(v, c) }
   return eq(v, c)
+}
+
+# satisfies(v, ">=1.0.0") / satisfies(v, "^1.2.0") (same-major, >= given) /
+# satisfies(v, "~1.2.0") (same-major.minor, >= given patch) / x-ranges /
+# "range1 || range2 || ..." (true if any alternative matches).
+fn satisfies(v, constraint) {
+  for alt in constraint.split("||") { if _satisfies_one(v, alt) { return true } }
+  return false
+}
+
+# The highest version in `versions` that satisfies `constraint`, or nil
+# if none do.
+fn max_satisfying(versions, constraint) {
+  let best = nil
+  for v in versions {
+    if satisfies(v, constraint) {
+      if best == nil or gt(v, best) { best = v }
+    }
+  }
+  return best
 }

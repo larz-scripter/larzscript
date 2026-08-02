@@ -1,6 +1,9 @@
 # url - URL parsing/building and query-string encode/decode. Pure
 # Larzscript, no dependency on the `http` package's curl - safe to use
-# anywhere, including the kernel.
+# anywhere, including the kernel. urljoin() combines a base URL with a
+# path/URL without the double-slash or missing-slash bugs manual string
+# concatenation invites - it handles absolute URLs, absolute paths, and
+# relative paths, not full RFC 3986 "../" traversal resolution.
 #
 #   import "url" as url
 #   let u = url.parse("https://example.com/path?a=1&b=two words")
@@ -8,6 +11,9 @@
 #   print(url.encode("two words"))          # "two%20words"
 #   print(url.decode("two%20words"))        # "two words"
 #   print(url.build_query({"a": 1, "b": "x y"}))  # "a=1&b=x%20y"
+#   print(url.urljoin("https://example.com/api/", "users"))     # "https://example.com/api/users"
+#   print(url.urljoin("https://example.com/api/", "/users"))    # "https://example.com/users"
+#   print(url.urljoin("https://example.com", "https://other.com/x"))  # "https://other.com/x"
 
 fn encode(s) {
   let out = ""
@@ -89,4 +95,26 @@ fn parse(u) {
   if port_at >= 0 { out["host"] = hostport[0:port_at]; out["port"] = int(hostport[port_at+1:]) }
   else { out["host"] = hostport }
   return out
+}
+
+fn _origin(u) {
+  let p = parse(u)
+  return p["scheme"] + "://" + p["host"] + (p["port"] == nil ? "" : ":" + str(p["port"]))
+}
+
+# Joins a base URL with a path or another URL, avoiding double/missing
+# slashes: `path` already absolute (has "://") is returned as-is;
+# `path` starting with "/" replaces the base's path on the base's
+# origin; otherwise `path` is appended as a new segment under base,
+# whatever base's last segment was. This is simple concatenation with
+# clean slashes, not RFC 3986 relative-reference resolution (which
+# would instead REPLACE base's last segment - the classic browser
+# "relative link" rule) - predictable for the common case of joining an
+# API base URL with an endpoint path, not a general URL resolver.
+fn urljoin(base, path) {
+  if path.find("://") >= 0 { return path }
+  if path[0:1] == "/" { return _origin(base) + path }
+  let b = base
+  while len(b) > 0 and b[len(b)-1:] == "/" { b = b[0:len(b)-1] }
+  return b + "/" + path
 }

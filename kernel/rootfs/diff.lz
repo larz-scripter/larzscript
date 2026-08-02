@@ -1,13 +1,16 @@
-# diff - line-based diff between two strings (LCS-based, like a
-# simplified unified diff), pure Larzscript. Fine for typical file/config
-# sizes - the LCS table is O(n*m) time and space, not tuned for huge
-# inputs.
+# diff - three shapes of diff, for test failures and debugging: lines()
+# for text (LCS-based, like a simplified unified diff - fine for typical
+# file/config sizes, not tuned for huge inputs), dicts() by key (added/
+# removed/changed), lists() by index (changed/added-at-end/removed-at-end).
 #
 #   import "diff" as diff
 #   print(diff.lines(old_text, new_text))
 #   #   same line
 #   # - removed line
 #   # + added line
+#   print(diff.dicts({"a": 1, "b": 2}, {"a": 1, "b": 3, "c": 4}))
+#   # {"added": {"c": 4}, "removed": {}, "changed": {"b": {"old": 2, "new": 3}}}
+#   print(diff.lists([1, 2, 3], [1, 5, 3, 4]))
 
 fn lines(a, b) {
   let la = a.split("\n")
@@ -36,4 +39,30 @@ fn lines(a, b) {
   while i < n { out.push("- " + la[i]); i = i + 1 }
   while j < m { out.push("+ " + lb[j]); j = j + 1 }
   return join(out, "\n")
+}
+
+fn dicts(a, b) {
+  let added = {}
+  let removed = {}
+  let changed = {}
+  for k in keys(b) { if not a.has(k) { added[k] = b[k] } }
+  for k in keys(a) { if not b.has(k) { removed[k] = a[k] } }
+  for k in keys(a) { if b.has(k) and a[k] != b[k] { changed[k] = {"old": a[k], "new": b[k]} } }
+  return {"added": added, "removed": removed, "changed": changed}
+}
+
+# By index: entries present in both with different values -> "changed";
+# extra trailing entries in b -> "added"; extra trailing entries in a
+# (b is shorter) -> "removed".
+fn lists(a, b) {
+  let changed = []
+  let added = []
+  let removed = []
+  let n = len(a) < len(b) ? len(a) : len(b)
+  let i = 0
+  while i < n { if a[i] != b[i] { changed.push({"index": i, "old": a[i], "new": b[i]}) } i = i + 1 }
+  while i < len(b) { added.push({"index": i, "value": b[i]}); i = i + 1 }
+  i = n
+  while i < len(a) { removed.push({"index": i, "value": a[i]}); i = i + 1 }
+  return {"changed": changed, "added": added, "removed": removed}
 }

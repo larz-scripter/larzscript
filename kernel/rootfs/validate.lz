@@ -1,8 +1,11 @@
-# validate - input validation and hygiene checks, pure Larzscript. ⚠ the
-# SQLi/XSS checks are heuristic pattern-matching (defense-in-depth), NOT a
-# guarantee - always use parameterized queries and proper output encoding;
-# this catches obvious cases, not everything. Named "looks_like", not
-# "is_safe", on purpose.
+# validate - two things: a schema()/field() system for validating a
+# whole record (forms, API bodies - required/min/max/pattern/choices,
+# with type coercion so "42" satisfies a number field), and standalone
+# hygiene checks (is_email/is_url/path-traversal/SQLi/XSS heuristics).
+# ⚠ the SQLi/XSS checks are heuristic pattern-matching (defense-in-depth),
+# NOT a guarantee - always use parameterized queries and proper output
+# encoding; this catches obvious cases, not everything. Named
+# "looks_like", not "is_safe", on purpose.
 #
 #   import "validate" as validate
 #   validate.is_email("a@b.com")            # true
@@ -10,6 +13,16 @@
 #   validate.has_path_traversal("../etc")   # true
 #   validate.looks_like_sqli(input)
 #   validate.looks_like_xss(input)
+#
+#   let s = validate.schema({
+#     "name": validate.field("string", true, nil, nil, nil, nil),
+#     "age": validate.field("number", false, 0, 150),
+#     "role": validate.field("string", true, nil, nil, nil, ["admin", "user"])
+#   })
+#   let result = validate.validate_schema({"name": "Ada", "age": "36", "role": "admin"}, s)
+#   print(result["valid"], result["data"]["age"])   # true 36 (coerced to a number)
+
+import "regex" as regex_pkg
 
 fn is_email(s) {
   let parts = s.split("@")
@@ -40,4 +53,58 @@ fn looks_like_xss(s) {
   let low = s.lower()
   for p in _XSS_PATTERNS { if low.contains(p) { return true } }
   return false
+}
+
+# ---- schema-based Field validation ----
+fn field(type_, required=true, min_=nil, max_=nil, pattern=nil, choices=nil) {
+  return {"type": type_, "required": required, "min": min_, "max": max_, "pattern": pattern, "choices": choices}
+}
+
+# A thin wrapper for readability - just returns `fields` as-is.
+fn schema(fields) { return fields }
+
+fn _coerce(value, type_) {
+  if type_ == "number" and type(value) == "string" {
+    try { return float(value) } catch e { return value }
+  }
+  if type_ == "string" and type(value) != "string" { return str(value) }
+  if type_ == "bool" and type(value) == "string" {
+    if value.lower() == "true" { return true }
+    if value.lower() == "false" { return false }
+  }
+  return value
+}
+
+# Returns {"valid": bool, "errors": [...], "data": {...coerced...}}.
+fn validate_schema(data, schema_) {
+  let errors = []
+  let out = {}
+  for name in keys(schema_) {
+    let rule = schema_[name]
+    if not data.has(name) or data[name] == nil {
+      if rule["required"] { errors.push(name + " is required") }
+      continue
+    }
+    let v = _coerce(data[name], rule["type"])
+    if type(v) != rule["type"] and not (rule["type"] == "number" and type(v) == "number") {
+      errors.push(name + " should be " + rule["type"] + " but is " + type(v))
+      continue
+    }
+    if rule["min"] != nil {
+      let size = type(v) == "string" ? len(v) : v
+      if size < rule["min"] { errors.push(name + " must be at least " + str(rule["min"])) }
+    }
+    if rule["max"] != nil {
+      let size = type(v) == "string" ? len(v) : v
+      if size > rule["max"] { errors.push(name + " must be at most " + str(rule["max"])) }
+    }
+    if rule["pattern"] != nil and type(v) == "string" and not regex_pkg.test(rule["pattern"], v) {
+      errors.push(name + " does not match the required pattern")
+    }
+    if rule["choices"] != nil and not (v in rule["choices"]) {
+      errors.push(name + " must be one of " + str(rule["choices"]))
+    }
+    out[name] = v
+  }
+  return {"valid": len(errors) == 0, "errors": errors, "data": out}
 }

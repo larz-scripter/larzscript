@@ -1,16 +1,32 @@
-# template - simple {{var}} string templating (Mustache-lite): variable
-# substitution, {{#each field}}...{{/each}} loops, {{#if field}}...{{/if}}
-# conditionals. No nesting (an #each inside an #each, or #if inside #each,
-# isn't supported - a deliberately small, single-pass subset), no dotted
-# paths (context lookup is one level).
+# template - simple string templating with dotted variable access, two
+# equivalent loop/conditional syntaxes ({{#each}}/{{#if}} Mustache-lite,
+# and {% for x in items %}/{% if %}...{% else %}...{% endif %} Jinja-
+# style, pick whichever reads better), and optional HTML escaping of
+# substituted values. No nesting (a loop inside a loop, or a
+# conditional inside a loop, isn't supported - a deliberately small,
+# single-pass subset, not a full template engine).
 #
 #   import "template" as template
-#   let t = "Hi {{name}}!\n{{#each items}}- {{this}}\n{{/each}}{{#if vip}}VIP!\n{{/if}}"
-#   print(template.render(t, {"name": "Sam", "items": ["a", "b"], "vip": true}))
+#   let t = "Hi {{user.name}}!\n{% for x in items %}- {{x}}\n{% endfor %}{% if vip %}VIP!{% else %}Regular{% endif %}"
+#   print(template.render(t, {"user": {"name": "Sam"}, "items": ["a", "b"], "vip": true}))
+#   print(template.render("{{name}}", {"name": "<b>"}, true))   # escape_html=true -> "&lt;b&gt;"
 
-fn _lookup(ctx, key) { return ctx.get(key, "") }
+# Dotted path lookup ("user.name") through nested dicts - one level of
+# ctx.get() short-circuiting to "" the moment a segment is missing.
+fn _lookup(ctx, key) {
+  let cur = ctx
+  for part in key.split(".") {
+    if type(cur) != "dict" or not cur.has(part) { return "" }
+    cur = cur[part]
+  }
+  return cur
+}
 
-fn _process_vars(tmpl, ctx) {
+fn _escape(s) {
+  return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+}
+
+fn _process_vars(tmpl, ctx, escape_html) {
   let out = ""
   let i = 0
   while i < len(tmpl) {
@@ -19,7 +35,8 @@ fn _process_vars(tmpl, ctx) {
       if close >= 0 {
         let key = tmpl[i+2:i+2+close].strip()
         if key[0:1] != "#" and key[0:1] != "/" {
-          out = out + str(_lookup(ctx, key))
+          let v = str(_lookup(ctx, key))
+          out = out + (escape_html ? _escape(v) : v)
           i = i + 2 + close + 2
           continue
         }
@@ -49,16 +66,17 @@ fn _find_block(tmpl, tag) {
   return [start, whole_end, arg, inner]
 }
 
-fn _process_each(tmpl, ctx) {
+fn _process_each(tmpl, ctx, escape_html) {
   let blk = _find_block(tmpl, "each")
   while blk != nil {
-    let items = ctx.get(blk[2], [])
+    let items = _lookup(ctx, blk[2])
+    if items == "" { items = [] }
     let rendered = ""
     for item in items {
       let item_ctx = dict([[k, ctx[k]] for k in keys(ctx)])
       item_ctx["this"] = item
       if type(item) == "dict" { for k in keys(item) { item_ctx[k] = item[k] } }
-      rendered = rendered + _process_vars(blk[3], item_ctx)
+      rendered = rendered + _process_vars(blk[3], item_ctx, escape_html)
     }
     tmpl = tmpl[0:blk[0]] + rendered + tmpl[blk[1]:]
     blk = _find_block(tmpl, "each")
@@ -69,15 +87,83 @@ fn _process_each(tmpl, ctx) {
 fn _process_if(tmpl, ctx) {
   let blk = _find_block(tmpl, "if")
   while blk != nil {
-    let shown = ctx.get(blk[2], false) ? blk[3] : ""
+    let shown = _lookup(ctx, blk[2]) ? blk[3] : ""
     tmpl = tmpl[0:blk[0]] + shown + tmpl[blk[1]:]
     blk = _find_block(tmpl, "if")
   }
   return tmpl
 }
 
-fn render(tmpl, ctx) {
-  tmpl = _process_each(tmpl, ctx)
+# Finds the first {% for VAR in FIELD %} ... {% endfor %} block. Returns
+# [whole_start, whole_end, var_name, field, inner] or nil.
+fn _find_for_block(tmpl) {
+  let start = tmpl.find("{% for ")
+  if start < 0 { return nil }
+  let head_end = tmpl[start:].find("%}")
+  if head_end < 0 { return nil }
+  let head = tmpl[start+7:start+head_end].strip()
+  let in_pos = head.find(" in ")
+  if in_pos < 0 { return nil }
+  let var_name = head[0:in_pos].strip()
+  let field = head[in_pos+4:].strip()
+  let inner_start = start + head_end + 2
+  let close_at = tmpl[inner_start:].find("{% endfor %}")
+  if close_at < 0 { return nil }
+  let inner = tmpl[inner_start:inner_start+close_at]
+  let whole_end = inner_start + close_at + len("{% endfor %}")
+  return [start, whole_end, var_name, field, inner]
+}
+
+fn _process_for(tmpl, ctx, escape_html) {
+  let blk = _find_for_block(tmpl)
+  while blk != nil {
+    let items = _lookup(ctx, blk[3])
+    if items == "" { items = [] }
+    let rendered = ""
+    for item in items {
+      let item_ctx = dict([[k, ctx[k]] for k in keys(ctx)])
+      item_ctx[blk[2]] = item
+      rendered = rendered + _process_vars(blk[4], item_ctx, escape_html)
+    }
+    tmpl = tmpl[0:blk[0]] + rendered + tmpl[blk[1]:]
+    blk = _find_for_block(tmpl)
+  }
+  return tmpl
+}
+
+# Finds the first {% if COND %} ... [{% else %} ...] {% endif %} block.
+# Returns [whole_start, whole_end, cond, true_branch, false_branch].
+fn _find_if_percent_block(tmpl) {
+  let start = tmpl.find("{% if ")
+  if start < 0 { return nil }
+  let head_end = tmpl[start:].find("%}")
+  if head_end < 0 { return nil }
+  let cond = tmpl[start+6:start+head_end].strip()
+  let inner_start = start + head_end + 2
+  let close_at = tmpl[inner_start:].find("{% endif %}")
+  if close_at < 0 { return nil }
+  let inner = tmpl[inner_start:inner_start+close_at]
+  let whole_end = inner_start + close_at + len("{% endif %}")
+  let else_at = inner.find("{% else %}")
+  let true_branch = else_at >= 0 ? inner[0:else_at] : inner
+  let false_branch = else_at >= 0 ? inner[else_at+len("{% else %}"):] : ""
+  return [start, whole_end, cond, true_branch, false_branch]
+}
+
+fn _process_if_percent(tmpl, ctx) {
+  let blk = _find_if_percent_block(tmpl)
+  while blk != nil {
+    let shown = _lookup(ctx, blk[2]) ? blk[3] : blk[4]
+    tmpl = tmpl[0:blk[0]] + shown + tmpl[blk[1]:]
+    blk = _find_if_percent_block(tmpl)
+  }
+  return tmpl
+}
+
+fn render(tmpl, ctx, escape_html=false) {
+  tmpl = _process_for(tmpl, ctx, escape_html)
+  tmpl = _process_if_percent(tmpl, ctx)
+  tmpl = _process_each(tmpl, ctx, escape_html)
   tmpl = _process_if(tmpl, ctx)
-  return _process_vars(tmpl, ctx)
+  return _process_vars(tmpl, ctx, escape_html)
 }

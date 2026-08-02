@@ -1,4 +1,8 @@
-# mathx - small pure-Larzscript math helpers (a Larzscript package)
+# mathx - small math helpers, pure Larzscript, with an emphasis on
+# SHOWING the steps: explain_gcd() narrates Euclid's algorithm,
+# explain_factorize() narrates trial division, long_division() narrates
+# a hand-style long division. Plus the plain answer-only versions
+# (factorize, sieve, is_prime) for when you just want the result.
 let PI = 3.14159265358979
 
 fn mean(xs) { return sum(xs) / len(xs) }
@@ -22,4 +26,97 @@ fn is_prime(n) {
 
 fn primes_up_to(limit) {
   return [n for n in range(2, limit + 1) if is_prime(n)]
+}
+
+# Sieve of Eratosthenes - same result as primes_up_to() via a different
+# (faster, for large limits) algorithm.
+fn sieve(limit) {
+  if limit < 2 { return [] }
+  let is_composite = [false for _ in range(limit + 1)]
+  let out = []
+  let i = 2
+  while i <= limit {
+    if not is_composite[i] {
+      out.push(i)
+      let j = i * i
+      while j <= limit { is_composite[j] = true; j = j + i }
+    }
+    i = i + 1
+  }
+  return out
+}
+
+# Euclid's algorithm, narrated step by step: "48 = 2*18 + 12" for each
+# division, ending "gcd = N".
+fn explain_gcd(a, b) {
+  let x = a
+  let y = b
+  let lines = []
+  while y != 0 {
+    let q = x // y
+    let r = x % y
+    lines.push(str(x) + " = " + str(q) + "*" + str(y) + " + " + str(r))
+    x = y
+    y = r
+  }
+  lines.push("gcd = " + str(x))
+  return join(lines, "\n")
+}
+
+# {prime: exponent, ...} via trial division.
+fn factorize(n) {
+  let v = n
+  let factors = {}
+  let d = 2
+  while d * d <= v {
+    while v % d == 0 {
+      factors[str(d)] = (factors.has(str(d)) ? factors[str(d)] : 0) + 1
+      v = v // d
+    }
+    d = d + 1
+  }
+  if v > 1 { factors[str(v)] = (factors.has(str(v)) ? factors[str(v)] : 0) + 1 }
+  return factors
+}
+
+fn explain_factorize(n) {
+  let v = n
+  let lines = []
+  let d = 2
+  while d * d <= v {
+    while v % d == 0 {
+      lines.push(str(v) + " / " + str(d) + " = " + str(v // d))
+      v = v // d
+    }
+    d = d + 1
+  }
+  if v > 1 { lines.push(str(v) + " is prime") }
+  let factors = factorize(n)
+  let parts = []
+  for p in sorted(keys(factors)) {
+    parts.push(factors[p] == 1 ? p : p + "^" + str(factors[p]))
+  }
+  lines.push(str(n) + " = " + join(parts, " * "))
+  return join(lines, "\n")
+}
+
+# Long division, narrated one digit of the quotient at a time, the way
+# it's done by hand: bring down a digit, divide, subtract, repeat.
+fn long_division(dividend, divisor) {
+  let s = str(dividend)
+  let lines = []
+  let remainder = 0
+  let quotient = ""
+  for c in s {
+    let digit = ord(c) - 48
+    let current = remainder * 10 + digit
+    let q_digit = current // divisor
+    remainder = current % divisor
+    quotient = quotient + str(q_digit)
+    lines.push("bring down " + c + " -> " + str(current) + " / " + str(divisor) + " = " + str(q_digit) + " remainder " + str(remainder))
+  }
+  let clean_quotient = quotient
+  while len(clean_quotient) > 1 and clean_quotient[0:1] == "0" { clean_quotient = clean_quotient[1:] }
+  lines.push(str(dividend) + " / " + str(divisor) + " = " + clean_quotient + " remainder " + str(remainder))
+  return join(lines, "\n")
 }

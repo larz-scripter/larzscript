@@ -1,7 +1,50 @@
-# table - render tabular data as an aligned ASCII table.
+# table - one tool for both querying and rendering tabular data.
+# where()/sort()/group_by() operate on records (a list of dicts);
+# render()/render_unicode()/to_csv()/to_markdown() render either records
+# or plain rows (a list of lists) as ASCII, Unicode box-drawing, CSV, or
+# a Markdown table. Zero dependencies.
 #
 #   import "table" as table
+#   let people = [{"name": "Ada", "age": 36}, {"name": "Bo", "age": 24}]
+#   let adults = table.where(people, fn(p) { return p["age"] >= 18 })
+#   let sorted_ = table.sort(people, "age")
+#   let groups = table.group_by(people, "age")
 #   print(table.render([["Name", "Age"], ["Ada", 36], ["Bob", 8]]))
+#   print(table.render_records(people))
+#   print(table.to_markdown([["Name", "Age"], ["Ada", 36]]))
+
+fn where(records, predicate) {
+  let out = []
+  for r in records { if predicate(r) { out.push(r) } }
+  return out
+}
+
+fn sort(records, key, desc=false) {
+  let out = []
+  for r in records { out.push(r) }
+  let i = 1
+  while i < len(out) {
+    let cur = out[i]
+    let j = i - 1
+    while j >= 0 and (desc ? out[j][key] < cur[key] : out[j][key] > cur[key]) {
+      out[j + 1] = out[j]
+      j = j - 1
+    }
+    out[j + 1] = cur
+    i = i + 1
+  }
+  return out
+}
+
+fn group_by(records, key) {
+  let groups = {}
+  for r in records {
+    let k = str(r[key])
+    if not groups.has(k) { groups[k] = [] }
+    groups[k].push(r)
+  }
+  return groups
+}
 
 fn render(rows) {
   if len(rows) == 0 { return "" }
@@ -29,6 +72,99 @@ fn render(rows) {
     out.push("| " + join(cells, " | ") + " |")
     if ri == 0 {
       out.push("|" + join(["-" * (widths[k] + 2) for k in range(ncols)], "|") + "|")
+    }
+    ri = ri + 1
+  }
+  return join(out, "\n")
+}
+
+# `records`: a list of dicts. `columns` (optional) fixes the column
+# order/subset - default is the first record's keys.
+fn render_records(records, columns=nil) {
+  if len(records) == 0 { return "" }
+  let cols = columns == nil ? keys(records[0]) : columns
+  let rows = [cols]
+  for r in records {
+    let row = []
+    for c in cols { row.push(r.has(c) ? r[c] : "") }
+    rows.push(row)
+  }
+  return render(rows)
+}
+
+fn _col_widths(rows) {
+  let ncols = 0
+  for row in rows { if len(row) > ncols { ncols = len(row) } }
+  let widths = [0 for _ in range(ncols)]
+  for row in rows {
+    let c = 0
+    for cell in row { let w = len(str(cell)); if w > widths[c] { widths[c] = w } c = c + 1 }
+  }
+  return widths
+}
+
+# Same layout as render(), using Unicode box-drawing characters instead
+# of plain ASCII |/-.
+fn render_unicode(rows) {
+  if len(rows) == 0 { return "" }
+  let widths = _col_widths(rows)
+  let ncols = len(widths)
+  fn h_line(left, mid, right, fill) {
+    let parts = []
+    for w in widths { parts.push(fill * (w + 2)) }
+    return left + join(parts, mid) + right
+  }
+  let out = [h_line("┌", "┬", "┐", "─")]
+  let ri = 0
+  for row in rows {
+    let cells = []
+    let c = 0
+    while c < ncols {
+      let v = c < len(row) ? str(row[c]) : ""
+      cells.push(" " + v.ljust(widths[c]) + " ")
+      c = c + 1
+    }
+    out.push("│" + join(cells, "│") + "│")
+    if ri == 0 { out.push(h_line("├", "┼", "┤", "─")) }
+    ri = ri + 1
+  }
+  out.push(h_line("└", "┴", "┘", "─"))
+  return join(out, "\n")
+}
+
+fn to_csv(rows) {
+  let lines = []
+  for row in rows {
+    let fields = []
+    for f in row {
+      let s = str(f)
+      if s.contains(",") or s.contains("\"") or s.contains("\n") {
+        fields.push("\"" + s.replace("\"", "\"\"") + "\"")
+      } else { fields.push(s) }
+    }
+    lines.push(join(fields, ","))
+  }
+  return join(lines, "\n")
+}
+
+fn to_markdown(rows) {
+  if len(rows) == 0 { return "" }
+  let widths = _col_widths(rows)
+  let out = []
+  let ri = 0
+  for row in rows {
+    let cells = []
+    let c = 0
+    while c < len(widths) {
+      let v = c < len(row) ? str(row[c]) : ""
+      cells.push(v.ljust(widths[c]))
+      c = c + 1
+    }
+    out.push("| " + join(cells, " | ") + " |")
+    if ri == 0 {
+      let seps = []
+      for w in widths { seps.push("-" * (w + 2)) }
+      out.push("|" + join(seps, "|") + "|")
     }
     ri = ri + 1
   }

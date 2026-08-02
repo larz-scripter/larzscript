@@ -1,10 +1,17 @@
 # csv - parse and write CSV, in pure Larzscript (handles quoted fields).
+# parse_dicts() gives you rows keyed by header instead of by index, with
+# a clear error the moment a row's field count doesn't match the header
+# (not a silently-misaligned row three columns later). summarize() gives
+# a quick per-column profile. to_csv_dicts() round-trips dict rows back
+# to CSV text.
 #
 #   import "csv" as csv
 #   let rows = csv.parse("a,b\n1,\"x,y\"")     # [["a","b"],["1","x,y"]]
 #   print(csv.to_csv(rows))
-
-import "table" as table
+#   let people = csv.parse_dicts("name,age\nAda,36\nBo,24")
+#   print(people[0]["name"])                    # "Ada"
+#   print(csv.summarize(people)["age"])
+#   print(csv.to_csv_dicts(people))
 
 fn parse(text) {
   let rows = []
@@ -48,9 +55,67 @@ fn to_csv(rows) {
   return join(lines, "\n")
 }
 
-# `csv FILE` - parse and render as an aligned table (via the `table` pkg).
-fn run(args) {
-  if len(args) == 0 { print("usage: csv FILE"); return }
-  if not file_exists(args[0]) { print("csv: no such file: " + args[0]); return }
-  print(table.render(parse(read_file(args[0]))))
+# Rows keyed by the first row's header. Throws immediately (naming the
+# row number) if a later row's field count doesn't match the header -
+# a silently-misaligned row is worse than a loud one.
+fn parse_dicts(text) {
+  let rows = parse(text)
+  if len(rows) == 0 { return [] }
+  let header = rows[0]
+  let out = []
+  let i = 1
+  while i < len(rows) {
+    let row = rows[i]
+    if len(row) != len(header) {
+      throw {"type": "LarzCsvError", "message": "row " + str(i + 1) + " has " + str(len(row)) + " fields, header has " + str(len(header))}
+    }
+    let d = {}
+    let j = 0
+    while j < len(header) { d[header[j]] = row[j]; j = j + 1 }
+    out.push(d)
+    i = i + 1
+  }
+  return out
+}
+
+fn to_csv_dicts(dicts, headers=nil) {
+  if len(dicts) == 0 { return "" }
+  let cols = headers == nil ? keys(dicts[0]) : headers
+  let rows = [cols]
+  for d in dicts {
+    let row = []
+    for c in cols { row.push(d.has(c) ? d[c] : "") }
+    rows.push(row)
+  }
+  return to_csv(rows)
+}
+
+fn _is_numeric(s) {
+  if len(s) == 0 { return false }
+  for c in s { if "0123456789.-".find(c) < 0 { return false } }
+  return true
+}
+
+# {"col": {"count": n, "numeric": bool, "min":..,"max":..,"mean":..}}
+# for numeric columns, or {"count": n, "numeric": false, "distinct": n}
+# for non-numeric ones.
+fn summarize(dicts) {
+  if len(dicts) == 0 { return {} }
+  let out = {}
+  for col in keys(dicts[0]) {
+    let values = []
+    for d in dicts { values.push(d[col]) }
+    let all_numeric = true
+    for v in values { if not _is_numeric(str(v)) { all_numeric = false } }
+    if all_numeric {
+      let nums = []
+      for v in values { nums.push(float(v)) }
+      out[col] = {"count": len(values), "numeric": true, "min": min(nums), "max": max(nums), "mean": sum(nums) / len(nums)}
+    } else {
+      let seen = {}
+      for v in values { seen[str(v)] = true }
+      out[col] = {"count": len(values), "numeric": false, "distinct": len(keys(seen))}
+    }
+  }
+  return out
 }

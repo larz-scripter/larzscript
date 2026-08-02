@@ -1,9 +1,17 @@
-# json - parse and stringify JSON, in pure Larzscript.
+# json - parse and stringify JSON, in pure Larzscript. Parse errors name
+# the exact character position they failed at. get() walks a dotted path
+# through nested dicts/lists (numeric segments index into a list);
+# pretty() indents; summarize() describes the shape in plain English;
+# validate() checks a dotted-path schema against parsed data.
 #
 #   import "json" as json
 #   let data = json.parse("{\"a\": [1, 2, 3], \"ok\": true}")
 #   print(data["a"][1])                 # 2
 #   print(json.stringify(data))         # {"a":[1,2,3],"ok":true}
+#   print(json.get(data, "a.0", nil))    # 1
+#   print(json.pretty(data))
+#   print(json.summarize(data))
+#   print(json.validate(data, {"a": "list", "ok": "bool"}))
 
 fn _err(st, msg) { throw {"type": "JsonError", "message": msg + " at position " + str(st["i"])} }
 
@@ -127,13 +135,86 @@ fn stringify(v) {
   return _quote(str(v))
 }
 
-# `json FILE` - pretty-print a JSON file (parse then re-stringify).
-fn run(args) {
-  if len(args) == 0 { print("usage: json FILE"); return }
-  if not file_exists(args[0]) { print("json: no such file: " + args[0]); return }
-  try {
-    print(stringify(parse(read_file(args[0]))))
-  } catch e {
-    print("json: " + str(e["message"]))
+fn _is_index(s) {
+  if len(s) == 0 { return false }
+  for c in s { if "0123456789".find(c) < 0 { return false } }
+  return true
+}
+
+# Dotted path through nested dicts/lists - a numeric segment ("0") means
+# "index into a list", not "the string key '0'".
+fn get(data, path, default_=nil) {
+  let cur = data
+  for part in path.split(".") {
+    if type(cur) == "list" and _is_index(part) {
+      let idx = int(part)
+      if idx < 0 or idx >= len(cur) { return default_ }
+      cur = cur[idx]
+    } else if type(cur) == "dict" and cur.has(part) {
+      cur = cur[part]
+    } else {
+      return default_
+    }
   }
+  return cur
+}
+
+fn _pretty(v, indent, depth) {
+  let pad = " " * (indent * (depth + 1))
+  let close_pad = " " * (indent * depth)
+  let t = type(v)
+  if t == "list" {
+    if len(v) == 0 { return "[]" }
+    let parts = []
+    for x in v { parts.push(pad + _pretty(x, indent, depth + 1)) }
+    return "[\n" + join(parts, ",\n") + "\n" + close_pad + "]"
+  }
+  if t == "dict" {
+    let ks = keys(v)
+    if len(ks) == 0 { return "{}" }
+    let parts = []
+    for k in ks { parts.push(pad + _quote(str(k)) + ": " + _pretty(v[k], indent, depth + 1)) }
+    return "{\n" + join(parts, ",\n") + "\n" + close_pad + "}"
+  }
+  return stringify(v)
+}
+fn pretty(v, indent=2) { return _pretty(v, indent, 0) }
+
+fn _describe(v) {
+  let t = type(v)
+  if t == "list" { return "array of " + str(len(v)) + (len(v) == 1 ? " item" : " items") }
+  if t == "dict" { return "object with " + str(len(keys(v))) + (len(keys(v)) == 1 ? " key" : " keys") }
+  if t == "string" { return "string" }
+  if t == "number" { return "number" }
+  if t == "bool" { return "boolean" }
+  return "null"
+}
+
+# A one-line, plain-English description of the top level's shape - "an
+# object with 3 keys: a (array of 3 items), b (string), ok (boolean)".
+fn summarize(v) {
+  let t = type(v)
+  if t == "dict" {
+    let parts = []
+    for k in keys(v) { parts.push(k + " (" + _describe(v[k]) + ")") }
+    return "object with " + str(len(keys(v))) + (len(keys(v)) == 1 ? " key: " : " keys: ") + join(parts, ", ")
+  }
+  if t == "list" {
+    return "array of " + str(len(v)) + (len(v) == 1 ? " item" : " items")
+  }
+  return _describe(v)
+}
+
+# schema: {"dotted.path": "string"|"number"|"bool"|"list"|"dict"} - the
+# names type() itself returns. Returns a list of error strings.
+fn validate(data, schema) {
+  let errors = []
+  for path in keys(schema) {
+    let want = schema[path]
+    let v = get(data, path, nil)
+    if v == nil { errors.push(path + " is missing"); continue }
+    let got = type(v)
+    if got != want { errors.push(path + " should be " + want + " but is " + got) }
+  }
+  return errors
 }

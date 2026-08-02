@@ -1,9 +1,18 @@
-# cli - build command-line tools with subcommands and help.
+# cli - build command-line tools with subcommands and help. config_value()
+# resolves a setting CLI flag > env var > default, the standard config
+# precedence. from_function() is the "function -> CLI" bridge: Larzscript
+# has no runtime introspection to derive a CLI from an arbitrary
+# function's real parameter names, so you name them explicitly - the
+# handler you write is then a plain function taking those values
+# directly, not one that unpacks a flags/positional dict itself.
 #
 #   import "cli" as cli
 #   let app = cli.new("todo", "a tiny todo tool")
 #   cli.command(app, "add", "add an item", fn(a) { print("added " + a["positional"][0]) })
+#   cli.from_function(app, "greet", "say hi", ["name"], fn(name) { print("hi " + name) })
+#   cli.run(app, ["greet", "--name=Ada"])   # flags use --key=value, not a separate value token
 #   cli.run(app, args)          # dispatches on the first argument
+#   let port = cli.config_value(flags, "port", "APP_PORT", "8080")   # CLI > env > default
 
 fn new(name, description) {
   return {"name": name, "desc": description, "commands": {}, "help": {}}
@@ -48,4 +57,34 @@ fn run(app, argv) {
   }
   let handler = app["commands"][cmd]
   handler({"flags": flags, "positional": positional})
+}
+
+fn config_value(flags, key, env_name, default_) {
+  if flags.has(key) { return flags[key] }
+  let e = env(env_name, nil)
+  if e != nil { return e }
+  return default_
+}
+
+# Dispatches by NAME (--param value) if given, else by position, so
+# `mytool greet Ada` and `mytool greet --name Ada` both work.
+fn _apply_named(fn_, params, a) {
+  let values = []
+  let pos_i = 0
+  for p in params {
+    if a["flags"].has(p) { values.push(a["flags"][p]) }
+    else if pos_i < len(a["positional"]) { values.push(a["positional"][pos_i]); pos_i = pos_i + 1 }
+    else { values.push(nil) }
+  }
+  if len(values) == 1 { return fn_(values[0]) }
+  if len(values) == 2 { return fn_(values[0], values[1]) }
+  if len(values) == 3 { return fn_(values[0], values[1], values[2]) }
+  if len(values) == 4 { return fn_(values[0], values[1], values[2], values[3]) }
+  return fn_()
+}
+
+# `params`: the handler's parameter names, in order - named explicitly
+# since Larzscript can't introspect a function's real signature.
+fn from_function(app, name, help, params, fn_) {
+  command(app, name, help, fn(a) { return _apply_named(fn_, params, a) })
 }

@@ -1,19 +1,23 @@
-# time - time and duration helpers (built on the time()/clock() builtins).
+# time - time and duration helpers (built on the time()/clock()/date()/
+# datetime() builtins). Never reads the clock itself for ago()/humanize()/
+# parse_duration() - every function that needs "now" takes it as an
+# argument, so tests pass fixed numbers instead of racing the real clock.
 #
 #   import "time" as time
 #   let start = time.stopwatch(); ...; print(time.elapsed(start))
 #   print(time.humanize(93784))     # "1d 2h 3m 4s"
-#   print(time.format(time.now(), "%Y-%m-%d %H:%M:%S"))
-#   print(time.today())             # "2026-08-01" (now a native builtin)
-#   print(time.now_iso())           # "2026-08-01T17:33:21Z"
+#   print(time.today())             # "2026-08-01" (UTC)
+#   print(time.now_iso())           # "2026-08-01T17:33:21Z" (UTC)
+#   print(time.parse_duration("1h30m"))   # 5400
+#   print(time.ago(time.now() - 3600, time.now()))   # "1 hour ago"
+
+import "duration" as duration_pkg
 
 fn now() { return time() }
 fn stopwatch() { return clock() }
 fn elapsed(start) { return clock() - start }
-# today()/now_iso(): the fixed-format case of format() below, now backed by
-# the interpreter's own date()/datetime() builtins (2026-08-01) instead of
-# needing this file's own _civil_from_days - format() keeps its %-token
-# flexibility for everything else.
+# Pure, portable epoch->calendar (UTC, no shell-out) - kernel-portable, unlike
+# format() below. today()/now_iso() default to the current time.
 fn today(ts=nil) { return ts == nil ? date() : date(ts) }
 fn now_iso(ts=nil) { return ts == nil ? datetime() : datetime(ts) }
 
@@ -31,57 +35,33 @@ fn humanize(secs) {
   return join(parts, " ")
 }
 
-fn _pad(n, width) {
-  let s = str(n)
-  while len(s) < width { s = "0" + s }
-  return s
-}
+fn _q(s) { return "'" + str(s).replace("'", "'\\''") + "'" }
+# Format a unix timestamp using the system `date` (strftime-style format,
+# hosted-only - shells out, needs a real `date` binary; use today()/now_iso()
+# above for a portable, kernel-safe fixed format instead).
+fn format(ts, fmt) { return capture("date -d @" + str(int(ts)) + " +" + _q(fmt)).strip() }
 
-# Howard Hinnant's civil_from_days: days-since-epoch -> {y, m, d}. Pure
-# integer math, no OS date command needed - portable everywhere, not
-# just the kernel (where `date` doesn't exist at all).
-fn _civil_from_days(z) {
-  z = z + 719468
-  let era = (z >= 0 ? z : z - 146096) // 146097
-  let doe = z - era * 146097
-  let yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
-  let y = yoe + era * 400
-  let doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
-  let mp = (5 * doy + 2) // 153
-  let d = doy - (153 * mp + 2) // 5 + 1
-  let m = mp + (mp < 10 ? 3 : -9)
-  y = y + (m <= 2 ? 1 : 0)
-  return {"y": y, "m": m, "d": d}
-}
+fn parse_duration(s) { return duration_pkg.parse(s) }
 
-# Format a unix timestamp. Supports %Y %m %d %H %M %S (zero-padded except
-# %Y); any other char (including unknown % tokens) passes through as-is.
-fn format(ts, fmt) {
-  let t = int(ts)
-  let days = t // 86400
-  let secs_of_day = t % 86400
-  if secs_of_day < 0 { secs_of_day = secs_of_day + 86400; days = days - 1 }
-  let civil = _civil_from_days(days)
-  let h = secs_of_day // 3600
-  let mi = (secs_of_day % 3600) // 60
-  let s = secs_of_day % 60
-  let out = ""
-  let i = 0
-  while i < len(fmt) {
-    if fmt[i] == "%" and i + 1 < len(fmt) {
-      let tok = fmt[i + 1]
-      if tok == "Y" { out = out + str(civil["y"]) }
-      else if tok == "m" { out = out + _pad(civil["m"], 2) }
-      else if tok == "d" { out = out + _pad(civil["d"], 2) }
-      else if tok == "H" { out = out + _pad(h, 2) }
-      else if tok == "M" { out = out + _pad(mi, 2) }
-      else if tok == "S" { out = out + _pad(s, 2) }
-      else { out = out + "%" + tok }
-      i = i + 2
-    } else {
-      out = out + fmt[i]
-      i = i + 1
-    }
-  }
-  return out
+# A short relative-time phrase: "just now", "5 minutes ago", "in 3 days".
+fn ago(then, now_=nil) {
+  let n = now_ == nil ? now() : now_
+  let diff = n - then
+  let future = diff < 0
+  let s = int(future ? -diff : diff)
+  let value = 0
+  let unit = ""
+  if s < 45 { return future ? "in a few seconds" : "just now" }
+  else if s < 90 { value = 1; unit = "minute" }
+  else if s < 2700 { value = int(s / 60 + 0.5); unit = "minute" }
+  else if s < 5400 { value = 1; unit = "hour" }
+  else if s < 79200 { value = int(s / 3600 + 0.5); unit = "hour" }
+  else if s < 129600 { value = 1; unit = "day" }
+  else if s < 2160000 { value = int(s / 86400 + 0.5); unit = "day" }
+  else if s < 5184000 { value = 1; unit = "month" }
+  else if s < 29808000 { value = int(s / 2592000 + 0.5); unit = "month" }
+  else if s < 47304000 { value = 1; unit = "year" }
+  else { value = int(s / 31536000 + 0.5); unit = "year" }
+  let plural = value == 1 ? unit : unit + "s"
+  return future ? "in " + str(value) + " " + plural : str(value) + " " + plural + " ago"
 }

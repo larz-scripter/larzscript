@@ -1,8 +1,17 @@
-# test - a tiny test framework for Larzscript.
+# test - a tiny test framework for Larzscript. expect() gives a
+# fluent-STYLE assertion API - Larzscript has no user-defined method
+# dispatch, so `expect(x).to_equal(y)` real dot-chaining isn't possible;
+# instead expect() returns a value you pass to to_equal()/to_be_true()/
+# etc., and not_() wraps it to negate the next check: `to_equal(not_(expect(x)), y)`
+# reads "expect x not to equal y." raises() checks that a function
+# throws (optionally a specific error type).
 #
 #   import "test" as t
 #   t.assert_eq(add(2, 3), 5, "adds")
 #   t.assert(is_valid(x), "x should be valid")
+#   t.to_equal(t.expect(add(2, 3)), 5)
+#   t.to_equal(t.not_(t.expect(add(2, 3))), 6)
+#   t.raises(fn() { risky() }, "LarzValueError")
 #   t.report()                 # prints a summary; exits 1 if anything failed
 
 let _passed = 0
@@ -28,6 +37,40 @@ fn assert_false(x, msg="expected false") { assert(not x, msg) }
 
 fn passed() { return _passed }
 fn failed() { return _failed }
+
+# ---- fluent-style expect() ----
+fn expect(value) { return {"value": value, "negated": false} }
+fn not_(exp) { return {"value": exp["value"], "negated": not exp["negated"]} }
+
+fn _check(exp, ok, describe) {
+  let result = exp["negated"] ? not ok : ok
+  let prefix = exp["negated"] ? "expected NOT " : "expected "
+  assert(result, prefix + describe)
+}
+
+fn to_equal(exp, expected) { _check(exp, exp["value"] == expected, str(exp["value"]) + " to equal " + str(expected)) }
+fn to_be_true(exp) { _check(exp, exp["value"] == true, str(exp["value"]) + " to be true") }
+fn to_be_false(exp) { _check(exp, exp["value"] == false, str(exp["value"]) + " to be false") }
+fn to_be_nil(exp) { _check(exp, exp["value"] == nil, str(exp["value"]) + " to be nil") }
+fn to_contain(exp, item) { _check(exp, item in exp["value"], str(exp["value"]) + " to contain " + str(item)) }
+fn to_be_greater_than(exp, n) { _check(exp, exp["value"] > n, str(exp["value"]) + " to be greater than " + str(n)) }
+fn to_be_less_than(exp, n) { _check(exp, exp["value"] < n, str(exp["value"]) + " to be less than " + str(n)) }
+
+# Runs `fn_()`, expecting it to throw. If `error_type` is given, the
+# thrown value's "type" field must match too. Fails the assertion (does
+# NOT propagate the exception) either way, so raises() composes with
+# the rest of this framework instead of crashing the test run.
+fn raises(fn_, error_type=nil) {
+  let threw = false
+  let matched = error_type == nil
+  try {
+    fn_()
+  } catch e {
+    threw = true
+    if error_type != nil and type(e) == "dict" and e.has("type") { matched = e["type"] == error_type }
+  }
+  assert(threw and matched, error_type == nil ? "expected an exception to be thrown" : "expected a '" + error_type + "' exception")
+}
 
 fn report() {
   if _failed == 0 {

@@ -1,10 +1,29 @@
-# color - ANSI terminal colors for Larzscript.
+# color - ANSI terminal colors for Larzscript. Honours NO_COLOR
+# (https://no-color.org - any non-empty value disables all color output,
+# checked once at import time) automatically. There's no isatty builtin
+# in Larzscript (see the `progress`/`tui` packages for the same
+# constraint), so true off-TTY auto-detection isn't possible here -
+# set_enabled(false) is the manual equivalent for a caller that knows
+# its own output isn't a terminal (e.g. writing to a file or a pipe).
+# Every function returns plain, uncolored text when disabled, so a
+# disabled run is genuinely pipe-safe, not just "still works."
 #
 #   import "color" as c
 #   print(c.green("ok"), c.red("error"), c.bold(c.cyan("title")))
+#   c.set_enabled(false)   # e.g. because you know stdout isn't a TTY
+#   print(c.green("plain now"))
 
 let _ESC = chr(27)
-fn _c(code, s) { return _ESC + "[" + str(code) + "m" + s + _ESC + "[0m" }
+let _NO_COLOR = env("NO_COLOR", nil)
+let _enabled = _NO_COLOR == nil or len(_NO_COLOR) == 0
+
+fn set_enabled(on) { _enabled = on }
+fn is_enabled() { return _enabled }
+
+fn _c(code, s) {
+  if not _enabled { return s }
+  return _ESC + "[" + str(code) + "m" + s + _ESC + "[0m"
+}
 
 fn red(s) { return _c(31, s) }
 fn green(s) { return _c(32, s) }

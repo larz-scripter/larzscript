@@ -1,6 +1,10 @@
-# stats - basic descriptive statistics on a list of numbers. Complements
-# `mathx` (number theory: fib/primes) rather than overlapping it - this is
-# data-analysis, not number-theory.
+# stats - descriptive statistics, correlation/regression, and a normal
+# distribution, on plain lists of numbers. Complements `mathx` (number
+# theory: fib/primes) rather than overlapping it - this is data-
+# analysis, not number-theory. No numpy - correlation/regression are
+# the textbook formulas, normal_pdf/normal_cdf use a self-contained
+# exp() (Taylor series) and the standard Abramowitz-Stegun erf
+# approximation (~1.5e-7 accurate) since there's no exp/erf builtin.
 #
 #   import "stats" as stats
 #   let xs = [4, 8, 15, 16, 23, 42]
@@ -8,6 +12,10 @@
 #   print(stats.median(xs))     # 15.5
 #   print(stats.stddev(xs))     # population standard deviation
 #   print(stats.percentile(xs, 90))
+#   print(stats.correlation([1, 2, 3], [2, 4, 6]))     # 1.0
+#   print(stats.linear_regression([1, 2, 3], [2, 4, 6]))  # {"slope": 2, "intercept": 0}
+#   print(stats.normal_pdf(0, 0, 1))
+#   print(stats.normal_cdf(0, 0, 1))                    # 0.5
 
 fn mean(xs) {
   if len(xs) == 0 { throw {"type": "LarzValueError", "message": "mean() of an empty list"} }
@@ -58,4 +66,91 @@ fn percentile(xs, p) {
 fn range_of(xs) {
   if len(xs) == 0 { throw {"type": "LarzValueError", "message": "range_of() of an empty list"} }
   return max(xs) - min(xs)
+}
+
+fn _check_pair(xs, ys) {
+  if len(xs) != len(ys) or len(xs) == 0 { throw {"type": "LarzValueError", "message": "xs and ys must be the same non-zero length"} }
+}
+
+# Pearson correlation coefficient, -1..1.
+fn correlation(xs, ys) {
+  _check_pair(xs, ys)
+  let mx = mean(xs)
+  let my = mean(ys)
+  let cov = 0.0
+  let sx = 0.0
+  let sy = 0.0
+  let i = 0
+  while i < len(xs) {
+    let dx = xs[i] - mx
+    let dy = ys[i] - my
+    cov = cov + dx * dy
+    sx = sx + dx * dx
+    sy = sy + dy * dy
+    i = i + 1
+  }
+  if sx == 0 or sy == 0 { return 0.0 }
+  return cov / sqrt(sx * sy)
+}
+
+# Least-squares fit: y = slope*x + intercept.
+fn linear_regression(xs, ys) {
+  _check_pair(xs, ys)
+  let mx = mean(xs)
+  let my = mean(ys)
+  let num = 0.0
+  let den = 0.0
+  let i = 0
+  while i < len(xs) {
+    num = num + (xs[i] - mx) * (ys[i] - my)
+    den = den + (xs[i] - mx) * (xs[i] - mx)
+    i = i + 1
+  }
+  let slope = den == 0 ? 0.0 : num / den
+  return {"slope": slope, "intercept": my - slope * mx}
+}
+
+fn _exp(x) {
+  let whole = int(x)
+  if x < 0 and whole != x { whole = whole - 1 }
+  let frac = x - whole
+  let e_const = 2.718281828459045
+  let base = 1.0
+  let k = 0
+  while k < (whole < 0 ? -whole : whole) {
+    base = whole < 0 ? base / e_const : base * e_const
+    k = k + 1
+  }
+  let term = 1.0
+  let total = 1.0
+  let n = 1
+  while n < 25 { term = term * frac / n; total = total + term; n = n + 1 }
+  return base * total
+}
+
+let PI = 3.141592653589793
+
+fn normal_pdf(x, mean_=0, stddev_=1) {
+  let z = (x - mean_) / stddev_
+  return _exp(-0.5 * z * z) / (stddev_ * sqrt(2 * PI))
+}
+
+# Abramowitz & Stegun 7.1.26 rational approximation of erf.
+fn _erf(x) {
+  let sign = x < 0 ? -1 : 1
+  let ax = x < 0 ? -x : x
+  let a1 = 0.254829592
+  let a2 = -0.284496736
+  let a3 = 1.421413741
+  let a4 = -1.453152027
+  let a5 = 1.061405429
+  let p = 0.3275911
+  let t = 1.0 / (1.0 + p * ax)
+  let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * _exp(-ax * ax)
+  return sign * y
+}
+
+fn normal_cdf(x, mean_=0, stddev_=1) {
+  let z = (x - mean_) / (stddev_ * sqrt(2))
+  return 0.5 * (1 + _erf(z))
 }

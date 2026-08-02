@@ -126,3 +126,8 @@ fn _stringify_value(v, indent) {
 }
 
 fn stringify(data) { return _stringify_value(data, 0) }
+
+# File-based convenience wrappers around parse()/stringify() - "load"
+# and "dump" are the names most YAML libraries use for this pair.
+fn load(path) { return parse(read_file(path)) }
+fn dump(data, path) { write_file(path, stringify(data)) }

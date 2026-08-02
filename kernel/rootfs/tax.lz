@@ -1,11 +1,51 @@
 # tax - flat-rate and progressive-bracket tax calculators, Money-aware.
+# exclusive()/inclusive() cover both directions ("tax added on top" vs
+# "tax already baked into this total, back it out"), compound() applies
+# several rates in sequence (tax on tax). Every breakdown's base + tax
+# always reconciles to exactly its total, in cents - inclusive() derives
+# the tax as total-minus-base rather than computing it separately, so
+# there's no rounding drift between the two figures. Ships no rate
+# tables - real jurisdictions' rates are the caller's problem, this is
+# just the arithmetic.
 #
 #   import "tax" as tax
 #   tax.flat($50000.00, 0.2)                 # 20% flat
 #   let brackets = [[$0.00, $10000.00, 0.1], [$10000.00, $40000.00, 0.2], [$40000.00, nil, 0.3]]
 #   tax.progressive($55000.00, brackets)
+#   tax.exclusive($100.00, 0.08)              # {"base":$100,"tax":$8,"total":$108} - added on top
+#   tax.inclusive($108.00, 0.08)              # {"base":$100,"tax":$8,"total":$108} - backed out
+#   tax.compound($100.00, [0.05, 0.1])         # tax on tax: 5% then 10% of the new total
 
 fn flat(income, rate) { return income * rate }
+
+# Tax added on top of a tax-exclusive amount. (Parameter named `amount`,
+# not `price` - `price` is a reserved keyword, the money-native `price
+# ITEM = $X` statement.)
+fn exclusive(amount, rate) {
+  let t = amount * rate
+  return {"base": amount, "tax": t, "total": amount + t}
+}
+
+# `total` already has tax baked in - back out the base and the tax
+# amount. tax = total - base, so base + tax always equals total exactly.
+fn inclusive(total, rate) {
+  let base = total / (1 + rate)
+  return {"base": base, "tax": total - base, "total": total}
+}
+
+# Applies each rate in `rates` to the RUNNING total (so later rates
+# are computed on an amount that already includes earlier taxes - tax
+# on tax, not all against the original base).
+fn compound(amount, rates) {
+  let running = amount
+  let breakdown = []
+  for rate in rates {
+    let t = running * rate
+    breakdown.push({"rate": rate, "amount": t})
+    running = running + t
+  }
+  return {"base": amount, "taxes": breakdown, "total": running}
+}
 
 # brackets: list of [lower, upper_or_nil, rate] - lower bound inclusive,
 # upper bound exclusive, sorted ascending; upper=nil means "no ceiling".

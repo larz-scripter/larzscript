@@ -1,9 +1,10 @@
 # markdown - a small Markdown-to-HTML converter, built on the `regex` and
 # `html` packages. Supports the common subset: # / ## / ### headings,
-# **bold**, `code`, [text](href) links, ``` fenced code blocks, - / * bullet
-# lists, and paragraphs. No tables, no nested lists, no blockquotes - a
-# deliberately small, correct subset (same spirit as `regex` itself), not a
-# full CommonMark implementation.
+# **bold**, *italic*, `code`, [text](href) links, ![alt](src) images,
+# ``` fenced code blocks, - / * bullet lists, > blockquotes, --- rules,
+# and paragraphs. No tables, no nested lists - a deliberately small,
+# correct subset (same spirit as `regex` itself), not a full CommonMark
+# implementation.
 #
 #   import "markdown" as markdown
 #   print(markdown.to_html("# Hi\n\nSome **bold** text and a [link](/x)."))
@@ -18,7 +19,9 @@ fn _inline(s) {
   let i = 0
   while i < len(escaped) {
     let bold = regex.find("\\*\\*[^*]+\\*\\*", escaped, i)
+    let italic = regex.find("\\*[^*]+\\*", escaped, i)
     let code = regex.find("`[^`]+`", escaped, i)
+    let image = regex.find("!\\[[^\\]]*\\]\\([^)]+\\)", escaped, i)
     let link = regex.find("\\[[^\\]]+\\]\\([^)]+\\)", escaped, i)
     if bold != nil and bold[0] == i {
       out = out + "<strong>" + escaped[i+2:bold[1]-2] + "</strong>"
@@ -26,6 +29,13 @@ fn _inline(s) {
     } else if code != nil and code[0] == i {
       out = out + "<code>" + escaped[i+1:code[1]-1] + "</code>"
       i = code[1]
+    } else if image != nil and image[0] == i {
+      let full = escaped[i:image[1]]
+      let close_bracket = full.find("]")
+      let alt = full[2:close_bracket]
+      let src = full[close_bracket+2:len(full)-1]
+      out = out + "<img src=\"" + src + "\" alt=\"" + alt + "\"/>"
+      i = image[1]
     } else if link != nil and link[0] == i {
       let full = escaped[i:link[1]]
       let close_bracket = full.find("]")
@@ -33,6 +43,9 @@ fn _inline(s) {
       let href = full[close_bracket+2:len(full)-1]
       out = out + "<a href=\"" + href + "\">" + text + "</a>"
       i = link[1]
+    } else if italic != nil and italic[0] == i {
+      out = out + "<em>" + escaped[i+1:italic[1]-1] + "</em>"
+      i = italic[1]
     } else {
       out = out + escaped[i:i+1]
       i = i + 1
@@ -49,11 +62,29 @@ fn _heading_level(line) {
 }
 
 # Convert a Markdown string to an HTML string.
+fn _is_rule(line) {
+  let t = line.strip()
+  if len(t) < 3 { return false }
+  let ch = t[0:1]
+  if ch != "-" and ch != "*" and ch != "_" { return false }
+  for c in t { if c != ch { return false } }
+  return true
+}
+
 fn to_html(md) {
   let out = []
   let in_ul = false
   let in_code = false
+  let in_quote = false
   let code_buf = []
+  let quote_buf = []
+  fn close_quote() {
+    if in_quote {
+      out.push("<blockquote><p>" + _inline(join(quote_buf, " ")) + "</p></blockquote>")
+      quote_buf = []
+      in_quote = false
+    }
+  }
   for line in md.split("\n") {
     if line.strip()[0:3] == "```" {
       if in_code {
@@ -62,11 +93,24 @@ fn to_html(md) {
         in_code = false
       } else {
         if in_ul { out.push("</ul>"); in_ul = false }
+        close_quote()
         in_code = true
       }
       continue
     }
     if in_code { code_buf.push(line); continue }
+    if line[0:2] == "> " or line.strip() == ">" {
+      if in_ul { out.push("</ul>"); in_ul = false }
+      in_quote = true
+      quote_buf.push(line[0:2] == "> " ? line[2:] : "")
+      continue
+    }
+    close_quote()
+    if _is_rule(line) {
+      if in_ul { out.push("</ul>"); in_ul = false }
+      out.push("<hr/>")
+      continue
+    }
     let level = _heading_level(line)
     if level > 0 {
       if in_ul { out.push("</ul>"); in_ul = false }
@@ -82,5 +126,6 @@ fn to_html(md) {
     }
   }
   if in_ul { out.push("</ul>") }
+  close_quote()
   return join(out, "\n")
 }

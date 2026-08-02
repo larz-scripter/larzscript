@@ -1,12 +1,19 @@
-# case - naming-convention converters (camelCase, PascalCase, kebab-case).
-# Pairs with the `string` package's snake() - together they cover the
-# common set. All go through a shared word-split step, so "hello_world",
-# "hello-world", "hello world" and "helloWorld" all normalize the same way.
+# case - naming-convention converters: camelCase, PascalCase, kebab-case,
+# snake_case, CONSTANT_CASE, Title Case. All go through a shared
+# word-split step (words()), so "hello_world", "hello-world",
+# "hello world" and "helloWorld" all normalize the same way, correctly
+# handling camelCase boundaries (an uppercase letter starts a new word).
 #
 #   import "case" as case
+#   print(case.words("helloWorld"))     # ["hello", "world"]
 #   print(case.camel("hello world"))    # "helloWorld"
 #   print(case.pascal("hello-world"))   # "HelloWorld"
 #   print(case.kebab("Hello World"))    # "hello-world"
+#   print(case.snake("Hello World"))    # "hello_world"
+#   print(case.constant("Hello World")) # "HELLO_WORLD"
+#   print(case.title("hello_world"))    # "Hello World"
+
+fn words(s) { return _words(s) }
 
 fn _words(s) {
   let out = []
@@ -42,3 +49,16 @@ fn pascal(s) {
 }
 
 fn kebab(s) { return join(_words(s), "-") }
+fn snake(s) { return join(_words(s), "_") }
+
+fn constant(s) {
+  let out = []
+  for w in _words(s) { out.push(w.upper()) }
+  return join(out, "_")
+}
+
+fn title(s) {
+  let out = []
+  for w in _words(s) { out.push(w.capitalize()) }
+  return join(out, " ")
+}
