@@ -155,6 +155,7 @@ money             packages/money
 logic             packages/logic
 units             packages/units
 netbridge         packages/netbridge
+psktunnel         packages/psktunnel
 neural            packages/neural
 raytrace          packages/raytrace
 crdt              packages/crdt
