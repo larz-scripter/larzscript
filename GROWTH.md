@@ -1,9 +1,11 @@
 # Ecosystem growth roadmap — SEO content, at scale
 
-**Status: planned, not started.** This is a queued set of "big project"
-initiatives to grow Larzscript's footprint in search and in the coding
-world generally, decided 2026-08-02. Nothing below is built yet — this
-document exists so the next push has a concrete starting point instead of
+**Status:** #1 (cookbook) wave 1 shipped 2026-08-02 — 29 tasks live at
+[larzos.com/learn-larzscript/](https://larzos.com/learn-larzscript/),
+generator in [`larzscript-cookbook`](https://github.com/larz-scripter/larzscript-cookbook)
+(CI-verified: every example's real output is captured by actually running
+it, not hand-written). #2 and #3 are still just planned. This document
+exists so the next push has a concrete starting point instead of
 re-deriving the plan from scratch.
 
 ## Why this, why now
@@ -19,6 +21,28 @@ Three directions were considered. All three are worth doing; they're not
 mutually exclusive, and each has a different payoff shape.
 
 ## 1. Rosetta Larzscript cookbook (highest leverage, do first)
+
+**Wave 1: done (2026-08-02).** 29 tasks live at
+[larzos.com/learn-larzscript/](https://larzos.com/learn-larzscript/) —
+algorithms (8), data formats (5), CLI & text (5), web (5), data structures
+(3), money-native (3). Generator + task manifest persisted in
+[`larzscript-cookbook`](https://github.com/larz-scripter/larzscript-cookbook)
+(not scratchpad this time — the `/stack/` page generator had to be
+rebuilt from scratch once already because nothing was kept). CI
+(`run_tasks.py`) actually executes every task's `.lz` source and fails the
+build if a task breaks, so the whole cookbook stays honest as packages
+change. Cross-linked from the `/stack/` index hero and added to both
+`sitemap.xml` files (root + `/stack/`).
+
+**Next wave:** more tasks, same manifest/generator (`tasks.py` +
+`build_cookbook.py`/`build_index.py` in that repo) — target another ~40-60
+before revisiting scope. Good candidates not yet covered: regex matching,
+date arithmetic, template rendering, a minimal HTTP server, retry/backoff,
+memoization/caching, a state machine, pagination, semantic version
+comparison, and more "money-native extras" (a subscription/paywall, a
+loan/amortization calc, currency conversion, a ledger that always
+balances) — the differentiator category is currently the thinnest (3 of
+29) and is the actual point of the whole exercise.
 
 **The idea:** systematically solve the ~150-300 tasks developers actually
 search for — "how to parse JSON in X", "quicksort in X", "read a CSV in
