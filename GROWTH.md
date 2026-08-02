@@ -4,9 +4,11 @@
 [larzos.com/learn-larzscript/](https://larzos.com/learn-larzscript/),
 generator in [`larzscript-cookbook`](https://github.com/larz-scripter/larzscript-cookbook)
 (CI-verified: every example's real output is captured by actually running
-it, not hand-written). #2 and #3 are still just planned. This document
-exists so the next push has a concrete starting point instead of
-re-deriving the plan from scratch.
+it, not hand-written). #2 (flagship app) also shipped 2026-08-02 —
+[`larzscript-beatstudio`](https://github.com/larz-scripter/larzscript-beatstudio),
+a beat-making/recording/mixing/mastering studio. #3 (playground) is still
+just planned. This document exists so the next push has a concrete
+starting point instead of re-deriving the plan from scratch.
 
 ## Why this, why now
 
@@ -85,23 +87,27 @@ language primitives instead of a bolted-on library.
 
 ## 2. One flagship app
 
-**The idea:** a single large, genuinely useful real-world tool — bigger in
-scope than `larzscript-missionbudget` or `larzscript-impactwatch` — built
-entirely in Larzscript, real enough that it's worth writing about and
-earning backlinks to on its own merits, not just as a content-grid entry.
+**Shipped 2026-08-02:** [`larzscript-beatstudio`](https://github.com/larz-scripter/larzscript-beatstudio)
+— a beat-making/recording/mixing/mastering studio. 4 synthesized drum
+voices, a 16-step sequencer, a real mixer (per-track gain/pan), and a real
+3-band EQ → linked-stereo compressor → limiter → normalize mastering
+chain, all pure Larzscript on two new Stack packages built for it
+([`dsp`](https://github.com/larz-scripter/larzscript-packages/tree/master/packages/dsp),
+[`wav`](https://github.com/larz-scripter/larzscript-packages/tree/master/packages/wav)).
+The professional master is money-native (`master --price=DOLLARS`, a real
+`pay`/`unless` gate mirroring how real mastering-as-a-service tools price
+per master); `preview` is free so the pipeline is demoable unfunded.
+Surfaced and worked around a real native-interpreter bug along the way
+([larzscript#4](https://github.com/larz-scripter/larzscript/issues/4)).
 
 **Why it matters:** the cookbook wins by volume; this wins by depth — a
 "look what this weird money-native language actually shipped" story that
 spreads outside search (Hacker News, dev Twitter/X, newsletters) the way a
 content page alone can't.
 
-**Not yet scoped.** Needs a real decision on what the app *is* before any
-work starts — candidates should be genuinely useful (not a tech demo) and
-should lean on `wallet`/`pay`/`require` for something that would be
-awkward in a language without those as primitives (subscription billing,
-marketplace escrow, metered API access, split-cost tooling — anything
-where "money that fails closed" is the actual hard part). Pick this only
-once a specific app idea has been agreed on.
+**If picking another flagship app later:** the same bar applies — genuinely
+useful (not a tech demo), leaning on `wallet`/`pay`/`require` for something
+that would be awkward without them as primitives.
 
 ## 3. Interactive playground / tutorial
 
