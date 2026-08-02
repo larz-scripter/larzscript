@@ -9,13 +9,24 @@
 # flushed (a real race, caught by this test itself flaking about 1 run in
 # 6 before this fix). A separate ".done" marker, touched only after curl's
 # whole background subshell finishes, gives a real, race-free signal.
+#
+# Backgrounding syntax is NOT portable: run()/system() shells out to
+# /bin/sh on POSIX but cmd.exe on Windows, and cmd.exe doesn't understand
+# POSIX "(...) &" subshell-background syntax at all - it would either
+# error or run curl in the foreground, deadlocking against the
+# socket_accept() below forever (found via a real Windows CI run hanging
+# well past every other platform's job, not assumed).
 let port = 19345
 let out_path = "/tmp/lz_socket_echo_test_out.txt"
 let done_path = out_path + ".done"
 remove(out_path)
 remove(done_path)
 let fd = socket_listen(port)
-run("(curl -s -o " + out_path + " http://127.0.0.1:" + str(port) + "/hello; touch " + done_path + ") &")
+let is_windows = env("OS", "") == "Windows_NT"
+let bg_cmd = is_windows
+  ? "start /b cmd /c \"curl -s -o " + out_path + " http://127.0.0.1:" + str(port) + "/hello && type nul > " + done_path + "\""
+  : "(curl -s -o " + out_path + " http://127.0.0.1:" + str(port) + "/hello; touch " + done_path + ") &"
+run(bg_cmd)
 let client = socket_accept(fd)
 let req = socket_read(client, 4096)
 let ok = req.find("GET /hello") == 0
