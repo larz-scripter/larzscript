@@ -160,3 +160,7 @@ raytrace          packages/raytrace
 crdt              packages/crdt
 genetic           packages/genetic
 pathfind          packages/pathfind
+indexnow          packages/indexnow
+smtp              packages/smtp
+statuscard        packages/statuscard
+backup            packages/backup
