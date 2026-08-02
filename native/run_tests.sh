@@ -11,6 +11,10 @@
 #                        \n -> \r\n on output; this is NOT a blanket \r strip,
 #                        since tests/escapes.lz embeds a literal mid-string \r
 #                        as real content that a blanket strip would corrupt)
+#   SKIP_GLOB=<pattern>  skip tests/*.lz files matching this shell glob (e.g.
+#                        "socket_*" on the web/wasm target, where sockets are
+#                        a real, deliberate SocketError, not a bug - see
+#                        LANGUAGE.md's TCP sockets section)
 set -e
 cd "$(dirname "$0")"
 CC="${CC:-cc}"
@@ -22,9 +26,11 @@ else
 fi
 run() { $RUN_PREFIX "$BIN" "$@"; }
 norm() { if [ "$LZ_CRLF_NORMALIZE" = "1" ]; then sed 's/\r$//'; else cat; fi; }
+skip() { [ -n "$SKIP_GLOB" ] && case "$(basename "$1")" in $SKIP_GLOB) return 0 ;; esac; return 1; }
 
-pass=0; fail=0
+pass=0; fail=0; skipped=0
 for lz in tests/*.lz; do
+  if skip "$lz"; then skipped=$((skipped+1)); continue; fi
   exp="${lz%.lz}.expected"
   got="$(run "$lz" 2>&1 | norm || true)"
   if [ "$got" = "$(cat "$exp")" ]; then
@@ -33,13 +39,14 @@ for lz in tests/*.lz; do
     fail=$((fail+1)); echo "FAIL $lz"; echo "--- expected ---"; cat "$exp"; echo "--- got ---"; echo "$got"
   fi
 done
-echo "$pass passed, $fail failed"
+if [ "$skipped" -gt 0 ]; then echo "$pass passed, $fail failed, $skipped skipped"; else echo "$pass passed, $fail failed"; fi
 [ "$fail" = 0 ]
 
 # formatter invariants: fmt is idempotent, and formatted code runs identically
 echo "--- formatter checks ---"
 fpass=0; ffail=0
 for lz in tests/*.lz; do
+  if skip "$lz"; then continue; fi
   dir=$(dirname "$lz"); tmp="$dir/.fmtcheck.lz"
   run fmt "$lz" 2>/dev/null | norm > "$tmp"
   f1="$(cat "$tmp")"

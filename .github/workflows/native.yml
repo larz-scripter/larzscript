@@ -133,7 +133,7 @@ jobs:
       - name: Test under Node - the same suite every other platform runs
         run: |
           cd native
-          BINARY="$PWD/wasm/larzscript-node.js" RUN_PREFIX=node ./run_tests.sh
+          BINARY="$PWD/wasm/larzscript-node.js" RUN_PREFIX=node SKIP_GLOB="socket_*" ./run_tests.sh
       - name: dom/ui bridge tests (Node+jsdom, no real browser needed)
         run: |
           cd native/tests-web
