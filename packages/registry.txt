@@ -154,3 +154,4 @@ xml               packages/xml
 money             packages/money
 logic             packages/logic
 units             packages/units
+netbridge         packages/netbridge
