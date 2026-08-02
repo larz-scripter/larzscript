@@ -14,7 +14,7 @@ pip). You write `.lz` files and run them — just like any other language.
 
 ## Get it & run it
 
-**One-line install** (Linux x86_64 / ARM64):
+**Linux / macOS** (one-line install, x86_64 or ARM64/Apple Silicon):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/larz-scripter/larzscript/main/install.sh | sh
@@ -27,8 +27,18 @@ so `larzscript` works in any new cmd/PowerShell window, just like Python:
 irm https://raw.githubusercontent.com/larz-scripter/larzscript/main/install.ps1 | iex
 ```
 
-Or grab a binary from [Releases](https://github.com/larz-scripter/larzscript/releases),
-or build it — one C file, no dependencies:
+Both installers put a single self-contained binary on your PATH - no Python,
+no separate runtime, nothing else to install. Later, get the newest release
+with the same command from any of the three platforms:
+
+```bash
+larzscript update
+```
+
+Or grab a binary directly from [Releases](https://github.com/larz-scripter/larzscript/releases)
+(`larzscript-linux-x86_64`, `larzscript-linux-aarch64`, `larzscript-macos-x86_64`,
+`larzscript-macos-arm64`, `larzscript-windows-x86_64.exe`), or build it from
+source — one C file, no dependencies, on any platform with a C compiler:
 
 ```bash
 cc -O2 -o larzscript native/larzscript.c     # or: make -C native
@@ -47,8 +57,8 @@ Larzscript has a package manager (`larzpkg`) that installs libraries into
 `~/.larzscript/lib`, where `import` finds them:
 
 ```bash
-larzscript ~/.larzscript/larzpkg.lz install json
-larzscript ~/.larzscript/larzpkg.lz list
+larzscript pkg install json
+larzscript pkg list
 ```
 
 ```
@@ -82,7 +92,7 @@ Available packages:
 
 They compose — e.g. `json.parse(http.get(url))`, or CSV → list-of-dicts → JSON.
 **Publish your own** — host it yourself, no write access to anything here
-needed: `larzscript tools/larzpkg.lz publish <your-git-url>`. See
+needed: `larzscript pkg publish <your-git-url>`. See
 [`packages/PUBLISHING.md`](packages/PUBLISHING.md).
 
 **Larzscript compiles to native code.** `larzscript --emit-c program.lz` emits C; `tools/larzc program.lz` gcc's it into a native binary that runs ~130x faster than the interpreter (a general-purpose subset today). This is the path toward the LarzOS kernel being written in Larzscript itself.

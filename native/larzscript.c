@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.25.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.26.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,6 +72,9 @@
 #endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>       /* EM_JS/EM_ASM/EMSCRIPTEN_KEEPALIVE - the browser `ui` module + callback bridge */
+#endif
+#ifdef __APPLE__
+#include <mach-o/dyld.h>      /* _NSGetExecutablePath - macOS's answer to Linux's /proc/self/exe (larzscript update) */
 #endif
 #if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
 #include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
@@ -3337,6 +3340,12 @@ static int sha256_selftest(void){
 static const char *update_asset_name(void){
 #if defined(_WIN32)
   return "larzscript-windows-x86_64.exe";
+#elif defined(__APPLE__)
+  #if defined(__aarch64__)
+    return "larzscript-macos-arm64";
+  #else
+    return "larzscript-macos-x86_64";
+  #endif
 #elif defined(__aarch64__)
   return "larzscript-linux-aarch64";
 #elif defined(__x86_64__)
@@ -3367,6 +3376,16 @@ static char *update_self_path(void){
   ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
   if(n<=0) return NULL;
   buf[n]=0; return xstrdup(buf);
+#elif defined(__APPLE__)
+  /* macOS has no /proc - _NSGetExecutablePath is the documented way to
+   * get argv[0]'s resolved path; it can still be a symlink, so resolve
+   * that too (matches readlink's behavior on Linux above, and matters
+   * here since Homebrew-style installs commonly symlink into a Cellar). */
+  char raw[4096]; uint32_t sz = sizeof raw;
+  if(_NSGetExecutablePath(raw, &sz)!=0) return NULL;
+  char real[4096];
+  if(realpath(raw, real)==NULL) return xstrdup(raw);
+  return xstrdup(real);
 #else
   return NULL;
 #endif

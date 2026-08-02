@@ -1,15 +1,16 @@
 name: Native
 
 # Builds, tests, and releases the native C implementation (native/larzscript.c)
-# for all three shipped platforms, entirely on GitHub-hosted runners - no
+# for every shipped platform (Linux x86_64/aarch64, macOS x86_64/arm64,
+# Windows x86_64, web/wasm), entirely on GitHub-hosted runners - no
 # dependency on any private server. This is separate from ci.yml/publish.yml,
 # which cover only the frozen legacy Python reference implementation.
 #
 # No `paths:` filter on the triggers below: path filters are evaluated
 # per-ref, and a tag push whose commit doesn't itself touch native/** can
 # silently fail to trigger the workflow at all - exactly the failure mode a
-# release pipeline can't afford. The three build+test jobs are cheap, so
-# running them on every push/PR is a fine tradeoff for that guarantee.
+# release pipeline can't afford. The build+test jobs are cheap, so running
+# them on every push/PR is a fine tradeoff for that guarantee.
 
 on:
   push:
@@ -53,6 +54,36 @@ jobs:
         with:
           name: larzscript-linux-aarch64
           path: larzscript-linux-aarch64
+
+  macos-x86_64:
+    runs-on: macos-13   # last Intel-based GitHub-hosted macOS runner
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: cd native && ./run_tests.sh
+      - name: Build release binary
+        # No -static here: unlike Linux, macOS binaries are not meant to
+        # statically link against libSystem (Apple doesn't support it) -
+        # a normal dynamic build against the system libc is the correct,
+        # portable form, and every Mac already has libSystem present.
+        run: cc -O2 -std=c11 -Wall -o larzscript-macos-x86_64 native/larzscript.c
+      - uses: actions/upload-artifact@v4
+        with:
+          name: larzscript-macos-x86_64
+          path: larzscript-macos-x86_64
+
+  macos-arm64:
+    runs-on: macos-14   # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: cd native && ./run_tests.sh
+      - name: Build release binary
+        run: cc -O2 -std=c11 -Wall -o larzscript-macos-arm64 native/larzscript.c
+      - uses: actions/upload-artifact@v4
+        with:
+          name: larzscript-macos-arm64
+          path: larzscript-macos-arm64
 
   windows-x86_64:
     runs-on: ubuntu-latest
@@ -120,7 +151,7 @@ jobs:
           path: larzscript-web.zip
 
   release:
-    needs: [linux-x86_64, linux-aarch64, windows-x86_64, web]
+    needs: [linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64, windows-x86_64, web]
     if: startsWith(github.ref, 'refs/tags/native-v')
     runs-on: ubuntu-latest
     permissions:

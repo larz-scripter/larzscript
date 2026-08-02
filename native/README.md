@@ -1,10 +1,14 @@
 # larzscript (native) — a standalone Larzscript in C
 
 The **money-native language implemented in C**, compiled to a single native
-executable that runs `.lz` files with **no Python, no pip, no runtime** — the
-release binaries are *statically linked*, so they depend on nothing at all (not
-even libc). Just as "Python" is really CPython (an interpreter written in C),
-this is Larzscript at the same ground level: a real, standalone language.
+executable that runs `.lz` files with **no Python, no pip, no runtime**. The
+Linux and Windows release binaries are *statically linked*, so they depend on
+nothing at all (not even libc); macOS doesn't support static linking against
+its system libc, so those binaries link dynamically against libSystem -
+present on every Mac, so it's still nothing extra to install, just not
+literally zero dynamic linking the way Linux/Windows are. Just as "Python" is
+really CPython (an interpreter written in C), this is Larzscript at the same
+ground level: a real, standalone language.
 
 The `larzscript/` package (Python) is the readable **reference implementation**;
 this C build is the **standalone toolchain**, and it produces byte-identical
@@ -12,18 +16,22 @@ output.
 
 ## Download a prebuilt binary (no compiler needed)
 
-Grab the static binary for your platform from the
-[latest release](https://github.com/larz-scripter/larzscript/releases), then:
+Grab the binary for your platform from the
+[latest release](https://github.com/larz-scripter/larzscript/releases)
+(`larzscript-linux-x86_64`, `larzscript-linux-aarch64`, `larzscript-macos-x86_64`,
+`larzscript-macos-arm64`, `larzscript-windows-x86_64.exe`), then:
 
 ```bash
 chmod +x larzscript-linux-x86_64
 ./larzscript-linux-x86_64 program.lz
 ```
 
-It has zero dependencies — copy it anywhere and run it. On Windows, grab
-`larzscript-windows-x86_64.exe` (or run `install.ps1` from the repo root to
-also add it to your PATH) — it's statically linked too, so it only touches
-`kernel32.dll`/`msvcrt.dll`, present on every Windows install.
+Copy it anywhere and run it - or use the one-line installer instead
+(`curl -fsSL .../install.sh | sh` on Linux/macOS, `irm .../install.ps1 | iex`
+on Windows - see the root [README](../README.md)), which also puts it on
+your PATH and sets up `larzscript update` for later. On Windows,
+`larzscript-windows-x86_64.exe` only touches `kernel32.dll`/`msvcrt.dll`,
+present on every Windows install.
 
 ## Or build it yourself
 
@@ -125,9 +133,9 @@ Larzscript has a package manager — written in Larzscript itself — that insta
 libraries from a registry into `~/.larzscript/lib`, where `import` finds them:
 
 ```bash
-larzscript tools/larzpkg.lz install mathx     # git-clones the package
-larzscript tools/larzpkg.lz list
-larzscript tools/larzpkg.lz search math
+larzscript pkg install mathx     # git-clones the package
+larzscript pkg list
+larzscript pkg search math
 ```
 
 ```
@@ -139,7 +147,7 @@ Import resolution searches: relative to the file, then `$LARZSCRIPT_PATH`, then
 `~/.larzscript/lib`, then `./lz_modules`. Packages don't have to live in the
 official monorepo — `registry.txt` entries can point straight at anyone's
 own git repo, versioned and owned by them. Publish your own:
-`larzscript tools/larzpkg.lz publish <your-git-url>` — see
+`larzscript pkg publish <your-git-url>` — see
 [`../packages/PUBLISHING.md`](../packages/PUBLISHING.md).
 
 **Editor support:** syntax highlighting for VS Code and Vim — see

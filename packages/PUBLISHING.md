@@ -45,7 +45,7 @@ Push a repo with `main.lz` at its root (a `README.md` is nice too - see
 for a minimal real one). Then:
 
 ```bash
-larzscript tools/larzpkg.lz publish https://github.com/you/lz-yourpackage
+larzscript pkg publish https://github.com/you/lz-yourpackage
 ```
 
 This checks the repo is reachable and shaped like a package, then prints

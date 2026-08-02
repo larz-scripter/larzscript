@@ -35,5 +35,7 @@ if (-not $already) {
 Write-Host ""
 Write-Host "try it:"
 Write-Host "  larzscript repl"
-Write-Host "  larzscript $env:USERPROFILE\.larzscript\larzpkg.lz install mathx"
+Write-Host "  larzscript pkg install mathx"
 Write-Host '  larzscript -e "print(\"hello from larzscript\")"'
+Write-Host ""
+Write-Host "later, to update:  larzscript update"
