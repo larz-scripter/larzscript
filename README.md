@@ -234,6 +234,12 @@ language's own version history.
 Part of the [Larz stack](https://github.com/larz-scripter) — see the
 [Learn to Code platform](https://larzos.com/learn/).
 
+## Ecosystem growth
+
+**[GROWTH.md](GROWTH.md)** tracks the plan for growing Larzscript's reach —
+an SEO-scale "how to do X in Larzscript" cookbook, a flagship real-world app,
+and an in-browser playground. Planned, not yet started.
+
 ## Tests
 
 ```bash
