@@ -180,6 +180,11 @@ host it yourself, no write access to anything here needed:
   expense is a real `pay`; every spending limit is a real `require` guardrail
   the runtime enforces, not application code you could forget to write. Real
   GitHub Actions CI, green.
+- **[larzpulse](https://github.com/larz-scripter/larzpulse)** - a real HTTP
+  uptime monitor CLI, and a showcase of *composing* the package ecosystem
+  rather than writing a monolith: the whole tool is five single-purpose
+  packages (`http`, `monitor`, `statuscard`, `email`, `smtp`) wired together,
+  no bespoke alerting logic of its own. Real GitHub Actions CI, green.
 
 (Building something real with Larzscript? Open a PR adding it here.)
 
