@@ -151,3 +151,6 @@ vm                packages/vm
 watch             packages/watch
 ws                packages/ws
 xml               packages/xml
+money             packages/money
+logic             packages/logic
+units             packages/units
