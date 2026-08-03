@@ -100,8 +100,17 @@ jobs:
       # Real end-to-end proof for the -R equivalent too: a real local TCP
       # echo service, forwarded through the SAME real sshd's remote port,
       # reached by an external client - actual bytes round-tripped, not a
-      # stub. Same sshd from the step above (still running on :2222).
-      - name: Verify ssh forward_remote_port() against a real local sshd
+      # stub. Same sshd from the step above (still running on :2222). The
+      # bridge itself is ssh_bridge_forward() (all in C, real byte
+      # counts) - the payload below deliberately includes an embedded
+      # 0x00 byte, which the OLD Larzscript-level bridge (ssh_channel_read/
+      # write + socket_read/write, all strlen()-based under the hood)
+      # would have silently truncated - this is the regression test for
+      # that exact, real bug (found via forwarding an actual SSH session
+      # through a live tunnel - SSH's own binary KEX packets contain 0x00
+      # bytes routinely, which corrupted the handshake and killed the
+      # connection right after the banner exchange).
+      - name: Verify ssh forward_remote_port() carries real binary data (embedded NUL byte)
         run: |
           python3 -c "
           import socket
@@ -131,23 +140,7 @@ jobs:
           while true {
             let channel = ssh_accept_forward(session, 1000)
             if channel == nil { continue }
-            let local_fd = socket_connect("127.0.0.1", 19801)
-            while true {
-              let avail = ssh_channel_poll(channel, 100)
-              if avail > 0 {
-                let data = ssh_channel_read(channel, avail)
-                let sent = 0
-                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
-              }
-              if ssh_channel_eof(channel) { break }
-              let ready = socket_poll([local_fd], 100)
-              if ready.contains(local_fd) {
-                let d = socket_read(local_fd, 16384)
-                if d == "" { break }
-                ssh_channel_write(channel, d)
-              }
-            }
-            socket_close(local_fd)
+            ssh_bridge_forward(channel, "127.0.0.1", 19801)
             ssh_channel_free(channel)
           }
           LZEOF
@@ -161,16 +154,50 @@ jobs:
           s.settimeout(20)
           banner = s.recv(200)
           print('banner:', banner)
-          s.sendall(b'forward-test-payload')
+          payload = b'before-nul\x00after-nul-must-survive'
+          s.sendall(payload)
           time.sleep(1)
           echo = s.recv(200)
           print('echo:', echo)
           s.close()
           assert banner == b'ECHO-READY\n', 'banner mismatch'
-          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          assert echo == b'GOT:' + payload, 'echo mismatch - embedded NUL byte was truncated: ' + repr(echo)
           print('PASS')
           "
           kill $FWD_PID 2>/dev/null || true
+      # The strongest possible proof: forward the relay's tunnel port back
+      # to the SAME real sshd (acting as both "relay" and "the machine
+      # being exposed" - fine for this test, it's the same real sshd
+      # either way), then have a COMPLETELY SEPARATE real ssh client
+      # authenticate all the way through and run a command. This is
+      # exactly the scenario that first caught the NUL-truncation bug in
+      # a real live test (SSH-over-netbridge) - if this passes, a real
+      # user really can run remote commands through a netbridge tunnel.
+      - name: Verify a REAL ssh client can fully authenticate and run a command THROUGH the tunnel
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_forward_ssh_e2e.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          ssh_listen_forward(session, 19904)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            ssh_bridge_forward(channel, "127.0.0.1", 2222)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_forward_ssh_e2e.lz &
+          FWD_PID=$!
+          sleep 2
+          OUT=$(timeout 20 ssh -p 19904 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i /tmp/verify_key "$USER"@127.0.0.1 "echo real-ssh-through-netbridge-tunnel-works")
+          echo "real ssh client (through the tunnel) got: $OUT"
+          kill $FWD_PID 2>/dev/null || true
+          if [ "$OUT" != "real-ssh-through-netbridge-tunnel-works" ]; then
+            echo "FAIL: could not complete a real SSH session through the tunnel"; exit 1
+          fi
+          echo "PASS"
       # The strongest interop proof yet: not our own client against a real
       # sshd, but a completely independent, real SSH client (the system
       # ssh binary) against OUR native server. If this passes, the server
@@ -371,7 +398,7 @@ jobs:
           print("PASS")
           LZEOF
           qemu-aarch64-static ./larzscript-linux-aarch64 /tmp/verify_ssh_aarch64.lz
-      - name: Verify ssh forward_remote_port() against a real local sshd (aarch64 binary under qemu-user)
+      - name: Verify ssh forward_remote_port() carries real binary data (embedded NUL byte) (aarch64 binary under qemu-user)
         run: |
           python3 -c "
           import socket
@@ -401,23 +428,7 @@ jobs:
           while true {
             let channel = ssh_accept_forward(session, 1000)
             if channel == nil { continue }
-            let local_fd = socket_connect("127.0.0.1", 19803)
-            while true {
-              let avail = ssh_channel_poll(channel, 100)
-              if avail > 0 {
-                let data = ssh_channel_read(channel, avail)
-                let sent = 0
-                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
-              }
-              if ssh_channel_eof(channel) { break }
-              let ready = socket_poll([local_fd], 100)
-              if ready.contains(local_fd) {
-                let d = socket_read(local_fd, 16384)
-                if d == "" { break }
-                ssh_channel_write(channel, d)
-              }
-            }
-            socket_close(local_fd)
+            ssh_bridge_forward(channel, "127.0.0.1", 19803)
             ssh_channel_free(channel)
           }
           LZEOF
@@ -431,16 +442,42 @@ jobs:
           s.settimeout(20)
           banner = s.recv(200)
           print('banner:', banner)
-          s.sendall(b'forward-test-payload')
+          payload = b'before-nul\x00after-nul-must-survive'
+          s.sendall(payload)
           time.sleep(1)
           echo = s.recv(200)
           print('echo:', echo)
           s.close()
           assert banner == b'ECHO-READY\n', 'banner mismatch'
-          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          assert echo == b'GOT:' + payload, 'echo mismatch - embedded NUL byte was truncated: ' + repr(echo)
           print('PASS')
           "
           kill $FWD_PID 2>/dev/null || true
+      - name: Verify a REAL ssh client can fully authenticate and run a command THROUGH the tunnel (aarch64 binary under qemu-user)
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_forward_ssh_e2e_aarch64.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2226)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key_aarch64")
+          ssh_listen_forward(session, 19905)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            ssh_bridge_forward(channel, "127.0.0.1", 2226)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          qemu-aarch64-static ./larzscript-linux-aarch64 /tmp/verify_forward_ssh_e2e_aarch64.lz &
+          FWD_PID=$!
+          sleep 2
+          OUT=$(timeout 20 ssh -p 19905 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i /tmp/verify_key_aarch64 "$USER"@127.0.0.1 "echo real-ssh-through-netbridge-tunnel-works")
+          echo "real ssh client (through the tunnel) got: $OUT"
+          kill $FWD_PID 2>/dev/null || true
+          if [ "$OUT" != "real-ssh-through-netbridge-tunnel-works" ]; then
+            echo "FAIL: could not complete a real SSH session through the tunnel"; exit 1
+          fi
+          echo "PASS"
       - name: Verify ssh server role against the REAL system ssh client (aarch64 binary under qemu-user)
         timeout-minutes: 3   # a hang here should fail fast, not burn hours - see linux-x86_64's own comment on this same step for why
         run: |
@@ -618,7 +655,7 @@ jobs:
           print("PASS")
           LZEOF
           /tmp/_larzscript_test /tmp/verify_ssh.lz
-      - name: Verify ssh forward_remote_port() against a real local sshd
+      - name: Verify ssh forward_remote_port() carries real binary data (embedded NUL byte)
         run: |
           python3 -c "
           import socket
@@ -648,23 +685,7 @@ jobs:
           while true {
             let channel = ssh_accept_forward(session, 1000)
             if channel == nil { continue }
-            let local_fd = socket_connect("127.0.0.1", 19801)
-            while true {
-              let avail = ssh_channel_poll(channel, 100)
-              if avail > 0 {
-                let data = ssh_channel_read(channel, avail)
-                let sent = 0
-                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
-              }
-              if ssh_channel_eof(channel) { break }
-              let ready = socket_poll([local_fd], 100)
-              if ready.contains(local_fd) {
-                let d = socket_read(local_fd, 16384)
-                if d == "" { break }
-                ssh_channel_write(channel, d)
-              }
-            }
-            socket_close(local_fd)
+            ssh_bridge_forward(channel, "127.0.0.1", 19801)
             ssh_channel_free(channel)
           }
           LZEOF
@@ -678,16 +699,53 @@ jobs:
           s.settimeout(20)
           banner = s.recv(200)
           print('banner:', banner)
-          s.sendall(b'forward-test-payload')
+          payload = b'before-nul\x00after-nul-must-survive'
+          s.sendall(payload)
           time.sleep(1)
           echo = s.recv(200)
           print('echo:', echo)
           s.close()
           assert banner == b'ECHO-READY\n', 'banner mismatch'
-          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          assert echo == b'GOT:' + payload, 'echo mismatch - embedded NUL byte was truncated: ' + repr(echo)
           print('PASS')
           "
           kill $FWD_PID 2>/dev/null || true
+      # No `timeout` command by default on macOS - a manual
+      # background+bounded-wait+kill gives the same ~20s hard bound,
+      # same reasoning as the interactive-shell check's own identical
+      # pattern elsewhere in this job.
+      - name: Verify a REAL ssh client can fully authenticate and run a command THROUGH the tunnel
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_forward_ssh_e2e.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          ssh_listen_forward(session, 19906)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            ssh_bridge_forward(channel, "127.0.0.1", 2222)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_forward_ssh_e2e.lz &
+          FWD_PID=$!
+          sleep 2
+          ssh -p 19906 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i /tmp/verify_key "$USER"@127.0.0.1 "echo real-ssh-through-netbridge-tunnel-works" > /tmp/ssh_e2e_out.txt 2>/dev/null &
+          CLIENT_PID=$!
+          for i in $(seq 1 20); do
+            kill -0 $CLIENT_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill $CLIENT_PID 2>/dev/null || true
+          OUT=$(cat /tmp/ssh_e2e_out.txt 2>/dev/null || true)
+          echo "real ssh client (through the tunnel) got: $OUT"
+          kill $FWD_PID 2>/dev/null || true
+          if [ "$OUT" != "real-ssh-through-netbridge-tunnel-works" ]; then
+            echo "FAIL: could not complete a real SSH session through the tunnel"; exit 1
+          fi
+          echo "PASS"
       - name: Verify ssh server role against the REAL system ssh client
         timeout-minutes: 3   # same hang-safety reasoning as the linux-x86_64 job's identical step
         run: |
@@ -890,7 +948,7 @@ jobs:
           print("PASS")
           LZEOF
           /tmp/_larzscript_test /tmp/verify_ssh.lz
-      - name: Verify ssh forward_remote_port() against a real local sshd
+      - name: Verify ssh forward_remote_port() carries real binary data (embedded NUL byte)
         run: |
           python3 -c "
           import socket
@@ -920,23 +978,7 @@ jobs:
           while true {
             let channel = ssh_accept_forward(session, 1000)
             if channel == nil { continue }
-            let local_fd = socket_connect("127.0.0.1", 19801)
-            while true {
-              let avail = ssh_channel_poll(channel, 100)
-              if avail > 0 {
-                let data = ssh_channel_read(channel, avail)
-                let sent = 0
-                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
-              }
-              if ssh_channel_eof(channel) { break }
-              let ready = socket_poll([local_fd], 100)
-              if ready.contains(local_fd) {
-                let d = socket_read(local_fd, 16384)
-                if d == "" { break }
-                ssh_channel_write(channel, d)
-              }
-            }
-            socket_close(local_fd)
+            ssh_bridge_forward(channel, "127.0.0.1", 19801)
             ssh_channel_free(channel)
           }
           LZEOF
@@ -950,16 +992,53 @@ jobs:
           s.settimeout(20)
           banner = s.recv(200)
           print('banner:', banner)
-          s.sendall(b'forward-test-payload')
+          payload = b'before-nul\x00after-nul-must-survive'
+          s.sendall(payload)
           time.sleep(1)
           echo = s.recv(200)
           print('echo:', echo)
           s.close()
           assert banner == b'ECHO-READY\n', 'banner mismatch'
-          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          assert echo == b'GOT:' + payload, 'echo mismatch - embedded NUL byte was truncated: ' + repr(echo)
           print('PASS')
           "
           kill $FWD_PID 2>/dev/null || true
+      # No `timeout` command by default on macOS - a manual
+      # background+bounded-wait+kill gives the same ~20s hard bound,
+      # same reasoning as the interactive-shell check's own identical
+      # pattern elsewhere in this job.
+      - name: Verify a REAL ssh client can fully authenticate and run a command THROUGH the tunnel
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_forward_ssh_e2e.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          ssh_listen_forward(session, 19906)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            ssh_bridge_forward(channel, "127.0.0.1", 2222)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_forward_ssh_e2e.lz &
+          FWD_PID=$!
+          sleep 2
+          ssh -p 19906 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i /tmp/verify_key "$USER"@127.0.0.1 "echo real-ssh-through-netbridge-tunnel-works" > /tmp/ssh_e2e_out.txt 2>/dev/null &
+          CLIENT_PID=$!
+          for i in $(seq 1 20); do
+            kill -0 $CLIENT_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill $CLIENT_PID 2>/dev/null || true
+          OUT=$(cat /tmp/ssh_e2e_out.txt 2>/dev/null || true)
+          echo "real ssh client (through the tunnel) got: $OUT"
+          kill $FWD_PID 2>/dev/null || true
+          if [ "$OUT" != "real-ssh-through-netbridge-tunnel-works" ]; then
+            echo "FAIL: could not complete a real SSH session through the tunnel"; exit 1
+          fi
+          echo "PASS"
       - name: Verify ssh server role against the REAL system ssh client
         timeout-minutes: 3   # same hang-safety reasoning as the linux-x86_64 job's identical step
         run: |
@@ -1198,7 +1277,7 @@ jobs:
           print("PASS")
           LZEOF
           WINEDEBUG=-all wine larzscript-windows-x86_64.exe /tmp/verify_ssh_win.lz
-      - name: Verify ssh forward_remote_port() against a real local sshd (Windows binary under wine)
+      - name: Verify ssh forward_remote_port() carries real binary data (embedded NUL byte) (Windows binary under wine)
         run: |
           python3 -c "
           import socket
@@ -1228,23 +1307,7 @@ jobs:
           while true {
             let channel = ssh_accept_forward(session, 1000)
             if channel == nil { continue }
-            let local_fd = socket_connect("127.0.0.1", 19802)
-            while true {
-              let avail = ssh_channel_poll(channel, 100)
-              if avail > 0 {
-                let data = ssh_channel_read(channel, avail)
-                let sent = 0
-                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
-              }
-              if ssh_channel_eof(channel) { break }
-              let ready = socket_poll([local_fd], 100)
-              if ready.contains(local_fd) {
-                let d = socket_read(local_fd, 16384)
-                if d == "" { break }
-                ssh_channel_write(channel, d)
-              }
-            }
-            socket_close(local_fd)
+            ssh_bridge_forward(channel, "127.0.0.1", 19802)
             ssh_channel_free(channel)
           }
           LZEOF
@@ -1258,16 +1321,47 @@ jobs:
           s.settimeout(20)
           banner = s.recv(200)
           print('banner:', banner)
-          s.sendall(b'forward-test-payload')
+          payload = b'before-nul\x00after-nul-must-survive'
+          s.sendall(payload)
           time.sleep(1)
           echo = s.recv(200)
           print('echo:', echo)
           s.close()
           assert banner == b'ECHO-READY\n', 'banner mismatch'
-          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          assert echo == b'GOT:' + payload, 'echo mismatch - embedded NUL byte was truncated: ' + repr(echo)
           print('PASS')
           "
           kill $FWD_PID 2>/dev/null || true
+      # Same real-ssh-through-the-tunnel proof as the other platforms -
+      # forwards back to the same real Ubuntu sshd the ssh.run() check
+      # above already uses (port 2224), then a real, independent (non-
+      # wine) ssh client authenticates all the way through the wine-run
+      # Windows .exe's tunnel and runs a command.
+      - name: Verify a REAL ssh client can fully authenticate and run a command THROUGH the tunnel (Windows binary under wine)
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_forward_ssh_e2e_win.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2224)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key_win")
+          ssh_listen_forward(session, 19907)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            ssh_bridge_forward(channel, "127.0.0.1", 2224)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          WINEDEBUG=-all wine larzscript-windows-x86_64.exe /tmp/verify_forward_ssh_e2e_win.lz &
+          FWD_PID=$!
+          sleep 2
+          OUT=$(timeout 20 ssh -p 19907 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i /tmp/verify_key_win "$USER"@127.0.0.1 "echo real-ssh-through-netbridge-tunnel-works")
+          echo "real ssh client (through the tunnel) got: $OUT"
+          kill $FWD_PID 2>/dev/null || true
+          if [ "$OUT" != "real-ssh-through-netbridge-tunnel-works" ]; then
+            echo "FAIL: could not complete a real SSH session through the tunnel"; exit 1
+          fi
+          echo "PASS"
       - name: Verify ssh server role against the REAL system ssh client (Windows binary under wine)
         timeout-minutes: 3   # a hang here should fail fast, not burn hours - see linux-x86_64's own comment on this same step for why
         # Server replies with a fixed string rather than capture(cmd) here -
