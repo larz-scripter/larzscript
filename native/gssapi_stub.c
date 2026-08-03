@@ -58,3 +58,8 @@ gss_OM_uint32 gss_init_sec_context(gss_OM_uint32 *minor, gss_cred_id_t cred, gss
 gss_OM_uint32 gss_get_mic(gss_OM_uint32 *minor, gss_ctx_id_t ctx, gss_qop_t qop, gss_buffer_t msg, gss_buffer_t token){ (void)ctx;(void)qop;(void)msg; if(minor)*minor=0; if(token){token->length=0;token->value=0;} return LZ_GSS_UNAVAILABLE; }
 gss_OM_uint32 gss_display_status(gss_OM_uint32 *minor, gss_OM_uint32 status_value, int status_type, gss_OID mech_type, gss_OM_uint32 *message_context, gss_buffer_t status_string){ (void)status_value;(void)status_type;(void)mech_type; if(minor)*minor=0; if(message_context)*message_context=0; if(status_string){status_string->length=0;status_string->value=0;} return LZ_GSS_UNAVAILABLE; }
 gss_OM_uint32 gss_release_cred(gss_OM_uint32 *minor, gss_cred_id_t *cred){ (void)cred; if(minor)*minor=0; return 0; }
+/* Two more referenced by Homebrew's libssh build on macOS specifically -
+ * Linux's build didn't need these two, macOS's did (different GSSAPI
+ * code path compiled in) - found via the macOS CI job, added here. */
+gss_OM_uint32 gss_delete_sec_context(gss_OM_uint32 *minor, gss_ctx_id_t *ctx, gss_buffer_t output_token){ (void)ctx; if(minor)*minor=0; if(output_token){output_token->length=0;output_token->value=0;} return 0; }
+gss_OM_uint32 gss_release_oid(gss_OM_uint32 *minor, gss_OID *oid){ (void)oid; if(minor)*minor=0; return 0; }
