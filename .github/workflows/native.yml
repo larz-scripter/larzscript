@@ -39,54 +39,27 @@ jobs:
       # Not yet on macOS/Windows/linux-aarch64/wasm - ssh_* builtins throw
       # a clear SshError there until each platform gets its own libssh
       # wiring, same convention sockets already use for wasm.
-      - name: DIAGNOSTIC - does apt's libssh-dev include a static archive already?
-        run: |
-          sudo apt-get update && sudo apt-get install -y libssh-dev
-          echo "--- files in libssh-dev ---"
-          dpkg -L libssh-dev | grep -E '\.(a|so)' || true
-          exit 0
-      - name: Cache built libssh + mbedTLS (static)
-        id: libssh-cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/libssh-static
-          # Bump this key if the pinned versions below change.
-          key: libssh-static-v0.10.6-mbedtls-v3.6.0-v1
-      - name: Build mbedTLS + libssh from source (static)
-        if: steps.libssh-cache.outputs.cache-hit != 'true'
-        run: |
-          set -e
-          mkdir -p /tmp/build && cd /tmp/build
-          git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls.git
-          cd mbedtls && git submodule update --init --depth 1
-          make -j"$(nproc)" lib
-          cd /tmp/build
-          # git clone against gitlab.com hit an auth prompt in this same
-          # job (protocol/redirect quirk, not a real permission issue on
-          # this public repo) - a plain tarball download sidesteps git
-          # credential handling entirely.
-          curl -fsSL -A "Mozilla/5.0 (compatible; larzscript-ci)" -o libssh.tar.gz "https://gitlab.com/libssh/libssh/-/archive/libssh-0.10.6/libssh-libssh-0.10.6.tar.gz"
-          tar xzf libssh.tar.gz
-          mv libssh-libssh-0.10.6 libssh
-          cd libssh && mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF -DWITH_STATIC_LIB=ON \
-            -DWITH_MBEDTLS=ON -DWITH_GSSAPI=OFF -DWITH_SFTP=OFF -DWITH_SERVER=ON \
-            -DCMAKE_PREFIX_PATH=/tmp/build/mbedtls \
-            -DCMAKE_C_FLAGS="-I/tmp/build/mbedtls/include" \
-            -DCMAKE_EXE_LINKER_FLAGS="-L/tmp/build/mbedtls/library"
-          make -j"$(nproc)" ssh
-          mkdir -p /tmp/libssh-static/include /tmp/libssh-static/lib
-          cp -r /tmp/build/libssh/include/libssh /tmp/libssh-static/include/
-          cp /tmp/build/libssh/build/src/libssh.a /tmp/libssh-static/lib/
-          cp /tmp/build/mbedtls/library/*.a /tmp/libssh-static/lib/
-      - name: Build test binary (with static libssh)
-        run: |
-          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH \
-            -I/tmp/libssh-static/include -o /tmp/_larzscript_test native/larzscript.c \
-            -L/tmp/libssh-static/lib -static -lssh -lmbedtls -lmbedx509 -lmbedcrypto
+      #
+      # Ubuntu's libssh-dev ships BOTH libssh.so and a real static
+      # libssh.a (confirmed via `dpkg -L libssh-dev`) - no from-scratch
+      # source build needed, an earlier version of this job built libssh +
+      # mbedTLS from source assuming otherwise, wasted effort once this
+      # was checked directly. libssl-dev is libssh's crypto backend here
+      # (Ubuntu noble's OpenSSL 3.x, Apache 2.0 - see
+      # THIRD_PARTY_LICENSES.md), also has a static .a.
+      - name: Install libssh (static archive included)
+        run: sudo apt-get update && sudo apt-get install -y libssh-dev libssl-dev
+      - name: Build test binary (fully static, including libssh)
+        run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o /tmp/_larzscript_test native/larzscript.c -lssh -lssl -lcrypto
       - name: Test
         run: cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
+      - name: Confirm no dynamic dependency on libssh
+        run: |
+          if ldd /tmp/_larzscript_test 2>&1 | grep -qi "not a dynamic executable"; then
+            echo "confirmed fully static"
+          else
+            echo "FAIL: binary is not fully static"; ldd /tmp/_larzscript_test; exit 1
+          fi
       # Real end-to-end proof, not just "it links": this sandbox this was
       # developed in has no general internet access (apt/libssh unreachable
       # there), so this CI job is the only environment that actually has
@@ -120,9 +93,7 @@ jobs:
           /tmp/_larzscript_test /tmp/verify_ssh.lz
       - name: Build release binary (static, including libssh)
         run: |
-          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH \
-            -I/tmp/libssh-static/include -o larzscript-linux-x86_64 native/larzscript.c \
-            -L/tmp/libssh-static/lib -static -lssh -lmbedtls -lmbedx509 -lmbedcrypto
+          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c -lssh -lssl -lcrypto
           strip larzscript-linux-x86_64
       - uses: actions/upload-artifact@v4
         with:

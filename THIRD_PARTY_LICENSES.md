@@ -21,10 +21,13 @@ libssh, using that public workflow as-is. No separate object-file drop is
 provided beyond that, since the scripted source build already serves the
 same purpose LGPL requires.
 
-## mbedTLS (Apache License 2.0)
+## OpenSSL (Apache License 2.0, v3.x)
 
-https://www.trustedfirmware.org/projects/mbed-tls/ - libssh's crypto
-backend here, chosen over OpenSSL or libgcrypt specifically to avoid
-stacking a second copyleft dependency (libgcrypt is GPL/LGPL) on top of
-libssh's own LGPL obligation. Apache 2.0 is permissive and adds no
-additional linking obligations beyond attribution (this file).
+https://www.openssl.org/ - libssh's crypto backend on this platform
+(Ubuntu's `libssh-dev` package is built against OpenSSL, not mbedTLS or
+libgcrypt - using the distribution's own static archives rather than
+building a different backend from source). Modern OpenSSL (3.0+, what
+Ubuntu ships) is Apache 2.0, permissive, and adds no additional linking
+obligations beyond attribution (this file) - avoids stacking a second
+copyleft dependency (libgcrypt is GPL/LGPL) on top of libssh's own LGPL
+obligation.
