@@ -120,6 +120,26 @@ typedef int larz_sock_t;
 #ifdef LARZ_HAVE_LIBSSH
 #include <libssh/libssh.h>
 #include <libssh/server.h>   /* ssh_bind/ssh_message_* - the server-role API lives in a separate header from the client one */
+/* Interactive shell/pty for the ssh server role - real fork()+forkpty(),
+ * POSIX only (Linux x86_64/aarch64, macOS x86_64/arm64). Windows has no
+ * fork(); a real equivalent needs ConPTY (CreatePseudoConsole), a wholly
+ * different Win32 API - not implemented yet, so ssh_channel_shell()
+ * throws a clear SshError there instead of silently pretending to work.
+ * exec (ssh_run/the exec message type) is unaffected and already works
+ * on all five targets - this only gates the interactive-shell path. */
+#ifndef _WIN32
+#define LARZ_HAVE_PTY 1
+#if defined(__APPLE__)
+#include <util.h>        /* openpty/forkpty on macOS/BSD */
+#else
+#include <pty.h>         /* openpty/forkpty on Linux (glibc) */
+#endif
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <signal.h>
+#include <errno.h>
+#endif
 #endif
 #if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
 #include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
@@ -2206,6 +2226,11 @@ static Value bi_ssh_msg_request_accept(Interp *ip, Value *a, int n){ (void)a; (v
 static Value bi_ssh_channel_send_exit_status(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_msg_channel(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_close(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_pty_width(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_pty_height(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_shell(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_check_host(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_trust_host(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 #else
 
 static Value bi_ssh_open(Interp *ip, Value *a, int n){
@@ -2220,9 +2245,57 @@ static Value bi_ssh_open(Interp *ip, Value *a, int n){
     ssh_free(sess);
     runtime_error(ip,"SshError","%s",msg);
   }
-  /* Not verified against known_hosts yet (Phase 1 - see README for this
-   * gap called out plainly, not silently skipped). */
+  /* Not verified against known_hosts here - that's ssh_check_host()/
+   * ssh_trust_host() below, a separate step so callers can inspect the
+   * server's identity before sending any auth data (real MITM detection,
+   * not silently skipped - see the ssh package README for the current
+   * "not yet implemented" note this closes out). */
   return V_number((double)(intptr_t)sess);
+}
+
+/* Checks the connected server's host key against a known_hosts file
+ * using libssh's own known_hosts implementation (not hand-rolled) -
+ * ssh_session_is_known_server() reads/parses the file itself. Returns a
+ * plain string so Larzscript code never touches libssh's enum:
+ * "ok" (key matches a known entry), "changed" (key differs from a
+ * known entry - the real MITM-detection case, always fail closed on
+ * this one), "not_found" (no known_hosts file yet), "unknown" (host not
+ * in the file yet - normal on first connect), "other" (a known host
+ * but this key TYPE isn't recorded for it), "error". Must be called
+ * after ssh_open() (key exchange already happened by then) and before
+ * any ssh_auth_*() call. */
+static Value bi_ssh_check_host(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_check_host() expects a session and a known_hosts path");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  if(ssh_options_set(sess,SSH_OPTIONS_KNOWNHOSTS,a[1].str)!=SSH_OK){
+    runtime_error(ip,"SshError","could not set known_hosts path: %s",ssh_get_error(sess));
+  }
+  enum ssh_known_hosts_e state=ssh_session_is_known_server(sess);
+  switch(state){
+    case SSH_KNOWN_HOSTS_OK:      return V_string("ok");
+    case SSH_KNOWN_HOSTS_CHANGED: return V_string("changed");
+    case SSH_KNOWN_HOSTS_NOT_FOUND: return V_string("not_found");
+    case SSH_KNOWN_HOSTS_UNKNOWN: return V_string("unknown");
+    case SSH_KNOWN_HOSTS_OTHER:   return V_string("other");
+    default:                      return V_string("error");
+  }
+}
+
+/* Records the server's CURRENT host key into known_hosts (creating the
+ * file/directory if needed) - the caller decides when this is safe to
+ * call (e.g. only on "unknown"/"not_found", after showing the user a
+ * fingerprint to confirm, or as an explicit trust-on-first-use policy -
+ * never automatically on "changed", which would defeat the whole point). */
+static Value bi_ssh_trust_host(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_trust_host() expects a session and a known_hosts path");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  if(ssh_options_set(sess,SSH_OPTIONS_KNOWNHOSTS,a[1].str)!=SSH_OK){
+    runtime_error(ip,"SshError","could not set known_hosts path: %s",ssh_get_error(sess));
+  }
+  if(ssh_session_update_known_hosts(sess)!=SSH_OK){
+    runtime_error(ip,"SshError","could not update known_hosts: %s",ssh_get_error(sess));
+  }
+  return V_nil();
 }
 
 static Value bi_ssh_auth_password(Interp *ip, Value *a, int n){
@@ -2520,6 +2593,22 @@ static Value bi_ssh_msg_exec_command(Interp *ip, Value *a, int n){
   return V_string(cmd?cmd:"");
 }
 
+/* The client's requested terminal size on a "pty" message - read these
+ * BEFORE ssh_msg_request_accept()'ing the pty request, so the caller can
+ * pass them into ssh_channel_shell() to size the pty correctly from the
+ * start (a wrong initial size garbles full-screen terminal apps like
+ * vim/htop until the user manually resizes). */
+static Value bi_ssh_msg_pty_width(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_pty_width() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  return V_number((double)ssh_message_channel_request_pty_width(msg));
+}
+static Value bi_ssh_msg_pty_height(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_pty_height() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  return V_number((double)ssh_message_channel_request_pty_height(msg));
+}
+
 /* Accepts a channel REQUEST (exec/shell/pty - the sub-request within an
  * already-open channel), frees the message. */
 static Value bi_ssh_msg_request_accept(Interp *ip, Value *a, int n){
@@ -2559,6 +2648,96 @@ static Value bi_ssh_channel_close(Interp *ip, Value *a, int n){
   ssh_channel_close(ch);
   return V_nil();
 }
+
+/* Interactive shell for the server role - real fork()+forkpty() (POSIX
+ * only - see the header comment near the pty includes for why Windows
+ * doesn't have this yet; exec via ssh_run()/the "exec" message type is
+ * unaffected and already works everywhere). Spawns the user's real
+ * login shell attached to a real pseudoterminal sized cols x rows (from
+ * the client's pty request - ssh_msg_pty_width/height above), then
+ * blocks bridging data both ways until the channel closes or the shell
+ * exits. Returns the shell's real exit code. One call does the whole
+ * session - matches ssh_run()'s "C does the loop, Larzscript just calls
+ * it" shape, since this interpreter has no non-blocking I/O primitives
+ * at the Larzscript level fine-grained enough for interactive typing
+ * latency. */
+#ifdef LARZ_HAVE_PTY
+static Value bi_ssh_channel_shell(Interp *ip, Value *a, int n){
+  if(n!=3||!is_num(a[0])||!is_num(a[1])||!is_num(a[2])) runtime_error(ip,"LarzTypeError","ssh_channel_shell() expects a channel, terminal width, and terminal height");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  int cols=(int)a[1].num, rows=(int)a[2].num;
+  if(cols<=0) cols=80;
+  if(rows<=0) rows=24;
+
+  struct winsize ws; memset(&ws,0,sizeof ws);
+  ws.ws_col=(unsigned short)cols; ws.ws_row=(unsigned short)rows;
+
+  int master_fd;
+  pid_t pid=forkpty(&master_fd,NULL,NULL,&ws);
+  if(pid<0) runtime_error(ip,"SshError","forkpty failed: %s",strerror(errno));
+  if(pid==0){
+    /* child: a real interactive login shell, attached to the pty slave
+     * as its controlling terminal by forkpty()'s own login_tty() call. */
+    const char *shell=getenv("SHELL");
+    if(!shell||!*shell) shell="/bin/sh";
+    execl(shell,shell,"-i",(char*)NULL);
+    _exit(127);
+  }
+
+  /* parent: bridge channel <-> pty master until the channel closes or
+   * the child exits - same shape as forward_remote_port()'s own poll
+   * loop, just with a pty fd instead of a plain TCP socket on the other
+   * side, and living entirely in C instead of Larzscript (the interpreter
+   * has no non-blocking read/write at the Larzscript level fine-grained
+   * enough for this). */
+  int status=0, child_exited=0;
+  char buf[4096];
+  for(;;){
+    int avail=ssh_channel_poll_timeout(ch,20,0);
+    if(avail>0){
+      int nr=ssh_channel_read_nonblocking(ch,buf,sizeof(buf),0);
+      if(nr>0){
+        ssize_t off=0;
+        while(off<nr){ ssize_t w=write(master_fd,buf+off,(size_t)(nr-off)); if(w<=0) break; off+=w; }
+      }
+    }
+    if(ssh_channel_is_eof(ch)) break;
+
+    fd_set rfds; FD_ZERO(&rfds); FD_SET(master_fd,&rfds);
+    struct timeval tv={0,20000};
+    int sel=select(master_fd+1,&rfds,NULL,NULL,&tv);
+    if(sel>0 && FD_ISSET(master_fd,&rfds)){
+      ssize_t nr=read(master_fd,buf,sizeof(buf));
+      if(nr>0){
+        size_t sent=0;
+        while(sent<(size_t)nr){
+          int w=ssh_channel_write(ch,buf+sent,(uint32_t)((size_t)nr-sent));
+          if(w<=0) break;
+          sent+=(size_t)w;
+        }
+      } else if(nr==0 || (nr<0 && errno!=EAGAIN && errno!=EINTR)){
+        break;   /* pty closed - shell exited (or its controlling process did) */
+      }
+    }
+
+    pid_t w=waitpid(pid,&status,WNOHANG);
+    if(w==pid){ child_exited=1; break; }
+  }
+  if(!child_exited){
+    kill(pid,SIGHUP);
+    waitpid(pid,&status,0);
+  }
+  close(master_fd);
+  int exit_code=WIFEXITED(status)?WEXITSTATUS(status):1;
+  return V_number((double)exit_code);
+}
+#else
+static Value bi_ssh_channel_shell(Interp *ip, Value *a, int n){
+  (void)a; (void)n;
+  runtime_error(ip,"SshError","interactive shell is not available in this build (no pty support on this platform yet - exec commands still work via ssh_run()/the exec message type)");
+  return V_nil();
+}
+#endif
 #endif /* LARZ_HAVE_LIBSSH */
 #endif /* hosted */
 
@@ -2582,8 +2761,10 @@ static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
 static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
 static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close};
+static Builtin B_ssh_check_host={"ssh_check_host",bi_ssh_check_host}, B_ssh_trust_host={"ssh_trust_host",bi_ssh_trust_host};
 static Builtin B_ssh_listen_forward={"ssh_listen_forward",bi_ssh_listen_forward}, B_ssh_accept_forward={"ssh_accept_forward",bi_ssh_accept_forward}, B_ssh_channel_poll={"ssh_channel_poll",bi_ssh_channel_poll}, B_ssh_channel_read={"ssh_channel_read",bi_ssh_channel_read}, B_ssh_channel_write={"ssh_channel_write",bi_ssh_channel_write}, B_ssh_channel_eof={"ssh_channel_eof",bi_ssh_channel_eof}, B_ssh_channel_free={"ssh_channel_free",bi_ssh_channel_free};
 static Builtin B_ssh_bind_open={"ssh_bind_open",bi_ssh_bind_open}, B_ssh_bind_accept_session={"ssh_bind_accept_session",bi_ssh_bind_accept_session}, B_ssh_bind_free={"ssh_bind_free",bi_ssh_bind_free}, B_ssh_server_next_message={"ssh_server_next_message",bi_ssh_server_next_message}, B_ssh_msg_type={"ssh_msg_type",bi_ssh_msg_type}, B_ssh_msg_auth_user={"ssh_msg_auth_user",bi_ssh_msg_auth_user}, B_ssh_msg_auth_password={"ssh_msg_auth_password",bi_ssh_msg_auth_password}, B_ssh_msg_auth_accept={"ssh_msg_auth_accept",bi_ssh_msg_auth_accept}, B_ssh_msg_deny={"ssh_msg_deny",bi_ssh_msg_deny}, B_ssh_msg_channel_accept={"ssh_msg_channel_accept",bi_ssh_msg_channel_accept}, B_ssh_msg_exec_command={"ssh_msg_exec_command",bi_ssh_msg_exec_command}, B_ssh_msg_request_accept={"ssh_msg_request_accept",bi_ssh_msg_request_accept}, B_ssh_channel_send_exit_status={"ssh_channel_send_exit_status",bi_ssh_channel_send_exit_status}, B_ssh_msg_channel={"ssh_msg_channel",bi_ssh_msg_channel}, B_ssh_channel_close={"ssh_channel_close",bi_ssh_channel_close};
+static Builtin B_ssh_msg_pty_width={"ssh_msg_pty_width",bi_ssh_msg_pty_width}, B_ssh_msg_pty_height={"ssh_msg_pty_height",bi_ssh_msg_pty_height}, B_ssh_channel_shell={"ssh_channel_shell",bi_ssh_channel_shell};
 #endif
 static Builtin B_regex_match={"regex_match",bi_regex_match}, B_regex_find={"regex_find",bi_regex_find}, B_regex_replace={"regex_replace",bi_regex_replace}, B_regex_split={"regex_split",bi_regex_split};
 static Builtin B_date={"date",bi_date}, B_datetime={"datetime",bi_datetime};
@@ -2722,6 +2903,8 @@ static void define_builtins(Env *g){
   env_define(g, "ssh_auth_key",     V_builtin(&B_ssh_auth_key));
   env_define(g, "ssh_run",          V_builtin(&B_ssh_run));
   env_define(g, "ssh_close",        V_builtin(&B_ssh_close));
+  env_define(g, "ssh_check_host",   V_builtin(&B_ssh_check_host));
+  env_define(g, "ssh_trust_host",   V_builtin(&B_ssh_trust_host));
   env_define(g, "ssh_listen_forward",V_builtin(&B_ssh_listen_forward));
   env_define(g, "ssh_accept_forward",V_builtin(&B_ssh_accept_forward));
   env_define(g, "ssh_channel_poll",  V_builtin(&B_ssh_channel_poll));
@@ -2744,6 +2927,9 @@ static void define_builtins(Env *g){
   env_define(g, "ssh_channel_send_exit_status", V_builtin(&B_ssh_channel_send_exit_status));
   env_define(g, "ssh_msg_channel",         V_builtin(&B_ssh_msg_channel));
   env_define(g, "ssh_channel_close",       V_builtin(&B_ssh_channel_close));
+  env_define(g, "ssh_msg_pty_width",       V_builtin(&B_ssh_msg_pty_width));
+  env_define(g, "ssh_msg_pty_height",      V_builtin(&B_ssh_msg_pty_height));
+  env_define(g, "ssh_channel_shell",       V_builtin(&B_ssh_channel_shell));
 #endif
   env_define(g, "regex_match",   V_builtin(&B_regex_match));
   env_define(g, "regex_find",    V_builtin(&B_regex_find));
