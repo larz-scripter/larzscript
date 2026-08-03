@@ -52,15 +52,18 @@ jobs:
           chmod 600 ~/.ssh/authorized_keys
           sudo /usr/sbin/sshd -p 2222
           cat > /tmp/verify_ssh.lz << 'LZEOF'
-          import "ssh" as ssh
-          let session = ssh.connect("127.0.0.1", 2222)
-          ssh.authenticate_with_key(session, env("USER", "runner"), "/tmp/verify_key")
-          let result = ssh.run(session, "echo hello-from-real-sshd && whoami")
+          # Calls the raw builtins directly - the "ssh" package (thin
+          # sugar over these) lives in the separate larzscript-packages
+          # repo, not checked out in this job; this is what's actually
+          # being verified here anyway.
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          let result = ssh_run(session, "echo hello-from-real-sshd && whoami")
           print("stdout: " + result["stdout"])
           print("exit_status: " + str(result["exit_status"]))
           if not result["stdout"].contains("hello-from-real-sshd") { print("FAIL: unexpected output"); exit(1) }
           if result["exit_status"] != 0 { print("FAIL: nonzero exit status"); exit(1) }
-          ssh.disconnect(session)
+          ssh_close(session)
           print("PASS")
           LZEOF
           /tmp/_larzscript_test /tmp/verify_ssh.lz
