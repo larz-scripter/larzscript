@@ -665,11 +665,19 @@ jobs:
           find /tmp/mingw64lib/mingw64/lib -maxdepth 1 -name '*ssh*' -o -name '*ssl*' -o -name '*crypto*' -o -name '*z.a' 2>/dev/null
           ls /tmp/mingw64lib/mingw64/include/libssh/ 2>&1 | head -5
       - name: Build (static)
+        # MSYS2 ships BOTH libssh.a (true static) and libssh.dll.a (an
+        # import stub for the shared .dll) side by side, same for
+        # openssl - plain -lssh/-lssl/-lcrypto resolved to the .dll.a
+        # variant instead (undefined __imp_* references, since there's
+        # no DLL alongside a fully static binary to import from at
+        # runtime) - referencing the .a files directly by path is
+        # unambiguous.
         run: |
           x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static \
             -I/tmp/mingw64lib/mingw64/include \
             -o larzscript-windows-x86_64.exe native/larzscript.c native/gssapi_stub.c \
-            -L/tmp/mingw64lib/mingw64/lib -lssh -lssl -lcrypto -lz -lwinpthread -lws2_32 -lcrypt32
+            /tmp/mingw64lib/mingw64/lib/libssh.a /tmp/mingw64lib/mingw64/lib/libssl.a /tmp/mingw64lib/mingw64/lib/libcrypto.a /tmp/mingw64lib/mingw64/lib/libz.a \
+            -lwinpthread -lws2_32 -lcrypt32 -lbcrypt
       - name: Wine warm-up (creates the wine prefix + first-run noise once, outside the test loop)
         # `wine --version` alone does NOT trigger the same wineboot/prefix
         # initialization as running an actual PE binary - the "created the
