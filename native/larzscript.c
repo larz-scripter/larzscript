@@ -2231,6 +2231,7 @@ static Value bi_ssh_msg_pty_height(Interp *ip, Value *a, int n){ (void)a; (void)
 static Value bi_ssh_channel_shell(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_check_host(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_trust_host(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_bridge_forward(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 #else
 
 static Value bi_ssh_open(Interp *ip, Value *a, int n){
@@ -2398,6 +2399,98 @@ static Value bi_ssh_accept_forward(Interp *ip, Value *a, int n){
   ssh_channel ch=ssh_channel_accept_forward(sess,timeout_ms,&dest_port);
   if(!ch) return V_nil();
   return V_number((double)(intptr_t)ch);
+}
+
+/* Bridges one forwarded channel to a real TCP target, connect through
+ * teardown, ENTIRELY in C with raw buffers and real byte counts - never
+ * round-tripping the bulk data through a Larzscript string Value. This
+ * matters because Larzscript strings have no stored length (see Str/
+ * Value above - just a char* that's always NUL-terminated); any function
+ * that needs "how long is this" falls back to strlen(), which stops at
+ * the first embedded 0x00. Real protocols forwarded through here (SSH
+ * itself, TLS, anything binary) routinely contain 0x00 bytes in their
+ * own framing - found via a real live test: forwarding a genuine SSH
+ * session through forward_remote_port()'s OLD Larzscript-level
+ * ssh_channel_read()/ssh_channel_write()/socket_read()/socket_write()
+ * loop let the plain-text banner (no NUL) through fine, then silently
+ * truncated the very next binary KEX packet, corrupting the handshake
+ * and killing the connection. ssh_channel_shell() already had to solve
+ * this exact problem for the interactive-shell case (real fork()+pty,
+ * bridged in C) - this is the same fix applied to the forwarding path,
+ * not a new technique. Replaces forward_remote_port()'s entire inner
+ * loop, including its previous `import "tcp"` dependency (this function
+ * dials the TCP target itself, the same getaddrinfo-based connect
+ * socket_connect() already uses). */
+static Value bi_ssh_bridge_forward(Interp *ip, Value *a, int n){
+  if(n!=3||!is_num(a[0])||a[1].t!=V_STR||!is_num(a[2])) runtime_error(ip,"LarzTypeError","ssh_bridge_forward() expects a channel, a target host string, and a target port number");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  const char *host=a[1].str;
+  int port=(int)a[2].num;
+
+  char portbuf[16]; snprintf(portbuf,sizeof(portbuf),"%d",port);
+#ifdef _WIN32
+  static int wsa_started=0;
+  if(!wsa_started){ WSADATA wsa; WSAStartup(MAKEWORD(2,2),&wsa); wsa_started=1; }
+#endif
+  struct addrinfo hints; memset(&hints,0,sizeof(hints));
+  hints.ai_family=AF_INET; hints.ai_socktype=SOCK_STREAM;
+  struct addrinfo *res=NULL;
+  int gai=getaddrinfo(host,portbuf,&hints,&res);
+  if(gai!=0||!res) runtime_error(ip,"SocketError","could not resolve host '%s'",host);
+  larz_sock_t fd=LARZ_INVALID_SOCK;
+  for(struct addrinfo *rp=res; rp; rp=rp->ai_next){
+    fd=socket(rp->ai_family,rp->ai_socktype,rp->ai_protocol);
+    if(fd==LARZ_INVALID_SOCK) continue;
+    if(connect(fd,rp->ai_addr,(int)rp->ai_addrlen)==0) break;
+    larz_sock_close(fd); fd=LARZ_INVALID_SOCK;
+  }
+  freeaddrinfo(res);
+  if(fd==LARZ_INVALID_SOCK) runtime_error(ip,"SocketError","could not connect to %s:%s",host,portbuf);
+
+  char buf[16384];
+  int broken=0;
+  while(!broken){
+    int avail=ssh_channel_poll_timeout(ch,20,0);
+    if(avail>0){
+      int nr=ssh_channel_read_nonblocking(ch,buf,sizeof(buf),0);
+      if(nr>0){
+        size_t off=0;
+        while(off<(size_t)nr){
+#ifdef _WIN32
+          int w=send(fd,buf+off,(int)((size_t)nr-off),0);
+#else
+          long w=(long)send(fd,buf+off,(size_t)nr-off,0);
+#endif
+          if(w<=0){ broken=1; break; }
+          off+=(size_t)w;
+        }
+      }
+    }
+    if(broken || ssh_channel_is_eof(ch)) break;
+
+    fd_set rfds; FD_ZERO(&rfds); FD_SET(fd,&rfds);
+    struct timeval tv={0,20000};
+    int sel=select((int)fd+1,&rfds,NULL,NULL,&tv);
+    if(sel>0 && FD_ISSET(fd,&rfds)){
+#ifdef _WIN32
+      int nr2=recv(fd,buf,(int)sizeof(buf),0);
+#else
+      long nr2=(long)recv(fd,buf,sizeof(buf),0);
+#endif
+      if(nr2>0){
+        size_t sent=0;
+        while(sent<(size_t)nr2){
+          int w=ssh_channel_write(ch,buf+sent,(uint32_t)((size_t)nr2-sent));
+          if(w<=0){ broken=1; break; }
+          sent+=(size_t)w;
+        }
+      } else {
+        break;   /* target closed or errored */
+      }
+    }
+  }
+  larz_sock_close(fd);
+  return V_nil();
 }
 
 /* Bytes available to read within timeout_ms (0 = none ready, not an
@@ -2762,6 +2855,7 @@ static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",
 static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
 static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close};
 static Builtin B_ssh_check_host={"ssh_check_host",bi_ssh_check_host}, B_ssh_trust_host={"ssh_trust_host",bi_ssh_trust_host};
+static Builtin B_ssh_bridge_forward={"ssh_bridge_forward",bi_ssh_bridge_forward};
 static Builtin B_ssh_listen_forward={"ssh_listen_forward",bi_ssh_listen_forward}, B_ssh_accept_forward={"ssh_accept_forward",bi_ssh_accept_forward}, B_ssh_channel_poll={"ssh_channel_poll",bi_ssh_channel_poll}, B_ssh_channel_read={"ssh_channel_read",bi_ssh_channel_read}, B_ssh_channel_write={"ssh_channel_write",bi_ssh_channel_write}, B_ssh_channel_eof={"ssh_channel_eof",bi_ssh_channel_eof}, B_ssh_channel_free={"ssh_channel_free",bi_ssh_channel_free};
 static Builtin B_ssh_bind_open={"ssh_bind_open",bi_ssh_bind_open}, B_ssh_bind_accept_session={"ssh_bind_accept_session",bi_ssh_bind_accept_session}, B_ssh_bind_free={"ssh_bind_free",bi_ssh_bind_free}, B_ssh_server_next_message={"ssh_server_next_message",bi_ssh_server_next_message}, B_ssh_msg_type={"ssh_msg_type",bi_ssh_msg_type}, B_ssh_msg_auth_user={"ssh_msg_auth_user",bi_ssh_msg_auth_user}, B_ssh_msg_auth_password={"ssh_msg_auth_password",bi_ssh_msg_auth_password}, B_ssh_msg_auth_accept={"ssh_msg_auth_accept",bi_ssh_msg_auth_accept}, B_ssh_msg_deny={"ssh_msg_deny",bi_ssh_msg_deny}, B_ssh_msg_channel_accept={"ssh_msg_channel_accept",bi_ssh_msg_channel_accept}, B_ssh_msg_exec_command={"ssh_msg_exec_command",bi_ssh_msg_exec_command}, B_ssh_msg_request_accept={"ssh_msg_request_accept",bi_ssh_msg_request_accept}, B_ssh_channel_send_exit_status={"ssh_channel_send_exit_status",bi_ssh_channel_send_exit_status}, B_ssh_msg_channel={"ssh_msg_channel",bi_ssh_msg_channel}, B_ssh_channel_close={"ssh_channel_close",bi_ssh_channel_close};
 static Builtin B_ssh_msg_pty_width={"ssh_msg_pty_width",bi_ssh_msg_pty_width}, B_ssh_msg_pty_height={"ssh_msg_pty_height",bi_ssh_msg_pty_height}, B_ssh_channel_shell={"ssh_channel_shell",bi_ssh_channel_shell};
@@ -2905,6 +2999,7 @@ static void define_builtins(Env *g){
   env_define(g, "ssh_close",        V_builtin(&B_ssh_close));
   env_define(g, "ssh_check_host",   V_builtin(&B_ssh_check_host));
   env_define(g, "ssh_trust_host",   V_builtin(&B_ssh_trust_host));
+  env_define(g, "ssh_bridge_forward", V_builtin(&B_ssh_bridge_forward));
   env_define(g, "ssh_listen_forward",V_builtin(&B_ssh_listen_forward));
   env_define(g, "ssh_accept_forward",V_builtin(&B_ssh_accept_forward));
   env_define(g, "ssh_channel_poll",  V_builtin(&B_ssh_channel_poll));
