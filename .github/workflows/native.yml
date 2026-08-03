@@ -39,6 +39,12 @@ jobs:
       # Not yet on macOS/Windows/linux-aarch64/wasm - ssh_* builtins throw
       # a clear SshError there until each platform gets its own libssh
       # wiring, same convention sockets already use for wasm.
+      - name: DIAGNOSTIC - does apt's libssh-dev include a static archive already?
+        run: |
+          sudo apt-get update && sudo apt-get install -y libssh-dev
+          echo "--- files in libssh-dev ---"
+          dpkg -L libssh-dev | grep -E '\.(a|so)' || true
+          exit 0
       - name: Cache built libssh + mbedTLS (static)
         id: libssh-cache
         uses: actions/cache@v4
