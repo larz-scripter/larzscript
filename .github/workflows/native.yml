@@ -93,6 +93,80 @@ jobs:
           print("PASS")
           LZEOF
           /tmp/_larzscript_test /tmp/verify_ssh.lz
+      # Real end-to-end proof for the -R equivalent too: a real local TCP
+      # echo service, forwarded through the SAME real sshd's remote port,
+      # reached by an external client - actual bytes round-tripped, not a
+      # stub. Same sshd from the step above (still running on :2222).
+      - name: Verify ssh forward_remote_port() against a real local sshd
+        run: |
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('127.0.0.1', 19801))
+          s.listen(5)
+          while True:
+              conn, _ = s.accept()
+              try:
+                  conn.sendall(b'ECHO-READY\n')
+                  while True:
+                      data = conn.recv(4096)
+                      if not data: break
+                      conn.sendall(b'GOT:' + data)
+              except OSError:
+                  pass
+              finally:
+                  conn.close()
+          " &
+          sleep 1
+          cat > /tmp/verify_forward.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          ssh_listen_forward(session, 19900)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            let local_fd = socket_connect("127.0.0.1", 19801)
+            while true {
+              let avail = ssh_channel_poll(channel, 100)
+              if avail > 0 {
+                let data = ssh_channel_read(channel, avail)
+                let sent = 0
+                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
+              }
+              if ssh_channel_eof(channel) { break }
+              let ready = socket_poll([local_fd], 100)
+              if ready.contains(local_fd) {
+                let d = socket_read(local_fd, 16384)
+                if d == "" { break }
+                ssh_channel_write(channel, d)
+              }
+            }
+            socket_close(local_fd)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_forward.lz &
+          FWD_PID=$!
+          sleep 2
+          python3 -c "
+          import socket, time
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.connect(('127.0.0.1', 19900))
+          s.settimeout(20)
+          banner = s.recv(200)
+          print('banner:', banner)
+          s.sendall(b'forward-test-payload')
+          time.sleep(1)
+          echo = s.recv(200)
+          print('echo:', echo)
+          s.close()
+          assert banner == b'ECHO-READY\n', 'banner mismatch'
+          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          print('PASS')
+          "
+          kill $FWD_PID 2>/dev/null || true
       - name: Build release binary (static, including libssh)
         run: |
           cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz
