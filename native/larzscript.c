@@ -119,6 +119,7 @@ typedef int larz_sock_t;
  * where libssh isn't linked, same convention as sockets in the wasm build. */
 #ifdef LARZ_HAVE_LIBSSH
 #include <libssh/libssh.h>
+#include <libssh/server.h>   /* ssh_bind/ssh_message_* - the server-role API lives in a separate header from the client one */
 #endif
 #if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
 #include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
