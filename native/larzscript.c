@@ -2183,6 +2183,13 @@ static Value bi_ssh_auth_password(Interp *ip, Value *a, int n){ (void)a; (void)n
 static Value bi_ssh_auth_key(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_run(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_close(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_accept_forward(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_poll(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_read(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_write(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_eof(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_free(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 #else
 
 static Value bi_ssh_open(Interp *ip, Value *a, int n){
@@ -2270,6 +2277,90 @@ static Value bi_ssh_close(Interp *ip, Value *a, int n){
   ssh_free(sess);
   return V_nil();
 }
+
+/* Remote port forwarding (the `ssh -R` equivalent) - low-level channel
+ * primitives here, the accept/bridge loop itself lives in Larzscript
+ * (packages/ssh's forward_remote_port), the same "C exposes primitives,
+ * Larzscript does the orchestration loop" split as tcp.serve() over
+ * socket_listen/accept/read/write. libssh channels aren't POSIX file
+ * descriptors, so socket_poll() can't multiplex them - ssh_channel_poll
+ * below is libssh's own non-blocking-with-timeout readiness check,
+ * played the same role socket_poll plays for real sockets. */
+
+static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_listen_forward() expects a session and a remote port number");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  int port=(int)a[1].num;
+  if(ssh_channel_listen_forward(sess,NULL,port,NULL)!=SSH_OK){
+    runtime_error(ip,"SshError","could not listen on the remote port %d: %s",port,ssh_get_error(sess));
+  }
+  return V_nil();
+}
+
+/* Returns a channel handle, or nil if no incoming forwarded connection
+ * arrived within timeout_ms - not distinguished from a real error here
+ * (both currently read as "nothing yet, keep polling"), a real but minor
+ * simplification for this first pass. */
+static Value bi_ssh_accept_forward(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_accept_forward() expects a session and a timeout in milliseconds");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  int timeout_ms=(int)a[1].num;
+  int dest_port=0;
+  ssh_channel ch=ssh_channel_accept_forward(sess,timeout_ms,&dest_port);
+  if(!ch) return V_nil();
+  return V_number((double)(intptr_t)ch);
+}
+
+/* Bytes available to read within timeout_ms (0 = none ready, not an
+ * error - the normal case in a poll loop, same convention as
+ * socket_poll()'s empty-list-on-timeout). */
+static Value bi_ssh_channel_poll(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_channel_poll() expects a channel and a timeout in milliseconds");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  int timeout_ms=(int)a[1].num;
+  int avail=ssh_channel_poll_timeout(ch,timeout_ms,0);
+  if(avail<0) return V_number(0);   /* SSH_ERROR or SSH_EOF - caller checks ssh_channel_eof() separately */
+  return V_number((double)avail);
+}
+
+static Value bi_ssh_channel_read(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_channel_read() expects a channel and a max byte count");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  int maxlen=(int)a[1].num;
+  if(maxlen<0) maxlen=0;
+  char *buf=xmalloc((size_t)maxlen>0?(size_t)maxlen:1);
+  int nr=ssh_channel_read_nonblocking(ch,buf,(uint32_t)maxlen,0);
+  if(nr<0) nr=0;
+  Value v=mkstr_n(buf,(size_t)nr);
+  free(buf);
+  return v;
+}
+
+static Value bi_ssh_channel_write(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_channel_write() expects a channel and a string");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  size_t len=strlen(a[1].str);
+  size_t sent=0;
+  while(sent<len){
+    int n_written=ssh_channel_write(ch,a[1].str+sent,(uint32_t)(len-sent));
+    if(n_written<=0) runtime_error(ip,"SshError","channel write failed");
+    sent+=(size_t)n_written;
+  }
+  return V_number((double)sent);
+}
+
+static Value bi_ssh_channel_eof(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_channel_eof() expects a channel");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  return V_bool(ssh_channel_is_eof(ch)!=0);
+}
+
+static Value bi_ssh_channel_free(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_channel_free() expects a channel");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  ssh_channel_free(ch);
+  return V_nil();
+}
 #endif /* LARZ_HAVE_LIBSSH */
 #endif /* hosted */
 
@@ -2293,6 +2384,7 @@ static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
 static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
 static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close};
+static Builtin B_ssh_listen_forward={"ssh_listen_forward",bi_ssh_listen_forward}, B_ssh_accept_forward={"ssh_accept_forward",bi_ssh_accept_forward}, B_ssh_channel_poll={"ssh_channel_poll",bi_ssh_channel_poll}, B_ssh_channel_read={"ssh_channel_read",bi_ssh_channel_read}, B_ssh_channel_write={"ssh_channel_write",bi_ssh_channel_write}, B_ssh_channel_eof={"ssh_channel_eof",bi_ssh_channel_eof}, B_ssh_channel_free={"ssh_channel_free",bi_ssh_channel_free};
 #endif
 static Builtin B_regex_match={"regex_match",bi_regex_match}, B_regex_find={"regex_find",bi_regex_find}, B_regex_replace={"regex_replace",bi_regex_replace}, B_regex_split={"regex_split",bi_regex_split};
 static Builtin B_date={"date",bi_date}, B_datetime={"datetime",bi_datetime};
@@ -2431,6 +2523,13 @@ static void define_builtins(Env *g){
   env_define(g, "ssh_auth_key",     V_builtin(&B_ssh_auth_key));
   env_define(g, "ssh_run",          V_builtin(&B_ssh_run));
   env_define(g, "ssh_close",        V_builtin(&B_ssh_close));
+  env_define(g, "ssh_listen_forward",V_builtin(&B_ssh_listen_forward));
+  env_define(g, "ssh_accept_forward",V_builtin(&B_ssh_accept_forward));
+  env_define(g, "ssh_channel_poll",  V_builtin(&B_ssh_channel_poll));
+  env_define(g, "ssh_channel_read",  V_builtin(&B_ssh_channel_read));
+  env_define(g, "ssh_channel_write", V_builtin(&B_ssh_channel_write));
+  env_define(g, "ssh_channel_eof",   V_builtin(&B_ssh_channel_eof));
+  env_define(g, "ssh_channel_free",  V_builtin(&B_ssh_channel_free));
 #endif
   env_define(g, "regex_match",   V_builtin(&B_regex_match));
   env_define(g, "regex_find",    V_builtin(&B_regex_find));
