@@ -167,6 +167,59 @@ jobs:
           print('PASS')
           "
           kill $FWD_PID 2>/dev/null || true
+      # The strongest interop proof yet: not our own client against a real
+      # sshd, but a completely independent, real SSH client (the system
+      # ssh binary) against OUR native server. If this passes, the server
+      # role genuinely speaks the real protocol, not just "talks to
+      # itself successfully".
+      - name: Verify ssh server role against the REAL system ssh client
+        run: |
+          sudo apt-get install -y sshpass
+          cat > /tmp/verify_server.lz << 'LZEOF'
+          let bind = ssh_bind_open(2223, "/tmp/native_server_host_key")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) }
+              } else if t == "exec" {
+                let cmd = ssh_msg_exec_command(msg)
+                let ch = ssh_msg_channel(msg)
+                ssh_msg_request_accept(msg)
+                ssh_channel_write(ch, capture(cmd + " 2>&1"))
+                ssh_channel_send_exit_status(ch, 0)
+                ssh_channel_close(ch)
+                ssh_channel_free(ch)
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key -N "" -q
+          /tmp/_larzscript_test /tmp/verify_server.lz &
+          SRV_PID=$!
+          sleep 1
+          OUT=$(sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null tester@127.0.0.1 "echo hello-from-native-server")
+          echo "real ssh client got: $OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if [ "$OUT" != "hello-from-native-server" ]; then
+            echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
       - name: Build release binary (static, including libssh)
         run: |
           cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz
