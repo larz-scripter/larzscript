@@ -50,9 +50,9 @@ jobs:
       # a clear SshError there until each platform gets its own libssh
       # wiring, same convention sockets already use for wasm.
       - name: Install libssh (static archive included)
-        run: sudo apt-get update && sudo apt-get install -y libssh-dev libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y libssh-dev libssl-dev zlib1g-dev
       - name: Build test binary (fully static, including libssh)
-        run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto
+        run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz
       - name: Test
         run: cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
       - name: Confirm no dynamic dependency on libssh
@@ -95,7 +95,7 @@ jobs:
           /tmp/_larzscript_test /tmp/verify_ssh.lz
       - name: Build release binary (static, including libssh)
         run: |
-          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto
+          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz
           strip larzscript-linux-x86_64
       - uses: actions/upload-artifact@v4
         with:
