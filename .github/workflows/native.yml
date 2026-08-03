@@ -222,12 +222,12 @@ jobs:
           if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
             echo "using static libssh.a"
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o /tmp/_larzscript_test native/larzscript.c \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
               "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           else
             echo "no static libssh.a found - linking dynamically for now (see DIAGNOSTIC step output)"
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o /tmp/_larzscript_test native/larzscript.c \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
               -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           fi
           cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
@@ -333,11 +333,11 @@ jobs:
           OPENSSL_PREFIX="$(brew --prefix openssl@3)"
           if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o larzscript-macos-x86_64 native/larzscript.c \
+              -o larzscript-macos-x86_64 native/larzscript.c native/gssapi_stub.c \
               "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           else
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o larzscript-macos-x86_64 native/larzscript.c \
+              -o larzscript-macos-x86_64 native/larzscript.c native/gssapi_stub.c \
               -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           fi
       - uses: actions/upload-artifact@v4
@@ -364,12 +364,12 @@ jobs:
           if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
             echo "using static libssh.a"
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o /tmp/_larzscript_test native/larzscript.c \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
               "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           else
             echo "no static libssh.a found - linking dynamically for now (see DIAGNOSTIC step output)"
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o /tmp/_larzscript_test native/larzscript.c \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
               -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           fi
           cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
@@ -469,11 +469,11 @@ jobs:
           OPENSSL_PREFIX="$(brew --prefix openssl@3)"
           if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o larzscript-macos-arm64 native/larzscript.c \
+              -o larzscript-macos-arm64 native/larzscript.c native/gssapi_stub.c \
               "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           else
             cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
-              -o larzscript-macos-arm64 native/larzscript.c \
+              -o larzscript-macos-arm64 native/larzscript.c native/gssapi_stub.c \
               -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
           fi
       - uses: actions/upload-artifact@v4
