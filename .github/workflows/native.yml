@@ -97,6 +97,34 @@ jobs:
           print("PASS")
           LZEOF
           /tmp/_larzscript_test /tmp/verify_ssh.lz
+      # 10.255.255.1 is a private, non-routable address on this runner -
+      # nothing there to actively refuse the connection, so without a
+      # real timeout this would hang on libssh's own, much longer,
+      # internal default. Passing an explicit 3s timeout and confirming
+      # the whole thing fails well under that same wall-clock time (not
+      # e.g. 15s, the new default) proves the timeout argument is really
+      # being honored, not just accepted and ignored.
+      - name: Verify ssh_open()'s connect timeout is really honored
+        timeout-minutes: 1
+        run: |
+          cat > /tmp/verify_timeout.lz << 'LZEOF'
+          try {
+            ssh_open("10.255.255.1", 22, 3)
+            print("FAIL: expected ssh_open() to time out and throw")
+            exit(1)
+          } catch e {
+            print("got expected error: " + str(e))
+            print("PASS")
+          }
+          LZEOF
+          START=$(date +%s)
+          /tmp/_larzscript_test /tmp/verify_timeout.lz
+          ELAPSED=$(( $(date +%s) - START ))
+          echo "elapsed: ${ELAPSED}s"
+          if [ "$ELAPSED" -gt 8 ]; then
+            echo "FAIL: took ${ELAPSED}s - the 3s timeout wasn't honored"; exit 1
+          fi
+          echo "PASS (timeout honored, finished in ${ELAPSED}s)"
       # Real end-to-end proof for the -R equivalent too: a real local TCP
       # echo service, forwarded through the SAME real sshd's remote port,
       # reached by an external client - actual bytes round-tripped, not a
