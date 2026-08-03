@@ -792,7 +792,25 @@ jobs:
           /tmp/_larzscript_test /tmp/verify_shell.lz &
           SRV_PID=$!
           sleep 1
-          OUT=$(printf 'echo shell-test-output-marker\nexit\n' | sshpass -p testpass123 ssh -tt -p 2229 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 2>/dev/null || true)
+          # No `timeout` command by default on macOS (same reason every
+          # other macOS step in this file avoids it) - a manual
+          # background+bounded-wait+kill gives the same ~20s hard bound
+          # without it. Added after a real hang: an earlier version of
+          # this step with no client-side bound at all ran into the CI
+          # step's own 3-minute timeout-minutes cutoff on macos-arm64
+          # specifically (macos-x86_64 passed the exact same script
+          # cleanly) - root cause not fully isolated, but this closes the
+          # gap regardless of what it turns out to be, same "fail fast
+          # instead of silently burning minutes" reasoning as the
+          # linux-x86_64 server-role step's own comment on a prior hang.
+          printf 'echo shell-test-output-marker\nexit\n' | sshpass -p testpass123 ssh -tt -p 2229 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 > /tmp/shell_client_out.txt 2>/dev/null &
+          CLIENT_PID=$!
+          for i in $(seq 1 20); do
+            kill -0 $CLIENT_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill $CLIENT_PID 2>/dev/null || true
+          OUT=$(cat /tmp/shell_client_out.txt 2>/dev/null || true)
           echo "=== raw interactive shell session output ==="
           echo "$OUT"
           kill $SRV_PID 2>/dev/null || true
@@ -1043,7 +1061,22 @@ jobs:
           /tmp/_larzscript_test /tmp/verify_shell.lz &
           SRV_PID=$!
           sleep 1
-          OUT=$(printf 'echo shell-test-output-marker\nexit\n' | sshpass -p testpass123 ssh -tt -p 2229 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 2>/dev/null || true)
+          # No `timeout` command by default on macOS - a manual
+          # background+bounded-wait+kill gives the same ~20s hard bound
+          # without it. Added after a real hang on macos-arm64 (this
+          # exact job) with no client-side bound at all - macos-x86_64
+          # passed the identical script cleanly, root cause not fully
+          # isolated, but this closes the gap regardless, same "fail
+          # fast instead of silently burning minutes" reasoning as the
+          # linux-x86_64 server-role step's own comment on a prior hang.
+          printf 'echo shell-test-output-marker\nexit\n' | sshpass -p testpass123 ssh -tt -p 2229 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 > /tmp/shell_client_out.txt 2>/dev/null &
+          CLIENT_PID=$!
+          for i in $(seq 1 20); do
+            kill -0 $CLIENT_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill $CLIENT_PID 2>/dev/null || true
+          OUT=$(cat /tmp/shell_client_out.txt 2>/dev/null || true)
           echo "=== raw interactive shell session output ==="
           echo "$OUT"
           kill $SRV_PID 2>/dev/null || true
