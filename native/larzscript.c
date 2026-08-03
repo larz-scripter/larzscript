@@ -112,11 +112,11 @@ typedef int larz_sock_t;
  * reimplementation (Larzscript's own double-only numeric type can't do the
  * big-integer/elliptic-curve math real SSH key exchange needs - see
  * crypto's README on X25519/Ed25519). Only compiled in when built with
- * -DLARZ_HAVE_LIBSSH -lssh (currently just the linux-x86_64 CI job while
- * this is being brought up platform by platform - see native.yml). Every
- * other target keeps building exactly as before; ssh_* builtins exist
- * everywhere but throw a clear SshError "not available in this build"
- * where libssh isn't linked, same convention as sockets in the wasm build. */
+ * -DLARZ_HAVE_LIBSSH -lssh - linux-x86_64, macos-x86_64, macos-arm64,
+ * windows-x86_64, and linux-aarch64 CI jobs all do (see native.yml);
+ * wasm never does (no raw TCP in that sandbox, same reasoning as
+ * sockets there). ssh_* builtins exist everywhere but throw a clear
+ * SshError "not available in this build" where libssh isn't linked. */
 #ifdef LARZ_HAVE_LIBSSH
 #include <libssh/libssh.h>
 #include <libssh/server.h>   /* ssh_bind/ssh_message_* - the server-role API lives in a separate header from the client one */
