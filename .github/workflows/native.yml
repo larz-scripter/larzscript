@@ -638,10 +638,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install mingw-w64 + wine
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine zstd
+      # ssh Phase 3 (hardest platform - see larzscript's own plan/issue).
+      # No mingw-w64 libssh in Ubuntu's apt repos, so this pulls the real
+      # mingw-w64 libssh (+ its openssl/zlib deps) directly from MSYS2's
+      # own package repo - MSYS2 is the standard, widely-trusted source
+      # for prebuilt mingw-w64 Windows libraries, not a random third
+      # party. DIAGNOSTIC-first (list the real current filenames rather
+      # than guess a version number that'll go stale) - this sandbox has
+      # no general internet access to check any of this beforehand, so
+      # first attempt, iterate against CI same as every other platform.
+      - name: Fetch mingw-w64 libssh + deps from MSYS2
+        run: |
+          set -e
+          mkdir -p /tmp/mingw64lib && cd /tmp/mingw64lib
+          BASE="https://mirror.msys2.org/mingw/mingw64"
+          echo "--- finding current package filenames ---"
+          INDEX=$(curl -fsSL "$BASE/")
+          for pkg in libssh openssl zlib; do
+            FN=$(echo "$INDEX" | grep -oE "mingw-w64-x86_64-${pkg}-[0-9][^\"']*\.pkg\.tar\.zst" | sort -V | tail -1)
+            echo "$pkg -> $FN"
+            curl -fsSL -o "${pkg}.pkg.tar.zst" "$BASE/$FN"
+            tar --zstd -xf "${pkg}.pkg.tar.zst"
+          done
+          echo "--- extracted layout ---"
+          find /tmp/mingw64lib/mingw64/lib -maxdepth 1 -name '*ssh*' -o -name '*ssl*' -o -name '*crypto*' -o -name '*z.a' 2>/dev/null
+          ls /tmp/mingw64lib/mingw64/include/libssh/ 2>&1 | head -5
       - name: Build (static)
         run: |
-          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -static -o larzscript-windows-x86_64.exe native/larzscript.c -lwinpthread -lws2_32
+          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static \
+            -I/tmp/mingw64lib/mingw64/include \
+            -o larzscript-windows-x86_64.exe native/larzscript.c native/gssapi_stub.c \
+            -L/tmp/mingw64lib/mingw64/lib -lssh -lssl -lcrypto -lz -lwinpthread -lws2_32 -lcrypt32
       - name: Wine warm-up (creates the wine prefix + first-run noise once, outside the test loop)
         # `wine --version` alone does NOT trigger the same wineboot/prefix
         # initialization as running an actual PE binary - the "created the
