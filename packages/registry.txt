@@ -156,6 +156,7 @@ logic             packages/logic
 units             packages/units
 netbridge         packages/netbridge
 psktunnel         packages/psktunnel
+ssh               packages/ssh
 neural            packages/neural
 raytrace          packages/raytrace
 crdt              packages/crdt
