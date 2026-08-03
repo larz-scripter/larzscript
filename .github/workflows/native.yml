@@ -36,6 +36,34 @@ jobs:
         run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -o /tmp/_larzscript_test native/larzscript.c -lssh
       - name: Test
         run: cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
+      # Real end-to-end proof, not just "it links": this sandbox this was
+      # developed in has no general internet access (apt/libssh unreachable
+      # there), so this CI job is the only environment that actually has
+      # both libssh AND the internet access to install a real sshd to test
+      # against - this step is the verification, not an afterthought.
+      - name: Verify ssh.run() against a real local sshd
+        run: |
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f /tmp/verify_key -N ""
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          cat /tmp/verify_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 2222
+          cat > /tmp/verify_ssh.lz << 'LZEOF'
+          import "ssh" as ssh
+          let session = ssh.connect("127.0.0.1", 2222)
+          ssh.authenticate_with_key(session, env("USER", "runner"), "/tmp/verify_key")
+          let result = ssh.run(session, "echo hello-from-real-sshd && whoami")
+          print("stdout: " + result["stdout"])
+          print("exit_status: " + str(result["exit_status"]))
+          if not result["stdout"].contains("hello-from-real-sshd") { print("FAIL: unexpected output"); exit(1) }
+          if result["exit_status"] != 0 { print("FAIL: nonzero exit status"); exit(1) }
+          ssh.disconnect(session)
+          print("PASS")
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_ssh.lz
       - name: Build release binary
         # No -static here (unlike every other platform): Ubuntu's
         # libssh-dev only ships a shared library, not a static archive -
