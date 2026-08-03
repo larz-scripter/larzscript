@@ -108,6 +108,18 @@ typedef int larz_sock_t;
 #endif
 #endif /* !__EMSCRIPTEN__ */
 #endif /* hosted */
+/* Real SSH via libssh - a real, audited C library, not a from-scratch
+ * reimplementation (Larzscript's own double-only numeric type can't do the
+ * big-integer/elliptic-curve math real SSH key exchange needs - see
+ * crypto's README on X25519/Ed25519). Only compiled in when built with
+ * -DLARZ_HAVE_LIBSSH -lssh (currently just the linux-x86_64 CI job while
+ * this is being brought up platform by platform - see native.yml). Every
+ * other target keeps building exactly as before; ssh_* builtins exist
+ * everywhere but throw a clear SshError "not available in this build"
+ * where libssh isn't linked, same convention as sockets in the wasm build. */
+#ifdef LARZ_HAVE_LIBSSH
+#include <libssh/libssh.h>
+#endif
 #if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
 #include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
 #include "console.h"          /* task_exit()/launch_app() - needed by ui.close()/ui.launch() below */
@@ -2146,6 +2158,121 @@ static Value bi_socket_poll(Interp *ip, Value *a, int n){
 }
 #endif /* hosted */
 
+/* ===================== real SSH via libssh ===================== *
+ * Client only for now (Phase 1 of bringing real SSH interop up
+ * platform-by-platform - see the plan this was built against). A session
+ * handle is the ssh_session pointer stored as a plain number, same
+ * convention as every OS handle elsewhere in this file. Not compiled with
+ * real libssh calls unless built with -DLARZ_HAVE_LIBSSH -lssh; every
+ * other build keeps these names defined but throwing a clear SshError, so
+ * a script fails the same understandable way everywhere rather than with
+ * an "unknown identifier" on platforms libssh isn't linked on yet - the
+ * browser/wasm build included: LARZ_HAVE_LIBSSH is never defined there
+ * either, so it gets the same throwing stub as any other not-yet-wired
+ * platform, not a compile error (an earlier version of this section
+ * wrapped the stubs in an extra #ifndef __EMSCRIPTEN__, which meant the
+ * Builtin registration below - unconditionally compiled for every hosted
+ * target, emscripten included - referenced functions that didn't exist
+ * there. Caught by CI, fixed here: the stub must be defined everywhere
+ * hosted, only the REAL implementation is platform-gated). */
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
+
+#ifndef LARZ_HAVE_LIBSSH
+static Value bi_ssh_open(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_auth_password(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_auth_key(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_run(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_close(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+#else
+
+static Value bi_ssh_open(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_STR||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_open() expects a host string and a port number");
+  ssh_session sess=ssh_new();
+  if(!sess) runtime_error(ip,"SshError","could not allocate an ssh session");
+  ssh_options_set(sess,SSH_OPTIONS_HOST,a[0].str);
+  unsigned int port=(unsigned int)a[1].num;
+  ssh_options_set(sess,SSH_OPTIONS_PORT,&port);
+  if(ssh_connect(sess)!=SSH_OK){
+    char msg[256]; snprintf(msg,sizeof msg,"connect to %s:%u failed: %s",a[0].str,port,ssh_get_error(sess));
+    ssh_free(sess);
+    runtime_error(ip,"SshError","%s",msg);
+  }
+  /* Not verified against known_hosts yet (Phase 1 - see README for this
+   * gap called out plainly, not silently skipped). */
+  return V_number((double)(intptr_t)sess);
+}
+
+static Value bi_ssh_auth_password(Interp *ip, Value *a, int n){
+  if(n!=3||!is_num(a[0])||a[1].t!=V_STR||a[2].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_auth_password() expects a session, username, and password");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  ssh_options_set(sess,SSH_OPTIONS_USER,a[1].str);
+  int rc=ssh_userauth_password(sess,NULL,a[2].str);
+  if(rc!=SSH_AUTH_SUCCESS) runtime_error(ip,"SshError","authentication failed: %s",ssh_get_error(sess));
+  return V_nil();
+}
+
+static Value bi_ssh_auth_key(Interp *ip, Value *a, int n){
+  if(n!=3||!is_num(a[0])||a[1].t!=V_STR||a[2].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_auth_key() expects a session, username, and private key path");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  ssh_options_set(sess,SSH_OPTIONS_USER,a[1].str);
+  ssh_key key=NULL;
+  if(ssh_pki_import_privkey_file(a[2].str,NULL,NULL,NULL,&key)!=SSH_OK){
+    runtime_error(ip,"SshError","could not load private key %s",a[2].str);
+  }
+  int rc=ssh_userauth_publickey(sess,NULL,key);
+  ssh_key_free(key);
+  if(rc!=SSH_AUTH_SUCCESS) runtime_error(ip,"SshError","authentication failed: %s",ssh_get_error(sess));
+  return V_nil();
+}
+
+static Value bi_ssh_run(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_run() expects a session and a command string");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  ssh_channel ch=ssh_channel_new(sess);
+  if(!ch) runtime_error(ip,"SshError","could not open a channel: %s",ssh_get_error(sess));
+  if(ssh_channel_open_session(ch)!=SSH_OK){
+    char msg[256]; snprintf(msg,sizeof msg,"could not open session channel: %s",ssh_get_error(sess));
+    ssh_channel_free(ch);
+    runtime_error(ip,"SshError","%s",msg);
+  }
+  if(ssh_channel_request_exec(ch,a[1].str)!=SSH_OK){
+    char msg[256]; snprintf(msg,sizeof msg,"exec request failed: %s",ssh_get_error(sess));
+    ssh_channel_close(ch); ssh_channel_free(ch);
+    runtime_error(ip,"SshError","%s",msg);
+  }
+  SB outb; outb.s=NULL; outb.n=0; outb.cap=0;
+  SB errb; errb.s=NULL; errb.n=0; errb.cap=0;
+  char buf[4096];
+  int nr;
+  while((nr=ssh_channel_read(ch,buf,sizeof(buf),0))>0) for(int i=0;i<nr;i++) sb_putc(&outb,buf[i]);
+  while((nr=ssh_channel_read(ch,buf,sizeof(buf),1))>0) for(int i=0;i<nr;i++) sb_putc(&errb,buf[i]);
+  int exit_status=ssh_channel_get_exit_status(ch);
+  ssh_channel_send_eof(ch);
+  ssh_channel_close(ch);
+  ssh_channel_free(ch);
+  /* mkstr_n (not V_take) - copies exactly outb.n/errb.n bytes, same
+   * binary-safety reasoning as socket_read: V_take's strlen() would
+   * silently truncate real command output at an embedded NUL byte. */
+  Value out_v=mkstr_n(outb.s,outb.n);
+  Value err_v=mkstr_n(errb.s,errb.n);
+  free(outb.s); free(errb.s);
+  Dict *d=dict_new();
+  dict_set(d,V_string("stdout"),out_v);
+  dict_set(d,V_string("stderr"),err_v);
+  dict_set(d,V_string("exit_status"),V_number((double)exit_status));
+  return V_dict(d);
+}
+
+static Value bi_ssh_close(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_close() expects a session");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  ssh_disconnect(sess);
+  ssh_free(sess);
+  return V_nil();
+}
+#endif /* LARZ_HAVE_LIBSSH */
+#endif /* hosted */
+
 static Builtin B_print = {"print", bi_print};
 static Builtin B_money = {"money", bi_money};
 static Builtin B_len   = {"len",   bi_len};
@@ -2165,6 +2292,7 @@ static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct},
 static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
 static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
+static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close};
 #endif
 static Builtin B_regex_match={"regex_match",bi_regex_match}, B_regex_find={"regex_find",bi_regex_find}, B_regex_replace={"regex_replace",bi_regex_replace}, B_regex_split={"regex_split",bi_regex_split};
 static Builtin B_date={"date",bi_date}, B_datetime={"datetime",bi_datetime};
@@ -2298,6 +2426,11 @@ static void define_builtins(Env *g){
   env_define(g, "socket_close",  V_builtin(&B_socket_close));
   env_define(g, "socket_connect",V_builtin(&B_socket_connect));
   env_define(g, "socket_poll",   V_builtin(&B_socket_poll));
+  env_define(g, "ssh_open",         V_builtin(&B_ssh_open));
+  env_define(g, "ssh_auth_password",V_builtin(&B_ssh_auth_password));
+  env_define(g, "ssh_auth_key",     V_builtin(&B_ssh_auth_key));
+  env_define(g, "ssh_run",          V_builtin(&B_ssh_run));
+  env_define(g, "ssh_close",        V_builtin(&B_ssh_close));
 #endif
   env_define(g, "regex_match",   V_builtin(&B_regex_match));
   env_define(g, "regex_find",    V_builtin(&B_regex_find));

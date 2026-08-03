@@ -24,11 +24,60 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Phase 1 of real SSH interop (see larzscript's own plan/issue for
+      # the full multi-platform rollout) - libssh linked here first since
+      # this runner is the platform most likely to "just work" via apt.
+      # Not yet on macOS/Windows/linux-aarch64/wasm - ssh_* builtins throw
+      # a clear SshError there until each platform gets its own libssh
+      # wiring, same convention sockets already use for wasm.
+      - name: Install libssh
+        run: sudo apt-get update && sudo apt-get install -y libssh-dev
+      - name: Build test binary (with libssh)
+        run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -o /tmp/_larzscript_test native/larzscript.c -lssh
       - name: Test
-        run: cd native && ./run_tests.sh
-      - name: Build release binary (static)
+        run: cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
+      # Real end-to-end proof, not just "it links": this sandbox this was
+      # developed in has no general internet access (apt/libssh unreachable
+      # there), so this CI job is the only environment that actually has
+      # both libssh AND the internet access to install a real sshd to test
+      # against - this step is the verification, not an afterthought.
+      - name: Verify ssh.run() against a real local sshd
         run: |
-          cc -O2 -std=c11 -Wall -static -o larzscript-linux-x86_64 native/larzscript.c
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f /tmp/verify_key -N ""
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          cat /tmp/verify_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 2222
+          cat > /tmp/verify_ssh.lz << 'LZEOF'
+          # Calls the raw builtins directly - the "ssh" package (thin
+          # sugar over these) lives in the separate larzscript-packages
+          # repo, not checked out in this job; this is what's actually
+          # being verified here anyway.
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          let result = ssh_run(session, "echo hello-from-real-sshd && whoami")
+          print("stdout: " + result["stdout"])
+          print("exit_status: " + str(result["exit_status"]))
+          if not result["stdout"].contains("hello-from-real-sshd") { print("FAIL: unexpected output"); exit(1) }
+          if result["exit_status"] != 0 { print("FAIL: nonzero exit status"); exit(1) }
+          ssh_close(session)
+          print("PASS")
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_ssh.lz
+      - name: Build release binary
+        # No -static here (unlike every other platform): Ubuntu's
+        # libssh-dev only ships a shared library, not a static archive -
+        # confirmed by this build either working or failing cleanly,
+        # tracked as a real open question for later phases (a fully
+        # static release binary matters most for the Windows target
+        # anyway, which isn't wired up yet). This binary depends on
+        # libssh/its crypto backend being installed on the host - a real,
+        # temporary tradeoff for this phase, not the end state.
+        run: |
+          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -o larzscript-linux-x86_64 native/larzscript.c -lssh
           strip larzscript-linux-x86_64
       - uses: actions/upload-artifact@v4
         with:
