@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.26.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.35.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -1771,6 +1771,190 @@ static Value bi_round(Interp *ip, Value *a, int n){
 }
 static Value bi_sqrt(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","sqrt() expects a number"); double x=a[0].num; if(x<0) runtime_error(ip,"LarzValueError","sqrt() of a negative number"); if(x==0) return V_number(0); double g=x>1?x:1; for(int i=0;i<60;i++) g=0.5*(g+x/g); return V_number(g); }
 static Value bi_pow(Interp *ip, Value *a, int n){ if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","pow() expects two numbers"); double b=a[0].num, e=a[1].num; if(e!=(long long)e) runtime_error(ip,"LarzValueError","pow(): exponent must be a whole number"); long long ex=(long long)e; double r=1, base=b; int neg=ex<0; if(neg) ex=-ex; for(long long i=0;i<ex;i++) r*=base; if(neg){ if(b==0) runtime_error(ip,"LarzRuntimeError","0 to a negative power"); r=1/r; } return V_number(r); }
+/* ---- dsp buffer accelerators -----------------------------------------
+ * The `dsp` stack package (packages/dsp) documents and calls a
+ * `_native_*` counterpart for each of its whole-buffer operations
+ * (biquad_process_buffer, compressor_process_buffer, limit,
+ * peak_dbfs/rms_dbfs, normalize_to) - the package's own comments describe
+ * exactly this contract (same filter/compressor dict field names,
+ * mutated in place; same LUT indexing formula). Those native functions
+ * never actually existed in this interpreter, so every one of those
+ * package functions has always thrown LarzNameError at runtime - a real,
+ * silent bug in the published package (found while investigating why a
+ * multi-minute Larzscript audio render was too slow to run per-sample
+ * through the interpreter; see larzscript-beatstudio's PLAN.md). This
+ * implements the exact already-documented contract, not a new one -
+ * fixes that bug for every user of `dsp`, and gives buffer-at-a-time
+ * biquad/compressor/limiter math a real C inner loop instead of one
+ * interpreted function call per sample, which is what a multi-minute
+ * render actually needs to finish in a reasonable time. */
+static double dget(Dict *d, const char *key){ Value *v=dict_find(d,V_string(key)); return v?v->num:0.0; }
+static void dset(Dict *d, const char *key, double val){ dict_set(d,V_string(key),V_number(val)); }
+static void need_num_list(Interp *ip, Value v, const char *who){ if(v.t!=V_LIST) runtime_error(ip,"LarzTypeError","%s expects a list of numbers",who); for(int i=0;i<v.list->n;i++) if(!is_num(v.list->items[i])) runtime_error(ip,"LarzTypeError","%s expects a list of numbers",who); }
+
+static Value bi_native_biquad_process_buffer(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","_native_biquad_process_buffer() expects a filter dict and a buffer");
+  need_num_list(ip,a[1],"_native_biquad_process_buffer()");
+  Dict *f=a[0].dict; List *buf=a[1].list;
+  double b0=dget(f,"b0"), b1=dget(f,"b1"), b2=dget(f,"b2"), a1=dget(f,"a1"), a2=dget(f,"a2");
+  double x1=dget(f,"x1"), x2=dget(f,"x2"), y1=dget(f,"y1"), y2=dget(f,"y2");
+  List *out=list_new();
+  for(int i=0;i<buf->n;i++){
+    double x=buf->items[i].num;
+    double y=b0*x+b1*x1+b2*x2-a1*y1-a2*y2;
+    x2=x1; x1=x; y2=y1; y1=y;
+    list_push(out,V_number(y));
+  }
+  dset(f,"x1",x1); dset(f,"x2",x2); dset(f,"y1",y1); dset(f,"y2",y2);
+  return V_list(out);
+}
+
+static Value bi_native_compressor_process_buffer(Interp *ip, Value *a, int n){
+  if(n!=4||a[0].t!=V_DICT||a[2].t!=V_NUM||a[3].t!=V_NUM) runtime_error(ip,"LarzTypeError","_native_compressor_process_buffer() expects a compressor dict, a buffer, lut_size, lut_max_linear");
+  need_num_list(ip,a[1],"_native_compressor_process_buffer()");
+  Dict *c=a[0].dict; List *buf=a[1].list;
+  int lut_size=(int)a[2].num; double lut_max=a[3].num;
+  Value *lutv=dict_find(c,V_string("lut"));
+  if(!lutv||lutv->t!=V_LIST) runtime_error(ip,"LarzTypeError","compressor dict has no 'lut' list");
+  List *lut=lutv->list;
+  double attack=dget(c,"attack"), release=dget(c,"release"), env=dget(c,"env");
+  List *out=list_new();
+  for(int i=0;i<buf->n;i++){
+    double x=buf->items[i].num;
+    double level=x<0?-x:x;
+    double coeff=level>env?attack:release;
+    env=env*coeff+level*(1-coeff);
+    int idx=(int)((env/lut_max)*lut_size);
+    if(idx<0) idx=0; if(idx>=lut_size) idx=lut_size-1;
+    double gain=(idx<lut->n)?lut->items[idx].num:1.0;
+    list_push(out,V_number(x*gain));
+  }
+  dset(c,"env",env);
+  return V_list(out);
+}
+
+static Value bi_native_limit_buffer(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[1])) runtime_error(ip,"LarzTypeError","_native_limit_buffer() expects a buffer and a ceiling");
+  need_num_list(ip,a[0],"_native_limit_buffer()");
+  List *buf=a[0].list; double ceiling=a[1].num;
+  List *out=list_new();
+  for(int i=0;i<buf->n;i++){
+    double x=buf->items[i].num;
+    if(x>ceiling) x=ceiling; else if(x<-ceiling) x=-ceiling;
+    list_push(out,V_number(x));
+  }
+  return V_list(out);
+}
+
+static Value bi_native_peak_abs(Interp *ip, Value *a, int n){
+  if(n!=1) runtime_error(ip,"LarzTypeError","_native_peak_abs() expects a buffer");
+  need_num_list(ip,a[0],"_native_peak_abs()");
+  List *buf=a[0].list; double peak=0.0;
+  for(int i=0;i<buf->n;i++){ double x=buf->items[i].num; if(x<0) x=-x; if(x>peak) peak=x; }
+  return V_number(peak);
+}
+
+static Value bi_native_sum_sq(Interp *ip, Value *a, int n){
+  if(n!=1) runtime_error(ip,"LarzTypeError","_native_sum_sq() expects a buffer");
+  need_num_list(ip,a[0],"_native_sum_sq()");
+  List *buf=a[0].list; double sum=0.0;
+  for(int i=0;i<buf->n;i++){ double x=buf->items[i].num; sum+=x*x; }
+  return V_number(sum);
+}
+
+/* Mixer accumulate: dst_l[i] += src[i]*lg; dst_r[i] += src[i]*rg, for a
+ * whole chunk in one C loop. The remaining interpreted per-sample cost
+ * once EQ/compressor/limiter were natively accelerated (see
+ * _native_master_block above) - mix_chunk()'s own gain/pan summation
+ * loop, measured taking a 5-minute preview/master render from seconds to
+ * well over a minute on its own. Mutates dst_l/dst_r in place, matching
+ * every other in-place native buffer op in this file. */
+static Value bi_native_mix_add(Interp *ip, Value *a, int n){
+  if(n!=5) runtime_error(ip,"LarzTypeError","_native_mix_add() expects dst_l, dst_r, src, lg, rg");
+  need_num_list(ip,a[0],"_native_mix_add()");
+  need_num_list(ip,a[1],"_native_mix_add()");
+  need_num_list(ip,a[2],"_native_mix_add()");
+  if(!is_num(a[3])||!is_num(a[4])) runtime_error(ip,"LarzTypeError","_native_mix_add(): lg/rg must be numbers");
+  List *dl=a[0].list, *dr=a[1].list, *s=a[2].list;
+  if(dl->n!=s->n||dr->n!=s->n) runtime_error(ip,"LarzValueError","_native_mix_add(): dst_l/dst_r/src must be the same length");
+  double lg=a[3].num, rg=a[4].num;
+  for(int i=0;i<s->n;i++){
+    double v=s->items[i].num;
+    dl->items[i]=V_number(dl->items[i].num + v*lg);
+    dr->items[i]=V_number(dr->items[i].num + v*rg);
+  }
+  return V_nil();
+}
+
+static Value bi_native_scale_buffer(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[1])) runtime_error(ip,"LarzTypeError","_native_scale_buffer() expects a buffer and a gain");
+  need_num_list(ip,a[0],"_native_scale_buffer()");
+  List *buf=a[0].list; double g=a[1].num;
+  List *out=list_new();
+  for(int i=0;i<buf->n;i++) list_push(out,V_number(buf->items[i].num*g));
+  return V_list(out);
+}
+
+/* Fused linked-stereo master chain block: EQ (3 biquads/channel, already
+ * native above) -> linked compressor (one gain per frame from
+ * max(|L|,|R|), applied to both channels so the stereo image doesn't
+ * wobble) -> brickwall limiter, all in one C pass over one chunk.
+ * Mutates l_buf/r_buf IN PLACE (same "no extra full-length copies"
+ * discipline master_chain's own comment already establishes) and updates
+ * every filter's + the compressor's state dicts so the next chunk picks
+ * up exactly where this one left off - this is what makes chunked
+ * streaming and this fused fast path compose correctly together. */
+static Value bi_native_master_block(Interp *ip, Value *a, int n){
+  /* args: low_l, mid_l, high_l, low_r, mid_r, high_r, comp, l_buf, r_buf, ceiling_linear */
+  if(n!=10) runtime_error(ip,"LarzTypeError","_native_master_block() expects low_l, mid_l, high_l, low_r, mid_r, high_r, comp, l_buf, r_buf, ceiling_linear");
+  for(int i=0;i<7;i++) if(a[i].t!=V_DICT) runtime_error(ip,"LarzTypeError","_native_master_block(): filter/compressor arguments must be dicts");
+  need_num_list(ip,a[7],"_native_master_block()");
+  need_num_list(ip,a[8],"_native_master_block()");
+  if(!is_num(a[9])) runtime_error(ip,"LarzTypeError","_native_master_block(): ceiling must be a number");
+  List *l=a[7].list, *r=a[8].list;
+  if(l->n!=r->n) runtime_error(ip,"LarzValueError","_native_master_block(): l_buf and r_buf must be the same length");
+  double ceiling=a[9].num;
+  Dict *fl[3]={a[0].dict,a[1].dict,a[2].dict}, *fr[3]={a[3].dict,a[4].dict,a[5].dict};
+  double b0[3],b1[3],b2[3],fa1[3],fa2[3],x1l[3],x2l[3],y1l[3],y2l[3],x1r[3],x2r[3],y1r[3],y2r[3];
+  for(int k=0;k<3;k++){
+    b0[k]=dget(fl[k],"b0"); b1[k]=dget(fl[k],"b1"); b2[k]=dget(fl[k],"b2"); fa1[k]=dget(fl[k],"a1"); fa2[k]=dget(fl[k],"a2");
+    x1l[k]=dget(fl[k],"x1"); x2l[k]=dget(fl[k],"x2"); y1l[k]=dget(fl[k],"y1"); y2l[k]=dget(fl[k],"y2");
+    x1r[k]=dget(fr[k],"x1"); x2r[k]=dget(fr[k],"x2"); y1r[k]=dget(fr[k],"y1"); y2r[k]=dget(fr[k],"y2");
+  }
+  Dict *c=a[6].dict;
+  Value *lutv=dict_find(c,V_string("lut"));
+  if(!lutv||lutv->t!=V_LIST) runtime_error(ip,"LarzTypeError","compressor dict has no 'lut' list");
+  List *lut=lutv->list;
+  double attack=dget(c,"attack"), release=dget(c,"release"), env=dget(c,"env");
+  int lut_size=lut->n; double lut_max=4.0;   /* must match dsp's _LUT_MAX_LINEAR */
+  for(int i=0;i<l->n;i++){
+    double xl=l->items[i].num, xr=r->items[i].num;
+    for(int k=0;k<3;k++){
+      double yl=b0[k]*xl+b1[k]*x1l[k]+b2[k]*x2l[k]-fa1[k]*y1l[k]-fa2[k]*y2l[k];
+      x2l[k]=x1l[k]; x1l[k]=xl; y2l[k]=y1l[k]; y1l[k]=yl; xl=yl;
+      double yr=b0[k]*xr+b1[k]*x1r[k]+b2[k]*x2r[k]-fa1[k]*y1r[k]-fa2[k]*y2r[k];
+      x2r[k]=x1r[k]; x1r[k]=xr; y2r[k]=y1r[k]; y1r[k]=yr; xr=yr;
+    }
+    double al=xl<0?-xl:xl, ar=xr<0?-xr:xr;
+    double level=al>ar?al:ar;
+    double coeff=level>env?attack:release;
+    env=env*coeff+level*(1-coeff);
+    int idx=(int)((env/lut_max)*lut_size);
+    if(idx<0) idx=0; if(idx>=lut_size) idx=lut_size-1;
+    double gain=lut->items[idx].num;
+    xl*=gain; xr*=gain;
+    if(xl>ceiling) xl=ceiling; else if(xl<-ceiling) xl=-ceiling;
+    if(xr>ceiling) xr=ceiling; else if(xr<-ceiling) xr=-ceiling;
+    l->items[i]=V_number(xl); r->items[i]=V_number(xr);
+  }
+  dset(c,"env",env);
+  for(int k=0;k<3;k++){
+    dset(fl[k],"x1",x1l[k]); dset(fl[k],"x2",x2l[k]); dset(fl[k],"y1",y1l[k]); dset(fl[k],"y2",y2l[k]);
+    dset(fr[k],"x1",x1r[k]); dset(fr[k],"x2",x2r[k]); dset(fr[k],"y1",y1r[k]); dset(fr[k],"y2",y2r[k]);
+  }
+  return V_nil();
+}
+
 static Value bi_chr(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","chr() expects a number"); char *s=xmalloc(2); s[0]=(char)(int)a[0].num; s[1]=0; return V_take(s); }
 static Value bi_ord(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR||a[0].str[0]==0) runtime_error(ip,"LarzTypeError","ord() expects a non-empty string"); return V_number((unsigned char)a[0].str[0]); }
 static Value bi_assert(Interp *ip, Value *a, int n){ if(n<1) runtime_error(ip,"LarzTypeError","assert() expects a condition"); if(!truthy(a[0])) runtime_error(ip,"AssertionError","%s", (n>=2&&a[1].t==V_STR)?a[1].str:"assertion failed"); return V_nil(); }
@@ -1817,6 +2001,96 @@ static int write_bytes_if_list(Value v, FILE *f){
 static Value bi_write_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","write_file() expects a path and content"); FILE *f=fopen(a[0].str,"wb"); if(!f) runtime_error(ip,"IOError","cannot write file '%s'", a[0].str); if(!write_bytes_if_list(a[1],f)){ char *s=str_of(a[1]); fputs(s,f); } fclose(f); return V_nil(); }
 static Value bi_append_file(Interp *ip, Value *a, int n){ if(n!=2||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","append_file() expects a path and content"); FILE *f=fopen(a[0].str,"ab"); if(!f) runtime_error(ip,"IOError","cannot append to file '%s'", a[0].str); if(!write_bytes_if_list(a[1],f)){ char *s=str_of(a[1]); fputs(s,f); } fclose(f); return V_nil(); }
 static Value bi_file_exists(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","file_exists() expects a path string"); struct stat st; return V_bool(stat(a[0].str,&st)==0); }
+
+/* ---- ranged/patch file I/O + PCM16 codec ------------------------------
+ * The `wav` stack package documents (and calls) a real streaming API -
+ * open_write/write_chunk/close_write, open_read/read_chunk/eof - built on
+ * file_size(), read_file_bytes_range(), patch_file_bytes() and a native
+ * PCM16 encode/decode pair. None of those five existed in this
+ * interpreter (found via the same "does the deployed interpreter
+ * actually have what the package claims" check that turned up dsp's
+ * missing _native_* buffer functions - see larzscript-beatstudio's
+ * PLAN.md) - `wav.open_write()` and friends have always thrown
+ * LarzNameError at runtime. This implements exactly that
+ * already-documented contract: a real byte-range read, a real in-place
+ * byte-range patch (only ever used here to fix up a WAV header's two
+ * 4-byte size fields after streaming - never resizes the file), and a
+ * fast PCM16<->float codec so a per-sample interpreted loop isn't the
+ * cost of every chunk read/write on a multi-minute file. */
+static Value bi_file_size(Interp *ip, Value *a, int n){
+  if(n!=1||a[0].t!=V_STR) runtime_error(ip,"LarzTypeError","file_size() expects a path string");
+  struct stat st;
+  if(stat(a[0].str,&st)!=0) runtime_error(ip,"IOError","cannot stat file '%s'", a[0].str);
+  return V_number((double)st.st_size);
+}
+
+static Value bi_read_file_bytes_range(Interp *ip, Value *a, int n){
+  if(n!=3||a[0].t!=V_STR||!is_num(a[1])||!is_num(a[2])) runtime_error(ip,"LarzTypeError","read_file_bytes_range() expects a path, offset, and length");
+  long long offset=(long long)a[1].num, want=(long long)a[2].num;
+  if(offset<0||want<0) runtime_error(ip,"LarzValueError","read_file_bytes_range(): offset and length must be non-negative");
+  FILE *f=fopen(a[0].str,"rb");
+  if(!f) runtime_error(ip,"IOError","cannot read file '%s'", a[0].str);
+  if(fseek(f,offset,SEEK_SET)!=0){ fclose(f); runtime_error(ip,"IOError","cannot seek in file '%s'", a[0].str); }
+  unsigned char *buf=xmalloc(want>0?want:1);
+  size_t got=want>0?fread(buf,1,(size_t)want,f):0;
+  fclose(f);
+  List *out=list_new();
+  for(size_t i=0;i<got;i++) list_push(out,V_number((double)buf[i]));
+  free(buf);
+  return V_list(out);
+}
+
+static Value bi_patch_file_bytes(Interp *ip, Value *a, int n){
+  if(n!=3||a[0].t!=V_STR||!is_num(a[1])||a[2].t!=V_LIST) runtime_error(ip,"LarzTypeError","patch_file_bytes() expects a path, offset, and a byte list");
+  long long offset=(long long)a[1].num;
+  if(offset<0) runtime_error(ip,"LarzValueError","patch_file_bytes(): offset must be non-negative");
+  FILE *f=fopen(a[0].str,"r+b");
+  if(!f) runtime_error(ip,"IOError","cannot open file '%s' for patching", a[0].str);
+  if(fseek(f,offset,SEEK_SET)!=0){ fclose(f); runtime_error(ip,"IOError","cannot seek in file '%s'", a[0].str); }
+  int nb=a[2].list->n;
+  unsigned char *buf=xmalloc(nb>0?nb:1);
+  for(int i=0;i<nb;i++){
+    Value it=a[2].list->items[i];
+    if(!is_num(it)){ free(buf); fclose(f); runtime_error(ip,"LarzTypeError","patch_file_bytes(): byte list must contain only numbers"); }
+    buf[i]=(unsigned char)((long)it.num & 0xff);
+  }
+  if(nb>0) fwrite(buf,1,nb,f);
+  free(buf);
+  fclose(f);
+  return V_nil();
+}
+
+static Value bi_native_pcm16_encode(Interp *ip, Value *a, int n){
+  if(n!=1) runtime_error(ip,"LarzTypeError","_native_pcm16_encode() expects a list of samples");
+  need_num_list(ip,a[0],"_native_pcm16_encode()");
+  List *s=a[0].list;
+  List *out=list_new();
+  for(int i=0;i<s->n;i++){
+    double v=s->items[i].num;
+    if(v>1.0) v=1.0; else if(v<-1.0) v=-1.0;
+    long nn=(long)(v*32767.0);
+    if(nn<0) nn=65536+nn;
+    list_push(out,V_number((double)(nn%256)));
+    list_push(out,V_number((double)((nn/256)%256)));
+  }
+  return V_list(out);
+}
+
+static Value bi_native_pcm16_decode(Interp *ip, Value *a, int n){
+  if(n!=1) runtime_error(ip,"LarzTypeError","_native_pcm16_decode() expects a byte list");
+  need_num_list(ip,a[0],"_native_pcm16_decode()");
+  List *b=a[0].list;
+  List *out=list_new();
+  int i=0;
+  while(i+1<b->n){
+    long lo=(long)b->items[i].num & 0xff, hi=(long)b->items[i+1].num & 0xff;
+    long nn=lo+hi*256;
+    if(nn>=32768) nn-=65536;
+    list_push(out,V_number(nn/32768.0));
+    i+=2;
+  }
+  return V_list(out);
+}
 static Value bi_exit(Interp *ip, Value *a, int n){ (void)ip; int code = (n>=1&&is_num(a[0]))?(int)a[0].num:0; exit(code); }
 static Value bi_all(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","all() expects a list"); for(int i=0;i<a[0].list->n;i++) if(!truthy(a[0].list->items[i])) return V_bool(0); return V_bool(1); }
 static Value bi_any(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","any() expects a list"); for(int i=0;i<a[0].list->n;i++) if(truthy(a[0].list->items[i])) return V_bool(1); return V_bool(0); }
@@ -2872,6 +3146,19 @@ static Builtin B_str={"str",bi_str}, B_int={"int",bi_int}, B_float={"float",bi_f
 static Builtin B_abs={"abs",bi_abs}, B_min={"min",bi_min}, B_max={"max",bi_max}, B_sum={"sum",bi_sum};
 static Builtin B_sorted={"sorted",bi_sorted}, B_reversed={"reversed",bi_reversed};
 static Builtin B_floor={"floor",bi_floor}, B_ceil={"ceil",bi_ceil}, B_round={"round",bi_round}, B_sqrt={"sqrt",bi_sqrt}, B_pow={"pow",bi_pow};
+static Builtin B_native_biquad_process_buffer={"_native_biquad_process_buffer",bi_native_biquad_process_buffer};
+static Builtin B_native_compressor_process_buffer={"_native_compressor_process_buffer",bi_native_compressor_process_buffer};
+static Builtin B_native_limit_buffer={"_native_limit_buffer",bi_native_limit_buffer};
+static Builtin B_native_peak_abs={"_native_peak_abs",bi_native_peak_abs};
+static Builtin B_native_sum_sq={"_native_sum_sq",bi_native_sum_sq};
+static Builtin B_native_scale_buffer={"_native_scale_buffer",bi_native_scale_buffer};
+static Builtin B_native_mix_add={"_native_mix_add",bi_native_mix_add};
+static Builtin B_native_master_block={"_native_master_block",bi_native_master_block};
+static Builtin B_file_size={"file_size",bi_file_size};
+static Builtin B_read_file_bytes_range={"read_file_bytes_range",bi_read_file_bytes_range};
+static Builtin B_patch_file_bytes={"patch_file_bytes",bi_patch_file_bytes};
+static Builtin B_native_pcm16_encode={"_native_pcm16_encode",bi_native_pcm16_encode};
+static Builtin B_native_pcm16_decode={"_native_pcm16_decode",bi_native_pcm16_decode};
 static Builtin B_chr={"chr",bi_chr}, B_ord={"ord",bi_ord}, B_assert={"assert",bi_assert}, B_input={"input",bi_input};
 static Builtin B_keys={"keys",bi_keys}, B_values={"values",bi_values};
 static Builtin B_map={"map",bi_map}, B_filter={"filter",bi_filter}, B_reduce={"reduce",bi_reduce}, B_join={"join",bi_join}, B_enumerate={"enumerate",bi_enumerate};
@@ -2969,6 +3256,19 @@ static void define_builtins(Env *g){
   env_define(g, "round", V_builtin(&B_round));
   env_define(g, "sqrt",  V_builtin(&B_sqrt));
   env_define(g, "pow",   V_builtin(&B_pow));
+  env_define(g, "_native_biquad_process_buffer", V_builtin(&B_native_biquad_process_buffer));
+  env_define(g, "_native_compressor_process_buffer", V_builtin(&B_native_compressor_process_buffer));
+  env_define(g, "_native_limit_buffer", V_builtin(&B_native_limit_buffer));
+  env_define(g, "_native_peak_abs", V_builtin(&B_native_peak_abs));
+  env_define(g, "_native_sum_sq", V_builtin(&B_native_sum_sq));
+  env_define(g, "_native_scale_buffer", V_builtin(&B_native_scale_buffer));
+  env_define(g, "_native_mix_add", V_builtin(&B_native_mix_add));
+  env_define(g, "_native_master_block", V_builtin(&B_native_master_block));
+  env_define(g, "file_size", V_builtin(&B_file_size));
+  env_define(g, "read_file_bytes_range", V_builtin(&B_read_file_bytes_range));
+  env_define(g, "patch_file_bytes", V_builtin(&B_patch_file_bytes));
+  env_define(g, "_native_pcm16_encode", V_builtin(&B_native_pcm16_encode));
+  env_define(g, "_native_pcm16_decode", V_builtin(&B_native_pcm16_decode));
   env_define(g, "chr",   V_builtin(&B_chr));
   env_define(g, "ord",   V_builtin(&B_ord));
   env_define(g, "assert",V_builtin(&B_assert));
