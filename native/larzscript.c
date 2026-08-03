@@ -2254,13 +2254,21 @@ static Value bi_ssh_trust_host(Interp *ip, Value *a, int n){ (void)a; (void)n; r
 static Value bi_ssh_bridge_forward(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 #else
 
+/* Optional 3rd argument: connect timeout in seconds (default 15 if
+ * omitted). Without this, a silently-unreachable host (firewalled, not
+ * actively refusing) could hang ssh_connect() for libssh's own much
+ * longer internal default - found wanting during a real live test
+ * against a relay that occasionally stopped responding: no way to fail
+ * fast and retry instead of hanging the whole script indefinitely. */
 static Value bi_ssh_open(Interp *ip, Value *a, int n){
-  if(n!=2||a[0].t!=V_STR||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_open() expects a host string and a port number");
+  if((n!=2&&n!=3)||a[0].t!=V_STR||!is_num(a[1])||(n==3&&!is_num(a[2]))) runtime_error(ip,"LarzTypeError","ssh_open() expects a host string, a port number, and an optional connect timeout in seconds");
   ssh_session sess=ssh_new();
   if(!sess) runtime_error(ip,"SshError","could not allocate an ssh session");
   ssh_options_set(sess,SSH_OPTIONS_HOST,a[0].str);
   unsigned int port=(unsigned int)a[1].num;
   ssh_options_set(sess,SSH_OPTIONS_PORT,&port);
+  long timeout_s=(n==3 && a[2].num>0)?(long)a[2].num:15;
+  ssh_options_set(sess,SSH_OPTIONS_TIMEOUT,&timeout_s);
   if(ssh_connect(sess)!=SSH_OK){
     char msg[256]; snprintf(msg,sizeof msg,"connect to %s:%u failed: %s",a[0].str,port,ssh_get_error(sess));
     ssh_free(sess);
