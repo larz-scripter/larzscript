@@ -417,7 +417,7 @@ jobs:
           /tmp/_larzscript_test /tmp/verify_server.lz &
           SRV_PID=$!
           sleep 1
-          OUT=$(timeout 20 sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
+          OUT=$(sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
           echo "real ssh client got: $OUT"
           kill $SRV_PID 2>/dev/null || true
           if [ "$OUT" != "hello-from-native-server" ]; then
@@ -608,7 +608,7 @@ jobs:
           /tmp/_larzscript_test /tmp/verify_server.lz &
           SRV_PID=$!
           sleep 1
-          OUT=$(timeout 20 sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
+          OUT=$(sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
           echo "real ssh client got: $OUT"
           kill $SRV_PID 2>/dev/null || true
           if [ "$OUT" != "hello-from-native-server" ]; then
