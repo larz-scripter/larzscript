@@ -173,6 +173,7 @@ jobs:
       # role genuinely speaks the real protocol, not just "talks to
       # itself successfully".
       - name: Verify ssh server role against the REAL system ssh client
+        timeout-minutes: 3   # a hang here (e.g. an unreplied protocol message) should fail fast, not burn hours - learned the hard way, a prior version of this step hung 2+ hours before being caught and cancelled manually
         run: |
           sudo apt-get install -y sshpass
           cat > /tmp/verify_server.lz << 'LZEOF'
@@ -194,7 +195,7 @@ jobs:
                   ssh_msg_deny(msg)
                 }
               } else if t == "channel_open" {
-                if not authenticated { ssh_msg_deny(msg) }
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
               } else if t == "exec" {
                 let cmd = ssh_msg_exec_command(msg)
                 let ch = ssh_msg_channel(msg)
@@ -213,7 +214,7 @@ jobs:
           /tmp/_larzscript_test /tmp/verify_server.lz &
           SRV_PID=$!
           sleep 1
-          OUT=$(sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null tester@127.0.0.1 "echo hello-from-native-server")
+          OUT=$(timeout 20 sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
           echo "real ssh client got: $OUT"
           kill $SRV_PID 2>/dev/null || true
           if [ "$OUT" != "hello-from-native-server" ]; then
