@@ -236,13 +236,189 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install cross toolchain + qemu
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      # ssh Phase 4 (see larzscript's own plan/issue - last of the four
+      # cross-compile targets, after Linux/macOS/Windows). Ubuntu's
+      # default apt sources only host amd64 packages - archive.ubuntu.com
+      # has no arm64 index at all - so this enables the real arm64
+      # mirror (ports.ubuntu.com, Ubuntu's own official mirror for
+      # non-amd64/i386 architectures, not a random third party) and
+      # restricts the EXISTING sources to amd64 first, so `apt-get
+      # update` doesn't spend the step failing 404s against the wrong
+      # mirror for the new architecture.
+      - name: Enable arm64 multiarch + install libssh/openssl/zlib for aarch64
+        run: |
+          set -e
+          sudo dpkg --add-architecture arm64
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i '/^Types:/i Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          if [ -f /etc/apt/sources.list ]; then
+            sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
+          fi
+          CODENAME=$(lsb_release -cs)
+          printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s main universe\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-updates main universe\n' "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update
+          sudo apt-get install -y libssh-dev:arm64 libssl-dev:arm64 zlib1g-dev:arm64
+          echo "--- DIAGNOSTIC: static archives actually installed for arm64 ---"
+          dpkg -L libssh-dev:arm64 2>/dev/null | grep -E '\.a$' || true
+          dpkg -L libssl-dev:arm64 2>/dev/null | grep -E '\.a$' || true
+          dpkg -L zlib1g-dev:arm64 2>/dev/null | grep -E '\.a$' || true
       - name: Build (static)
         run: |
-          aarch64-linux-gnu-gcc -O2 -std=c11 -Wall -static -o larzscript-linux-aarch64 native/larzscript.c
+          aarch64-linux-gnu-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static \
+            -o larzscript-linux-aarch64 native/larzscript.c native/gssapi_stub.c \
+            -lssh -lssl -lcrypto -lz
       - name: Test under qemu-user
         run: |
           cd native
           BINARY=../larzscript-linux-aarch64 RUN_PREFIX=qemu-aarch64-static ./run_tests.sh
+      # Same three real-interop proofs the other three platforms have -
+      # qemu-user-static runs the aarch64 binary's syscalls straight
+      # through to this same host's real kernel/network stack (it's
+      # user-mode instruction emulation only, not a whole separate VM),
+      # so a real sshd on this runner and our aarch64 binary genuinely
+      # talk to each other over 127.0.0.1.
+      - name: Verify ssh.run() against a real local sshd (aarch64 binary under qemu-user)
+        run: |
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f /tmp/verify_key_aarch64 -N ""
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          cat /tmp/verify_key_aarch64.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 2226
+          cat > /tmp/verify_ssh_aarch64.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2226)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key_aarch64")
+          let result = ssh_run(session, "echo hello-from-real-sshd && whoami")
+          print("stdout: " + result["stdout"])
+          print("exit_status: " + str(result["exit_status"]))
+          if not result["stdout"].contains("hello-from-real-sshd") { print("FAIL: unexpected output"); exit(1) }
+          if result["exit_status"] != 0 { print("FAIL: nonzero exit status"); exit(1) }
+          ssh_close(session)
+          print("PASS")
+          LZEOF
+          qemu-aarch64-static ./larzscript-linux-aarch64 /tmp/verify_ssh_aarch64.lz
+      - name: Verify ssh forward_remote_port() against a real local sshd (aarch64 binary under qemu-user)
+        run: |
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('127.0.0.1', 19803))
+          s.listen(5)
+          while True:
+              conn, _ = s.accept()
+              try:
+                  conn.sendall(b'ECHO-READY\n')
+                  while True:
+                      data = conn.recv(4096)
+                      if not data: break
+                      conn.sendall(b'GOT:' + data)
+              except OSError:
+                  pass
+              finally:
+                  conn.close()
+          " &
+          sleep 1
+          cat > /tmp/verify_forward_aarch64.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2226)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key_aarch64")
+          ssh_listen_forward(session, 19902)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            let local_fd = socket_connect("127.0.0.1", 19803)
+            while true {
+              let avail = ssh_channel_poll(channel, 100)
+              if avail > 0 {
+                let data = ssh_channel_read(channel, avail)
+                let sent = 0
+                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
+              }
+              if ssh_channel_eof(channel) { break }
+              let ready = socket_poll([local_fd], 100)
+              if ready.contains(local_fd) {
+                let d = socket_read(local_fd, 16384)
+                if d == "" { break }
+                ssh_channel_write(channel, d)
+              }
+            }
+            socket_close(local_fd)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          qemu-aarch64-static ./larzscript-linux-aarch64 /tmp/verify_forward_aarch64.lz &
+          FWD_PID=$!
+          sleep 2
+          python3 -c "
+          import socket, time
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.connect(('127.0.0.1', 19902))
+          s.settimeout(20)
+          banner = s.recv(200)
+          print('banner:', banner)
+          s.sendall(b'forward-test-payload')
+          time.sleep(1)
+          echo = s.recv(200)
+          print('echo:', echo)
+          s.close()
+          assert banner == b'ECHO-READY\n', 'banner mismatch'
+          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          print('PASS')
+          "
+          kill $FWD_PID 2>/dev/null || true
+      - name: Verify ssh server role against the REAL system ssh client (aarch64 binary under qemu-user)
+        timeout-minutes: 3   # a hang here should fail fast, not burn hours - see linux-x86_64's own comment on this same step for why
+        run: |
+          sudo apt-get install -y sshpass
+          cat > /tmp/verify_server_aarch64.lz << 'LZEOF'
+          let bind = ssh_bind_open(2227, "/tmp/native_server_host_key_aarch64")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "exec" {
+                let cmd = ssh_msg_exec_command(msg)
+                let ch = ssh_msg_channel(msg)
+                ssh_msg_request_accept(msg)
+                ssh_channel_write(ch, capture(cmd + " 2>&1"))
+                ssh_channel_send_exit_status(ch, 0)
+                ssh_channel_close(ch)
+                ssh_channel_free(ch)
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key_aarch64 -N "" -q
+          qemu-aarch64-static ./larzscript-linux-aarch64 /tmp/verify_server_aarch64.lz &
+          SRV_PID=$!
+          sleep 1
+          OUT=$(timeout 20 sshpass -p testpass123 ssh -p 2227 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
+          echo "real ssh client got: $OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if [ "$OUT" != "hello-from-native-server" ]; then
+            echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
       - name: Strip
         run: aarch64-linux-gnu-strip larzscript-linux-aarch64
       - uses: actions/upload-artifact@v4
