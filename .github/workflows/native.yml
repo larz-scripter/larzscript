@@ -52,7 +52,11 @@ jobs:
       - name: Install libssh (static archive included)
         run: sudo apt-get update && sudo apt-get install -y libssh-dev libssl-dev zlib1g-dev
       - name: Build test binary (fully static, including libssh)
-        run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz
+        # -lutil: forkpty()/openpty() (interactive shell in the ssh server
+        # role) live in libutil on Linux glibc, separate from libc itself -
+        # not needed on macOS (part of libSystem there) or Windows (no
+        # pty/fork support there yet, see native/larzscript.c's LARZ_HAVE_PTY).
+        run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz -lutil
       - name: Test
         run: cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
       - name: Confirm no dynamic dependency on libssh
@@ -221,9 +225,73 @@ jobs:
             echo "FAIL: unexpected output from real ssh client"; exit 1
           fi
           echo "PASS"
+      # A real interactive login shell, not just exec - ssh -tt forces
+      # pseudo-tty allocation even though CI has no real terminal
+      # attached, matching what an actual interactive `ssh host` session
+      # requests (pty-req then shell-req). Commands piped over stdin are
+      # typed INTO the real shell our server spawned via forkpty(), same
+      # as a human typing at a real terminal - not exec, not a stub.
+      - name: Verify ssh interactive shell (pty) against the REAL system ssh client
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_shell.lz << 'LZEOF'
+          let bind = ssh_bind_open(2229, "/tmp/native_server_host_key_shell")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            let pty_cols = 80
+            let pty_rows = 24
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "pty" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  pty_cols = ssh_msg_pty_width(msg)
+                  pty_rows = ssh_msg_pty_height(msg)
+                  ssh_msg_request_accept(msg)
+                }
+              } else if t == "shell" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  let ch = ssh_msg_channel(msg)
+                  ssh_msg_request_accept(msg)
+                  let exit_code = ssh_channel_shell(ch, pty_cols, pty_rows)
+                  ssh_channel_send_exit_status(ch, exit_code)
+                  ssh_channel_close(ch)
+                  ssh_channel_free(ch)
+                }
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key_shell -N "" -q
+          /tmp/_larzscript_test /tmp/verify_shell.lz &
+          SRV_PID=$!
+          sleep 1
+          OUT=$(printf 'echo shell-test-output-marker\nexit\n' | timeout 20 sshpass -p testpass123 ssh -tt -p 2229 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 2>/dev/null || true)
+          echo "=== raw interactive shell session output ==="
+          echo "$OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if ! echo "$OUT" | grep -q "shell-test-output-marker"; then
+            echo "FAIL: expected echoed output not found in interactive shell session"; exit 1
+          fi
+          echo "PASS"
       - name: Build release binary (static, including libssh)
         run: |
-          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz
+          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz -lutil
           strip larzscript-linux-x86_64
       - uses: actions/upload-artifact@v4
         with:
@@ -258,16 +326,19 @@ jobs:
           CODENAME=$(lsb_release -cs)
           printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s main universe\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s-updates main universe\n' "$CODENAME" "$CODENAME" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
           sudo apt-get update
-          sudo apt-get install -y libssh-dev:arm64 libssl-dev:arm64 zlib1g-dev:arm64
+          sudo apt-get install -y libssh-dev:arm64 libssl-dev:arm64 zlib1g-dev:arm64 libc6-dev:arm64
           echo "--- DIAGNOSTIC: static archives actually installed for arm64 ---"
           dpkg -L libssh-dev:arm64 2>/dev/null | grep -E '\.a$' || true
           dpkg -L libssl-dev:arm64 2>/dev/null | grep -E '\.a$' || true
           dpkg -L zlib1g-dev:arm64 2>/dev/null | grep -E '\.a$' || true
+          dpkg -L libc6-dev:arm64 2>/dev/null | grep -E 'libutil\.a$' || true
       - name: Build (static)
+        # -lutil: forkpty()/openpty() (interactive shell in the ssh server
+        # role) - part of libc6-dev, separate archive from libc itself.
         run: |
           aarch64-linux-gnu-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static \
             -o larzscript-linux-aarch64 native/larzscript.c native/gssapi_stub.c \
-            -lssh -lssl -lcrypto -lz
+            -lssh -lssl -lcrypto -lz -lutil
       - name: Test under qemu-user
         run: |
           cd native
@@ -417,6 +488,72 @@ jobs:
           kill $SRV_PID 2>/dev/null || true
           if [ "$OUT" != "hello-from-native-server" ]; then
             echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
+      # Same real-interactive-shell proof as linux-x86_64's identical
+      # step, run through qemu-user-static like everything else in this
+      # job. forkpty()'s child execs the host's real (x86_64) shell -
+      # once execve() replaces the process image with a native x86_64
+      # ELF, the kernel just runs it directly (qemu-user's emulation is
+      # per-binary, not inherited across exec of a different-arch
+      # binary), while our aarch64 parent keeps bridging the pty under
+      # emulation as normal.
+      - name: Verify ssh interactive shell (pty) against the REAL system ssh client (aarch64 binary under qemu-user)
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_shell_aarch64.lz << 'LZEOF'
+          let bind = ssh_bind_open(2230, "/tmp/native_server_host_key_shell_aarch64")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            let pty_cols = 80
+            let pty_rows = 24
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "pty" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  pty_cols = ssh_msg_pty_width(msg)
+                  pty_rows = ssh_msg_pty_height(msg)
+                  ssh_msg_request_accept(msg)
+                }
+              } else if t == "shell" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  let ch = ssh_msg_channel(msg)
+                  ssh_msg_request_accept(msg)
+                  let exit_code = ssh_channel_shell(ch, pty_cols, pty_rows)
+                  ssh_channel_send_exit_status(ch, exit_code)
+                  ssh_channel_close(ch)
+                  ssh_channel_free(ch)
+                }
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key_shell_aarch64 -N "" -q
+          qemu-aarch64-static ./larzscript-linux-aarch64 /tmp/verify_shell_aarch64.lz &
+          SRV_PID=$!
+          sleep 1
+          OUT=$(printf 'echo shell-test-output-marker\nexit\n' | timeout 20 sshpass -p testpass123 ssh -tt -p 2230 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 2>/dev/null || true)
+          echo "=== raw interactive shell session output ==="
+          echo "$OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if ! echo "$OUT" | grep -q "shell-test-output-marker"; then
+            echo "FAIL: expected echoed output not found in interactive shell session"; exit 1
           fi
           echo "PASS"
       - name: Strip
@@ -598,6 +735,87 @@ jobs:
           kill $SRV_PID 2>/dev/null || true
           if [ "$OUT" != "hello-from-native-server" ]; then
             echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
+      # Same real-interactive-shell proof as linux-x86_64's identical
+      # step - ssh -tt forces pty allocation with no real terminal in CI,
+      # commands piped over stdin are typed into the real forkpty()'d
+      # shell. openpty()/forkpty() come from <util.h>, part of libSystem
+      # on macOS (unlike Linux, no separate -lutil needed here).
+      - name: Verify ssh interactive shell (pty) against the REAL system ssh client
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_shell.lz << 'LZEOF'
+          let bind = ssh_bind_open(2229, "/tmp/native_server_host_key_shell")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            let pty_cols = 80
+            let pty_rows = 24
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "pty" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  pty_cols = ssh_msg_pty_width(msg)
+                  pty_rows = ssh_msg_pty_height(msg)
+                  ssh_msg_request_accept(msg)
+                }
+              } else if t == "shell" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  let ch = ssh_msg_channel(msg)
+                  ssh_msg_request_accept(msg)
+                  let exit_code = ssh_channel_shell(ch, pty_cols, pty_rows)
+                  ssh_channel_send_exit_status(ch, exit_code)
+                  ssh_channel_close(ch)
+                  ssh_channel_free(ch)
+                }
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key_shell -N "" -q
+          /tmp/_larzscript_test /tmp/verify_shell.lz &
+          SRV_PID=$!
+          sleep 1
+          # No `timeout` command by default on macOS (same reason every
+          # other macOS step in this file avoids it) - a manual
+          # background+bounded-wait+kill gives the same ~20s hard bound
+          # without it. Added after a real hang: an earlier version of
+          # this step with no client-side bound at all ran into the CI
+          # step's own 3-minute timeout-minutes cutoff on macos-arm64
+          # specifically (macos-x86_64 passed the exact same script
+          # cleanly) - root cause not fully isolated, but this closes the
+          # gap regardless of what it turns out to be, same "fail fast
+          # instead of silently burning minutes" reasoning as the
+          # linux-x86_64 server-role step's own comment on a prior hang.
+          printf 'echo shell-test-output-marker\nexit\n' | sshpass -p testpass123 ssh -tt -p 2229 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 > /tmp/shell_client_out.txt 2>/dev/null &
+          CLIENT_PID=$!
+          for i in $(seq 1 20); do
+            kill -0 $CLIENT_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill $CLIENT_PID 2>/dev/null || true
+          OUT=$(cat /tmp/shell_client_out.txt 2>/dev/null || true)
+          echo "=== raw interactive shell session output ==="
+          echo "$OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if ! echo "$OUT" | grep -q "shell-test-output-marker"; then
+            echo "FAIL: expected echoed output not found in interactive shell session"; exit 1
           fi
           echo "PASS"
       - name: Build release binary
@@ -789,6 +1007,81 @@ jobs:
           kill $SRV_PID 2>/dev/null || true
           if [ "$OUT" != "hello-from-native-server" ]; then
             echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
+      # Same real-interactive-shell proof as linux-x86_64/macos-x86_64's
+      # identical step.
+      - name: Verify ssh interactive shell (pty) against the REAL system ssh client
+        timeout-minutes: 3
+        run: |
+          cat > /tmp/verify_shell.lz << 'LZEOF'
+          let bind = ssh_bind_open(2229, "/tmp/native_server_host_key_shell")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            let pty_cols = 80
+            let pty_rows = 24
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "pty" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  pty_cols = ssh_msg_pty_width(msg)
+                  pty_rows = ssh_msg_pty_height(msg)
+                  ssh_msg_request_accept(msg)
+                }
+              } else if t == "shell" {
+                if not authenticated { ssh_msg_deny(msg) } else {
+                  let ch = ssh_msg_channel(msg)
+                  ssh_msg_request_accept(msg)
+                  let exit_code = ssh_channel_shell(ch, pty_cols, pty_rows)
+                  ssh_channel_send_exit_status(ch, exit_code)
+                  ssh_channel_close(ch)
+                  ssh_channel_free(ch)
+                }
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key_shell -N "" -q
+          /tmp/_larzscript_test /tmp/verify_shell.lz &
+          SRV_PID=$!
+          sleep 1
+          # No `timeout` command by default on macOS - a manual
+          # background+bounded-wait+kill gives the same ~20s hard bound
+          # without it. Added after a real hang on macos-arm64 (this
+          # exact job) with no client-side bound at all - macos-x86_64
+          # passed the identical script cleanly, root cause not fully
+          # isolated, but this closes the gap regardless, same "fail
+          # fast instead of silently burning minutes" reasoning as the
+          # linux-x86_64 server-role step's own comment on a prior hang.
+          printf 'echo shell-test-output-marker\nexit\n' | sshpass -p testpass123 ssh -tt -p 2229 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 > /tmp/shell_client_out.txt 2>/dev/null &
+          CLIENT_PID=$!
+          for i in $(seq 1 20); do
+            kill -0 $CLIENT_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill $CLIENT_PID 2>/dev/null || true
+          OUT=$(cat /tmp/shell_client_out.txt 2>/dev/null || true)
+          echo "=== raw interactive shell session output ==="
+          echo "$OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if ! echo "$OUT" | grep -q "shell-test-output-marker"; then
+            echo "FAIL: expected echoed output not found in interactive shell session"; exit 1
           fi
           echo "PASS"
       - name: Build release binary
@@ -1031,6 +1324,25 @@ jobs:
             echo "FAIL: unexpected output from real ssh client"; exit 1
           fi
           echo "PASS"
+      # Windows has no fork()/pty support yet (see native/larzscript.c's
+      # LARZ_HAVE_PTY - real support needs ConPTY, a wholly different
+      # Win32 API, not built). Confirms ssh_channel_shell() fails the
+      # documented, catchable way (a plain SshError) instead of crashing
+      # or hanging - no real session needed, the stub throws regardless
+      # of arguments.
+      - name: Verify ssh_channel_shell() fails gracefully (no pty support on Windows yet)
+        run: |
+          cat > /tmp/verify_shell_unsupported_win.lz << 'LZEOF'
+          try {
+            ssh_channel_shell(0, 80, 24)
+            print("FAIL: expected ssh_channel_shell() to throw on this platform")
+            exit(1)
+          } catch e {
+            print("got expected error: " + str(e))
+            print("PASS")
+          }
+          LZEOF
+          WINEDEBUG=-all wine larzscript-windows-x86_64.exe /tmp/verify_shell_unsupported_win.lz
       - name: Strip
         run: x86_64-w64-mingw32-strip larzscript-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
