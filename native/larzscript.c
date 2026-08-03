@@ -2166,9 +2166,16 @@ static Value bi_socket_poll(Interp *ip, Value *a, int n){
  * real libssh calls unless built with -DLARZ_HAVE_LIBSSH -lssh; every
  * other build keeps these names defined but throwing a clear SshError, so
  * a script fails the same understandable way everywhere rather than with
- * an "unknown identifier" on platforms libssh isn't linked on yet. */
+ * an "unknown identifier" on platforms libssh isn't linked on yet - the
+ * browser/wasm build included: LARZ_HAVE_LIBSSH is never defined there
+ * either, so it gets the same throwing stub as any other not-yet-wired
+ * platform, not a compile error (an earlier version of this section
+ * wrapped the stubs in an extra #ifndef __EMSCRIPTEN__, which meant the
+ * Builtin registration below - unconditionally compiled for every hosted
+ * target, emscripten included - referenced functions that didn't exist
+ * there. Caught by CI, fixed here: the stub must be defined everywhere
+ * hosted, only the REAL implementation is platform-gated). */
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
-#ifndef __EMSCRIPTEN__
 
 #ifndef LARZ_HAVE_LIBSSH
 static Value bi_ssh_open(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
@@ -2264,7 +2271,6 @@ static Value bi_ssh_close(Interp *ip, Value *a, int n){
   return V_nil();
 }
 #endif /* LARZ_HAVE_LIBSSH */
-#endif /* !__EMSCRIPTEN__ */
 #endif /* hosted */
 
 static Builtin B_print = {"print", bi_print};
