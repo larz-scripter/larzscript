@@ -167,6 +167,60 @@ jobs:
           print('PASS')
           "
           kill $FWD_PID 2>/dev/null || true
+      # The strongest interop proof yet: not our own client against a real
+      # sshd, but a completely independent, real SSH client (the system
+      # ssh binary) against OUR native server. If this passes, the server
+      # role genuinely speaks the real protocol, not just "talks to
+      # itself successfully".
+      - name: Verify ssh server role against the REAL system ssh client
+        timeout-minutes: 3   # a hang here (e.g. an unreplied protocol message) should fail fast, not burn hours - learned the hard way, a prior version of this step hung 2+ hours before being caught and cancelled manually
+        run: |
+          sudo apt-get install -y sshpass
+          cat > /tmp/verify_server.lz << 'LZEOF'
+          let bind = ssh_bind_open(2223, "/tmp/native_server_host_key")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "exec" {
+                let cmd = ssh_msg_exec_command(msg)
+                let ch = ssh_msg_channel(msg)
+                ssh_msg_request_accept(msg)
+                ssh_channel_write(ch, capture(cmd + " 2>&1"))
+                ssh_channel_send_exit_status(ch, 0)
+                ssh_channel_close(ch)
+                ssh_channel_free(ch)
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key -N "" -q
+          /tmp/_larzscript_test /tmp/verify_server.lz &
+          SRV_PID=$!
+          sleep 1
+          OUT=$(timeout 20 sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
+          echo "real ssh client got: $OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if [ "$OUT" != "hello-from-native-server" ]; then
+            echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
       - name: Build release binary (static, including libssh)
         run: |
           cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static -o larzscript-linux-x86_64 native/larzscript.c native/gssapi_stub.c -lssh -lssl -lcrypto -lz
@@ -200,14 +254,195 @@ jobs:
     runs-on: macos-15-intel   # last Intel-based GitHub-hosted macOS runner (macos-13 was fully deprecated Dec 2025)
     steps:
       - uses: actions/checkout@v4
-      - name: Test
-        run: cd native && ./run_tests.sh
+      # ssh Phase 2 (see the Linux job's comments for the full context on
+      # why this exists at all). Homebrew's libssh formula is untested
+      # territory as of this push - DIAGNOSTIC step prints what's
+      # actually available (static .a or not, GSSAPI/Kerberos linkage)
+      # before the real build attempt, same iterate-against-CI approach
+      # that got Linux working, since this sandbox has no macOS access to
+      # test any of this locally at all.
+      - name: Install libssh
+        run: brew install libssh openssl@3
+      - name: DIAGNOSTIC - what did Homebrew actually give us
+        run: |
+          echo "libssh prefix: $(brew --prefix libssh)"
+          ls -la "$(brew --prefix libssh)/lib/" || true
+          echo "openssl prefix: $(brew --prefix openssl@3)"
+          ls -la "$(brew --prefix openssl@3)/lib/" || true
+      - name: Test (with libssh, static archive if Homebrew has one)
+        run: |
+          LIBSSH_PREFIX="$(brew --prefix libssh)"
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
+            echo "using static libssh.a"
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
+              "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          else
+            echo "no static libssh.a found - linking dynamically for now (see DIAGNOSTIC step output)"
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
+              -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          fi
+          cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
+      - name: Verify ssh.run() against a real local sshd
+        run: |
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f /tmp/verify_key -N ""
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          cat /tmp/verify_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 2222
+          cat > /tmp/verify_ssh.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          let result = ssh_run(session, "echo hello-from-real-sshd && whoami")
+          print("stdout: " + result["stdout"])
+          print("exit_status: " + str(result["exit_status"]))
+          if not result["stdout"].contains("hello-from-real-sshd") { print("FAIL: unexpected output"); exit(1) }
+          if result["exit_status"] != 0 { print("FAIL: nonzero exit status"); exit(1) }
+          ssh_close(session)
+          print("PASS")
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_ssh.lz
+      - name: Verify ssh forward_remote_port() against a real local sshd
+        run: |
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('127.0.0.1', 19801))
+          s.listen(5)
+          while True:
+              conn, _ = s.accept()
+              try:
+                  conn.sendall(b'ECHO-READY\n')
+                  while True:
+                      data = conn.recv(4096)
+                      if not data: break
+                      conn.sendall(b'GOT:' + data)
+              except OSError:
+                  pass
+              finally:
+                  conn.close()
+          " &
+          sleep 1
+          cat > /tmp/verify_forward.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          ssh_listen_forward(session, 19900)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            let local_fd = socket_connect("127.0.0.1", 19801)
+            while true {
+              let avail = ssh_channel_poll(channel, 100)
+              if avail > 0 {
+                let data = ssh_channel_read(channel, avail)
+                let sent = 0
+                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
+              }
+              if ssh_channel_eof(channel) { break }
+              let ready = socket_poll([local_fd], 100)
+              if ready.contains(local_fd) {
+                let d = socket_read(local_fd, 16384)
+                if d == "" { break }
+                ssh_channel_write(channel, d)
+              }
+            }
+            socket_close(local_fd)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_forward.lz &
+          FWD_PID=$!
+          sleep 2
+          python3 -c "
+          import socket, time
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.connect(('127.0.0.1', 19900))
+          s.settimeout(20)
+          banner = s.recv(200)
+          print('banner:', banner)
+          s.sendall(b'forward-test-payload')
+          time.sleep(1)
+          echo = s.recv(200)
+          print('echo:', echo)
+          s.close()
+          assert banner == b'ECHO-READY\n', 'banner mismatch'
+          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          print('PASS')
+          "
+          kill $FWD_PID 2>/dev/null || true
+      - name: Verify ssh server role against the REAL system ssh client
+        timeout-minutes: 3   # same hang-safety reasoning as the linux-x86_64 job's identical step
+        run: |
+          brew install hudochenkov/sshpass/sshpass   # not in homebrew-core (policy decision), this tap is the standard workaround
+          cat > /tmp/verify_server.lz << 'LZEOF'
+          let bind = ssh_bind_open(2223, "/tmp/native_server_host_key")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "exec" {
+                let cmd = ssh_msg_exec_command(msg)
+                let ch = ssh_msg_channel(msg)
+                ssh_msg_request_accept(msg)
+                ssh_channel_write(ch, capture(cmd + " 2>&1"))
+                ssh_channel_send_exit_status(ch, 0)
+                ssh_channel_close(ch)
+                ssh_channel_free(ch)
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key -N "" -q
+          /tmp/_larzscript_test /tmp/verify_server.lz &
+          SRV_PID=$!
+          sleep 1
+          OUT=$(sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
+          echo "real ssh client got: $OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if [ "$OUT" != "hello-from-native-server" ]; then
+            echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
       - name: Build release binary
         # No -static here: unlike Linux, macOS binaries are not meant to
         # statically link against libSystem (Apple doesn't support it) -
         # a normal dynamic build against the system libc is the correct,
         # portable form, and every Mac already has libSystem present.
-        run: cc -O2 -std=c11 -Wall -o larzscript-macos-x86_64 native/larzscript.c
+        # libssh itself is still linked statically when Homebrew provides
+        # a static archive (same reasoning as Linux - see above).
+        run: |
+          LIBSSH_PREFIX="$(brew --prefix libssh)"
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o larzscript-macos-x86_64 native/larzscript.c native/gssapi_stub.c \
+              "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          else
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o larzscript-macos-x86_64 native/larzscript.c native/gssapi_stub.c \
+              -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: larzscript-macos-x86_64
@@ -217,10 +452,182 @@ jobs:
     runs-on: macos-14   # Apple Silicon
     steps:
       - uses: actions/checkout@v4
-      - name: Test
-        run: cd native && ./run_tests.sh
+      - name: Install libssh
+        run: brew install libssh openssl@3
+      - name: DIAGNOSTIC - what did Homebrew actually give us
+        run: |
+          echo "libssh prefix: $(brew --prefix libssh)"
+          ls -la "$(brew --prefix libssh)/lib/" || true
+          echo "openssl prefix: $(brew --prefix openssl@3)"
+          ls -la "$(brew --prefix openssl@3)/lib/" || true
+      - name: Test (with libssh, static archive if Homebrew has one)
+        run: |
+          LIBSSH_PREFIX="$(brew --prefix libssh)"
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
+            echo "using static libssh.a"
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
+              "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          else
+            echo "no static libssh.a found - linking dynamically for now (see DIAGNOSTIC step output)"
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o /tmp/_larzscript_test native/larzscript.c native/gssapi_stub.c \
+              -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          fi
+          cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
+      - name: Verify ssh.run() against a real local sshd
+        run: |
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f /tmp/verify_key -N ""
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          cat /tmp/verify_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 2222
+          cat > /tmp/verify_ssh.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          let result = ssh_run(session, "echo hello-from-real-sshd && whoami")
+          print("stdout: " + result["stdout"])
+          print("exit_status: " + str(result["exit_status"]))
+          if not result["stdout"].contains("hello-from-real-sshd") { print("FAIL: unexpected output"); exit(1) }
+          if result["exit_status"] != 0 { print("FAIL: nonzero exit status"); exit(1) }
+          ssh_close(session)
+          print("PASS")
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_ssh.lz
+      - name: Verify ssh forward_remote_port() against a real local sshd
+        run: |
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('127.0.0.1', 19801))
+          s.listen(5)
+          while True:
+              conn, _ = s.accept()
+              try:
+                  conn.sendall(b'ECHO-READY\n')
+                  while True:
+                      data = conn.recv(4096)
+                      if not data: break
+                      conn.sendall(b'GOT:' + data)
+              except OSError:
+                  pass
+              finally:
+                  conn.close()
+          " &
+          sleep 1
+          cat > /tmp/verify_forward.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2222)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key")
+          ssh_listen_forward(session, 19900)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            let local_fd = socket_connect("127.0.0.1", 19801)
+            while true {
+              let avail = ssh_channel_poll(channel, 100)
+              if avail > 0 {
+                let data = ssh_channel_read(channel, avail)
+                let sent = 0
+                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
+              }
+              if ssh_channel_eof(channel) { break }
+              let ready = socket_poll([local_fd], 100)
+              if ready.contains(local_fd) {
+                let d = socket_read(local_fd, 16384)
+                if d == "" { break }
+                ssh_channel_write(channel, d)
+              }
+            }
+            socket_close(local_fd)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          /tmp/_larzscript_test /tmp/verify_forward.lz &
+          FWD_PID=$!
+          sleep 2
+          python3 -c "
+          import socket, time
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.connect(('127.0.0.1', 19900))
+          s.settimeout(20)
+          banner = s.recv(200)
+          print('banner:', banner)
+          s.sendall(b'forward-test-payload')
+          time.sleep(1)
+          echo = s.recv(200)
+          print('echo:', echo)
+          s.close()
+          assert banner == b'ECHO-READY\n', 'banner mismatch'
+          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          print('PASS')
+          "
+          kill $FWD_PID 2>/dev/null || true
+      - name: Verify ssh server role against the REAL system ssh client
+        timeout-minutes: 3   # same hang-safety reasoning as the linux-x86_64 job's identical step
+        run: |
+          brew install hudochenkov/sshpass/sshpass   # not in homebrew-core (policy decision), this tap is the standard workaround
+          cat > /tmp/verify_server.lz << 'LZEOF'
+          let bind = ssh_bind_open(2223, "/tmp/native_server_host_key")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "exec" {
+                let cmd = ssh_msg_exec_command(msg)
+                let ch = ssh_msg_channel(msg)
+                ssh_msg_request_accept(msg)
+                ssh_channel_write(ch, capture(cmd + " 2>&1"))
+                ssh_channel_send_exit_status(ch, 0)
+                ssh_channel_close(ch)
+                ssh_channel_free(ch)
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key -N "" -q
+          /tmp/_larzscript_test /tmp/verify_server.lz &
+          SRV_PID=$!
+          sleep 1
+          OUT=$(sshpass -p testpass123 ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "echo hello-from-native-server")
+          echo "real ssh client got: $OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if [ "$OUT" != "hello-from-native-server" ]; then
+            echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
       - name: Build release binary
-        run: cc -O2 -std=c11 -Wall -o larzscript-macos-arm64 native/larzscript.c
+        run: |
+          LIBSSH_PREFIX="$(brew --prefix libssh)"
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          if [ -f "$LIBSSH_PREFIX/lib/libssh.a" ]; then
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o larzscript-macos-arm64 native/larzscript.c native/gssapi_stub.c \
+              "$LIBSSH_PREFIX/lib/libssh.a" -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          else
+            cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -I"$LIBSSH_PREFIX/include" -I"$OPENSSL_PREFIX/include" \
+              -o larzscript-macos-arm64 native/larzscript.c native/gssapi_stub.c \
+              -L"$LIBSSH_PREFIX/lib" -lssh -L"$OPENSSL_PREFIX/lib" -lssl -lcrypto -lz
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: larzscript-macos-arm64

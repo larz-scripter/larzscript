@@ -119,6 +119,7 @@ typedef int larz_sock_t;
  * where libssh isn't linked, same convention as sockets in the wasm build. */
 #ifdef LARZ_HAVE_LIBSSH
 #include <libssh/libssh.h>
+#include <libssh/server.h>   /* ssh_bind/ssh_message_* - the server-role API lives in a separate header from the client one */
 #endif
 #if defined(__STDC_HOSTED__) && !__STDC_HOSTED__
 #include "gfx.h"              /* VGA Mode 13h graphics + widget model - the kernel-native `ui` module's backend */
@@ -2190,6 +2191,21 @@ static Value bi_ssh_channel_read(Interp *ip, Value *a, int n){ (void)a; (void)n;
 static Value bi_ssh_channel_write(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_eof(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_free(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_bind_open(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_bind_accept_session(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_bind_free(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_server_next_message(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_type(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_auth_user(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_auth_password(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_auth_accept(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_deny(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_channel_accept(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_exec_command(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_request_accept(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_send_exit_status(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_msg_channel(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_close(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 #else
 
 static Value bi_ssh_open(Interp *ip, Value *a, int n){
@@ -2361,6 +2377,188 @@ static Value bi_ssh_channel_free(Interp *ip, Value *a, int n){
   ssh_channel_free(ch);
   return V_nil();
 }
+
+/* Server role - exec-only for now (no interactive pty/shell), password
+ * auth only (no server-side pubkey checking yet). The message-loop
+ * primitives below mirror libssh's own "simple" blocking ssh_message_*
+ * API rather than its callback-based one, to match this interpreter's
+ * single-threaded blocking model - same reasoning `tcp.serve()` already
+ * documents for why it's one connection at a time, not concurrent.
+ * Channel I/O reuses the exact same ssh_channel_poll/read/write/eof/free
+ * builtins the client side already has - an ssh_channel behaves
+ * identically regardless of which side opened it. */
+
+static Value bi_ssh_bind_open(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_bind_open() expects a port number and a host key path");
+  ssh_bind b=ssh_bind_new();
+  if(!b) runtime_error(ip,"SshError","could not allocate an ssh_bind");
+  unsigned int port=(unsigned int)a[0].num;
+  ssh_bind_options_set(b,SSH_BIND_OPTIONS_BINDPORT,&port);
+  if(ssh_bind_options_set(b,SSH_BIND_OPTIONS_HOSTKEY,a[1].str)!=SSH_OK){
+    char msg[256]; snprintf(msg,sizeof msg,"could not use host key %s: %s",a[1].str,ssh_get_error(b));
+    ssh_bind_free(b);
+    runtime_error(ip,"SshError","%s",msg);
+  }
+  if(ssh_bind_listen(b)!=SSH_OK){
+    char msg[256]; snprintf(msg,sizeof msg,"could not listen on port %u: %s",port,ssh_get_error(b));
+    ssh_bind_free(b);
+    runtime_error(ip,"SshError","%s",msg);
+  }
+  return V_number((double)(intptr_t)b);
+}
+
+static Value bi_ssh_bind_accept_session(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_bind_accept_session() expects a bind handle");
+  ssh_bind b=(ssh_bind)(intptr_t)a[0].num;
+  ssh_session sess=ssh_new();
+  if(!sess) runtime_error(ip,"SshError","could not allocate an ssh session");
+  if(ssh_bind_accept(b,sess)!=SSH_OK){
+    char msg[256]; snprintf(msg,sizeof msg,"accept failed: %s",ssh_get_error(b));
+    ssh_free(sess);
+    runtime_error(ip,"SshError","%s",msg);
+  }
+  if(ssh_handle_key_exchange(sess)!=SSH_OK){
+    char msg[256]; snprintf(msg,sizeof msg,"key exchange failed: %s",ssh_get_error(sess));
+    ssh_disconnect(sess); ssh_free(sess);
+    runtime_error(ip,"SshError","%s",msg);
+  }
+  /* v1 scope: password auth only. */
+  ssh_set_auth_methods(sess,SSH_AUTH_METHOD_PASSWORD);
+  return V_number((double)(intptr_t)sess);
+}
+
+static Value bi_ssh_bind_free(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_bind_free() expects a bind handle");
+  ssh_bind b=(ssh_bind)(intptr_t)a[0].num;
+  ssh_bind_free(b);
+  return V_nil();
+}
+
+/* Blocks until the client's next protocol message (auth attempt, channel
+ * open, channel request, ...) or returns nil if the session has ended -
+ * not distinguished from a real error here, same simplification
+ * ssh_accept_forward() already makes on the client side. */
+static Value bi_ssh_server_next_message(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_server_next_message() expects a session");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  ssh_message msg=ssh_message_get(sess);
+  if(!msg) return V_nil();
+  return V_number((double)(intptr_t)msg);
+}
+
+/* Categorizes a message into one plain string, so Larzscript code never
+ * has to know libssh's own numeric type/subtype enums. */
+static Value bi_ssh_msg_type(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_type() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  int t=ssh_message_type(msg);
+  int st=ssh_message_subtype(msg);
+  if(t==SSH_REQUEST_AUTH){
+    if(st==SSH_AUTH_METHOD_PASSWORD) return V_string("auth_password");
+    return V_string("auth_other");
+  }
+  if(t==SSH_REQUEST_CHANNEL_OPEN) return V_string("channel_open");
+  if(t==SSH_REQUEST_CHANNEL){
+    if(st==SSH_CHANNEL_REQUEST_EXEC) return V_string("exec");
+    if(st==SSH_CHANNEL_REQUEST_PTY) return V_string("pty");
+    if(st==SSH_CHANNEL_REQUEST_SHELL) return V_string("shell");
+    return V_string("channel_request_other");
+  }
+  return V_string("other");
+}
+
+static Value bi_ssh_msg_auth_user(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_auth_user() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  const char *u=ssh_message_auth_user(msg);
+  return V_string(u?u:"");
+}
+
+static Value bi_ssh_msg_auth_password(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_auth_password() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  const char *p=ssh_message_auth_password(msg);
+  return V_string(p?p:"");
+}
+
+/* Accepts (frees the message - see file header comment on why). */
+static Value bi_ssh_msg_auth_accept(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_auth_accept() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  ssh_message_auth_reply_success(msg,0);
+  ssh_message_free(msg);
+  return V_nil();
+}
+
+/* Generic deny/reject for anything this server doesn't want to allow -
+ * frees the message. */
+static Value bi_ssh_msg_deny(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_deny() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  ssh_message_reply_default(msg);
+  ssh_message_free(msg);
+  return V_nil();
+}
+
+/* Accepts a channel-open request, frees the message, returns the new
+ * channel handle - the SAME kind of handle ssh_accept_forward() returns
+ * on the client side, so ssh_channel_poll/read/write/eof/free all work
+ * on it identically. */
+static Value bi_ssh_msg_channel_accept(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_channel_accept() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  ssh_channel ch=ssh_message_channel_request_open_reply_accept(msg);
+  ssh_message_free(msg);
+  if(!ch) runtime_error(ip,"SshError","could not accept the channel-open request");
+  return V_number((double)(intptr_t)ch);
+}
+
+static Value bi_ssh_msg_exec_command(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_exec_command() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  const char *cmd=ssh_message_channel_request_command(msg);
+  return V_string(cmd?cmd:"");
+}
+
+/* Accepts a channel REQUEST (exec/shell/pty - the sub-request within an
+ * already-open channel), frees the message. */
+static Value bi_ssh_msg_request_accept(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_request_accept() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  ssh_message_channel_request_reply_success(msg);
+  ssh_message_free(msg);
+  return V_nil();
+}
+
+static Value bi_ssh_channel_send_exit_status(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_channel_send_exit_status() expects a channel and an exit code");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  ssh_channel_request_send_exit_status(ch,(int)a[1].num);
+  return V_nil();
+}
+
+/* Which channel a channel-request message (exec/pty/shell) belongs to -
+ * ssh_server_next_message() polls at the session level, not per-channel,
+ * so this is how the caller knows which already-open channel an "exec"
+ * message is actually for. */
+static Value bi_ssh_msg_channel(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_msg_channel() expects a message");
+  ssh_message msg=(ssh_message)(intptr_t)a[0].num;
+  ssh_channel ch=ssh_message_channel_request_channel(msg);
+  if(!ch) return V_nil();
+  return V_number((double)(intptr_t)ch);
+}
+
+/* Proper teardown before ssh_channel_free() - send_eof (tells the other
+ * end no more data is coming) then close, the same sequence ssh_run()
+ * already does internally on the client side. */
+static Value bi_ssh_channel_close(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_channel_close() expects a channel");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  ssh_channel_send_eof(ch);
+  ssh_channel_close(ch);
+  return V_nil();
+}
 #endif /* LARZ_HAVE_LIBSSH */
 #endif /* hosted */
 
@@ -2385,6 +2583,7 @@ static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",
 static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
 static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close};
 static Builtin B_ssh_listen_forward={"ssh_listen_forward",bi_ssh_listen_forward}, B_ssh_accept_forward={"ssh_accept_forward",bi_ssh_accept_forward}, B_ssh_channel_poll={"ssh_channel_poll",bi_ssh_channel_poll}, B_ssh_channel_read={"ssh_channel_read",bi_ssh_channel_read}, B_ssh_channel_write={"ssh_channel_write",bi_ssh_channel_write}, B_ssh_channel_eof={"ssh_channel_eof",bi_ssh_channel_eof}, B_ssh_channel_free={"ssh_channel_free",bi_ssh_channel_free};
+static Builtin B_ssh_bind_open={"ssh_bind_open",bi_ssh_bind_open}, B_ssh_bind_accept_session={"ssh_bind_accept_session",bi_ssh_bind_accept_session}, B_ssh_bind_free={"ssh_bind_free",bi_ssh_bind_free}, B_ssh_server_next_message={"ssh_server_next_message",bi_ssh_server_next_message}, B_ssh_msg_type={"ssh_msg_type",bi_ssh_msg_type}, B_ssh_msg_auth_user={"ssh_msg_auth_user",bi_ssh_msg_auth_user}, B_ssh_msg_auth_password={"ssh_msg_auth_password",bi_ssh_msg_auth_password}, B_ssh_msg_auth_accept={"ssh_msg_auth_accept",bi_ssh_msg_auth_accept}, B_ssh_msg_deny={"ssh_msg_deny",bi_ssh_msg_deny}, B_ssh_msg_channel_accept={"ssh_msg_channel_accept",bi_ssh_msg_channel_accept}, B_ssh_msg_exec_command={"ssh_msg_exec_command",bi_ssh_msg_exec_command}, B_ssh_msg_request_accept={"ssh_msg_request_accept",bi_ssh_msg_request_accept}, B_ssh_channel_send_exit_status={"ssh_channel_send_exit_status",bi_ssh_channel_send_exit_status}, B_ssh_msg_channel={"ssh_msg_channel",bi_ssh_msg_channel}, B_ssh_channel_close={"ssh_channel_close",bi_ssh_channel_close};
 #endif
 static Builtin B_regex_match={"regex_match",bi_regex_match}, B_regex_find={"regex_find",bi_regex_find}, B_regex_replace={"regex_replace",bi_regex_replace}, B_regex_split={"regex_split",bi_regex_split};
 static Builtin B_date={"date",bi_date}, B_datetime={"datetime",bi_datetime};
@@ -2530,6 +2729,21 @@ static void define_builtins(Env *g){
   env_define(g, "ssh_channel_write", V_builtin(&B_ssh_channel_write));
   env_define(g, "ssh_channel_eof",   V_builtin(&B_ssh_channel_eof));
   env_define(g, "ssh_channel_free",  V_builtin(&B_ssh_channel_free));
+  env_define(g, "ssh_bind_open",           V_builtin(&B_ssh_bind_open));
+  env_define(g, "ssh_bind_accept_session", V_builtin(&B_ssh_bind_accept_session));
+  env_define(g, "ssh_bind_free",           V_builtin(&B_ssh_bind_free));
+  env_define(g, "ssh_server_next_message", V_builtin(&B_ssh_server_next_message));
+  env_define(g, "ssh_msg_type",            V_builtin(&B_ssh_msg_type));
+  env_define(g, "ssh_msg_auth_user",       V_builtin(&B_ssh_msg_auth_user));
+  env_define(g, "ssh_msg_auth_password",   V_builtin(&B_ssh_msg_auth_password));
+  env_define(g, "ssh_msg_auth_accept",     V_builtin(&B_ssh_msg_auth_accept));
+  env_define(g, "ssh_msg_deny",            V_builtin(&B_ssh_msg_deny));
+  env_define(g, "ssh_msg_channel_accept",  V_builtin(&B_ssh_msg_channel_accept));
+  env_define(g, "ssh_msg_exec_command",    V_builtin(&B_ssh_msg_exec_command));
+  env_define(g, "ssh_msg_request_accept",  V_builtin(&B_ssh_msg_request_accept));
+  env_define(g, "ssh_channel_send_exit_status", V_builtin(&B_ssh_channel_send_exit_status));
+  env_define(g, "ssh_msg_channel",         V_builtin(&B_ssh_msg_channel));
+  env_define(g, "ssh_channel_close",       V_builtin(&B_ssh_channel_close));
 #endif
   env_define(g, "regex_match",   V_builtin(&B_regex_match));
   env_define(g, "regex_find",    V_builtin(&B_regex_find));
