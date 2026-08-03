@@ -43,3 +43,10 @@ char *strndup(const char *s, size_t n) {
 int isblank(int c) {
   return c == ' ' || c == '\t';
 }
+/* libssh's config_parser.c.obj references __imp_isblank, not isblank
+ * directly - MSYS2's own headers declared isblank __declspec(dllimport),
+ * so the compiled call is an indirect load through an import-table
+ * pointer rather than a direct call. A plain function definition doesn't
+ * satisfy that; providing the pointer symbol itself does - the standard
+ * technique for supplying a "dllimport" symbol without an actual DLL. */
+void *__imp_isblank = (void *)isblank;
