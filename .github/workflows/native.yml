@@ -25,15 +25,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Phase 1 of real SSH interop (see larzscript's own plan/issue for
-      # the full multi-platform rollout) - libssh linked here first since
-      # this runner is the platform most likely to "just work" via apt.
+      # the full multi-platform rollout). Built from source as static
+      # libraries here, not `apt-get install libssh-dev` - Ubuntu's
+      # package only ships a shared library, and linking that would mean
+      # the ENTIRE larzscript binary (not just ssh_* calls) fails to even
+      # launch on a machine without libssh.so installed - a real
+      # regression for every existing user of this binary, caught before
+      # ever tagging a release with it. mbedTLS (Apache 2.0, permissive)
+      # is libssh's crypto backend here, not OpenSSL/gcrypt, to avoid
+      # stacking a second copyleft dependency on top of libssh's own LGPL
+      # (see native/THIRD_PARTY_LICENSES.md).
+      #
       # Not yet on macOS/Windows/linux-aarch64/wasm - ssh_* builtins throw
       # a clear SshError there until each platform gets its own libssh
       # wiring, same convention sockets already use for wasm.
-      - name: Install libssh
-        run: sudo apt-get update && sudo apt-get install -y libssh-dev
-      - name: Build test binary (with libssh)
-        run: cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -o /tmp/_larzscript_test native/larzscript.c -lssh
+      - name: Cache built libssh + mbedTLS (static)
+        id: libssh-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libssh-static
+          # Bump this key if the pinned versions below change.
+          key: libssh-static-v0.10.6-mbedtls-v3.6.0-v1
+      - name: Build mbedTLS + libssh from source (static)
+        if: steps.libssh-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          mkdir -p /tmp/build && cd /tmp/build
+          git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls.git
+          cd mbedtls && git submodule update --init --depth 1
+          make -j"$(nproc)" lib
+          cd /tmp/build
+          git clone --depth 1 --branch libssh-0.10.6 https://gitlab.com/libssh/libssh.git
+          cd libssh && mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DWITH_STATIC_LIB=ON \
+            -DWITH_MBEDTLS=ON -DWITH_GSSAPI=OFF -DWITH_SFTP=OFF -DWITH_SERVER=ON \
+            -DCMAKE_PREFIX_PATH=/tmp/build/mbedtls \
+            -DCMAKE_C_FLAGS="-I/tmp/build/mbedtls/include" \
+            -DCMAKE_EXE_LINKER_FLAGS="-L/tmp/build/mbedtls/library"
+          make -j"$(nproc)" ssh
+          mkdir -p /tmp/libssh-static/include /tmp/libssh-static/lib
+          cp -r /tmp/build/libssh/include/libssh /tmp/libssh-static/include/
+          cp /tmp/build/libssh/build/src/libssh.a /tmp/libssh-static/lib/
+          cp /tmp/build/mbedtls/library/*.a /tmp/libssh-static/lib/
+      - name: Build test binary (with static libssh)
+        run: |
+          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH \
+            -I/tmp/libssh-static/include -o /tmp/_larzscript_test native/larzscript.c \
+            -L/tmp/libssh-static/lib -static -lssh -lmbedtls -lmbedx509 -lmbedcrypto
       - name: Test
         run: cd native && BINARY=/tmp/_larzscript_test ./run_tests.sh
       # Real end-to-end proof, not just "it links": this sandbox this was
@@ -67,17 +106,11 @@ jobs:
           print("PASS")
           LZEOF
           /tmp/_larzscript_test /tmp/verify_ssh.lz
-      - name: Build release binary
-        # No -static here (unlike every other platform): Ubuntu's
-        # libssh-dev only ships a shared library, not a static archive -
-        # confirmed by this build either working or failing cleanly,
-        # tracked as a real open question for later phases (a fully
-        # static release binary matters most for the Windows target
-        # anyway, which isn't wired up yet). This binary depends on
-        # libssh/its crypto backend being installed on the host - a real,
-        # temporary tradeoff for this phase, not the end state.
+      - name: Build release binary (static, including libssh)
         run: |
-          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -o larzscript-linux-x86_64 native/larzscript.c -lssh
+          cc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH \
+            -I/tmp/libssh-static/include -o larzscript-linux-x86_64 native/larzscript.c \
+            -L/tmp/libssh-static/lib -static -lssh -lmbedtls -lmbedx509 -lmbedcrypto
           strip larzscript-linux-x86_64
       - uses: actions/upload-artifact@v4
         with:
