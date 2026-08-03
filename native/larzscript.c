@@ -1111,6 +1111,26 @@ static Value call_value(Interp *ip, Value callee, Value *args, int nargs);
  * Search dirs: $LARZSCRIPT_PATH (colon-separated), then ~/.larzscript/lib, then
  * ./lz_modules. A bare name like "coolmath" also matches coolmath.lz and the
  * package layout coolmath/coolmath.lz or coolmath/main.lz. */
+/* $HOME is never set on plain Windows (cmd.exe/PowerShell/WMI-spawned
+ * processes all lack it by default - only USERPROFILE exists there) -
+ * found via a real live test: `import` of ANY package silently failed
+ * to even reach a clean ImportError on a real Windows machine with no
+ * $HOME set, because every "~/.larzscript/lib" search in this file used
+ * bare getenv("HOME") with no fallback, unconditionally skipping that
+ * whole search directory rather than falling back to where `pkg
+ * install` actually put packages on Windows. Wine (used for Windows CI)
+ * masked this entirely - it inherits $HOME from the Linux host
+ * underneath it, so CI never ran with $HOME genuinely unset the way a
+ * real Windows install always is. Same fallback order the ssh/netbridge
+ * packages' own Larzscript code already uses (env("HOME",
+ * env("USERPROFILE", "."))), just at the C level too. */
+static const char *lz_home_dir(void){
+  const char *h=getenv("HOME");
+  if(h && *h) return h;
+  h=getenv("USERPROFILE");
+  if(h && *h) return h;
+  return NULL;
+}
 static int _lz_isfile(const char *p){ struct stat st; return stat(p,&st)==0 && S_ISREG(st.st_mode); }
 static int _lz_try(const char *cand, char *out, size_t outsz){
   if(!_lz_isfile(cand)) return 0;
@@ -1134,7 +1154,7 @@ static int resolve_import(const char *path, const char *basedir, char *out, size
   else { if(_lz_indir(basedir?basedir:".", path, has_ext, out, outsz)) return 1; }
   const char *lp=getenv("LARZSCRIPT_PATH");
   if(lp && *lp){ char buf[8192]; snprintf(buf,sizeof buf,"%s",lp); char *save=NULL; for(char *d=strtok_r(buf,":",&save); d; d=strtok_r(NULL,":",&save)) if(_lz_indir(d,path,has_ext,out,outsz)) return 1; }
-  const char *home=getenv("HOME");
+  const char *home=lz_home_dir();
   if(home){ char dir[4096]; snprintf(dir,sizeof dir,"%s/.larzscript/lib",home); if(_lz_indir(dir,path,has_ext,out,outsz)) return 1; }
   if(_lz_indir("lz_modules",path,has_ext,out,outsz)) return 1;
   return 0;
@@ -4080,7 +4100,7 @@ static char **discover_dynamic_modules(int *outn, const char *main_path){
   scan_dir_for_lz(g_srcdir[0]?g_srcdir:".", &names,&nn, main_path);
   const char *lp=getenv("LARZSCRIPT_PATH");
   if(lp){ const char *s=lp; while(*s){ const char *e2=s; while(*e2 && *e2!=':') e2++; int len=(int)(e2-s); if(len>0 && len<4000){ char dir[4096]; memcpy(dir,s,(size_t)len); dir[len]=0; scan_dir_for_lz(dir,&names,&nn,main_path); } s = *e2 ? e2+1 : e2; } }
-  const char *home=getenv("HOME");
+  const char *home=lz_home_dir();
   if(home){ char dir[4096]; snprintf(dir,sizeof dir,"%s/.larzscript/lib",home); scan_dir_for_lz(dir,&names,&nn,main_path); }
   scan_dir_for_lz("lz_modules",&names,&nn,main_path);
   *outn=nn; return names;
@@ -4467,8 +4487,8 @@ int main(int argc, char **argv){
      * which is exactly the kind of thing a real package manager command
      * shouldn't require. */
     if(strcmp(a,"pkg")==0){
-      const char *home=getenv("HOME");
-      if(!home){ fprintf(stderr,"larzscript pkg: $HOME is not set, can't find larzpkg.lz\n"); return 1; }
+      const char *home=lz_home_dir();
+      if(!home){ fprintf(stderr,"larzscript pkg: neither $HOME nor %%USERPROFILE%% is set, can't find larzpkg.lz\n"); return 1; }
       static char pkgpath[4096];
       snprintf(pkgpath,sizeof pkgpath,"%s/.larzscript/larzpkg.lz",home);
       if(access(pkgpath,0)!=0){ fprintf(stderr,"larzscript pkg: %s not found - re-run the installer (curl -fsSL <install-url> | sh)\n", pkgpath); return 1; }
