@@ -59,7 +59,7 @@ jobs:
           # job (protocol/redirect quirk, not a real permission issue on
           # this public repo) - a plain tarball download sidesteps git
           # credential handling entirely.
-          curl -fsSL -o libssh.tar.gz "https://gitlab.com/libssh/libssh/-/archive/libssh-0.10.6/libssh-libssh-0.10.6.tar.gz"
+          curl -fsSL -A "Mozilla/5.0 (compatible; larzscript-ci)" -o libssh.tar.gz "https://gitlab.com/libssh/libssh/-/archive/libssh-0.10.6/libssh-libssh-0.10.6.tar.gz"
           tar xzf libssh.tar.gz
           mv libssh-libssh-0.10.6 libssh
           cd libssh && mkdir build && cd build
