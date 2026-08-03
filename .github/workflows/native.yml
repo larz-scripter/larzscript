@@ -673,7 +673,7 @@ jobs:
         # runtime) - referencing the .a files directly by path is
         # unambiguous.
         run: |
-          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -static \
+          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -DLIBSSH_STATIC -static \
             -I/tmp/mingw64lib/mingw64/include \
             -o larzscript-windows-x86_64.exe native/larzscript.c native/gssapi_stub.c \
             /tmp/mingw64lib/mingw64/lib/libssh.a /tmp/mingw64lib/mingw64/lib/libssl.a /tmp/mingw64lib/mingw64/lib/libcrypto.a /tmp/mingw64lib/mingw64/lib/libz.a \
