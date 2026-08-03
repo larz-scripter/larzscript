@@ -638,10 +638,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install mingw-w64 + wine
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine
-      - name: Build (static)
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine zstd
+      # ssh Phase 3 (hardest platform - see larzscript's own plan/issue).
+      # No mingw-w64 libssh in Ubuntu's apt repos, so this pulls the real
+      # mingw-w64 libssh (+ its openssl/zlib deps) directly from MSYS2's
+      # own package repo - MSYS2 is the standard, widely-trusted source
+      # for prebuilt mingw-w64 Windows libraries, not a random third
+      # party. DIAGNOSTIC-first (list the real current filenames rather
+      # than guess a version number that'll go stale) - this sandbox has
+      # no general internet access to check any of this beforehand, so
+      # first attempt, iterate against CI same as every other platform.
+      - name: Fetch mingw-w64 libssh + deps from MSYS2
         run: |
-          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -static -o larzscript-windows-x86_64.exe native/larzscript.c -lwinpthread -lws2_32
+          set -e
+          mkdir -p /tmp/mingw64lib && cd /tmp/mingw64lib
+          BASE="https://mirror.msys2.org/mingw/mingw64"
+          echo "--- finding current package filenames ---"
+          INDEX=$(curl -fsSL "$BASE/")
+          for pkg in libssh openssl zlib; do
+            FN=$(echo "$INDEX" | grep -oE "mingw-w64-x86_64-${pkg}-[0-9][^\"']*\.pkg\.tar\.zst" | sort -V | tail -1)
+            echo "$pkg -> $FN"
+            curl -fsSL -o "${pkg}.pkg.tar.zst" "$BASE/$FN"
+            tar --zstd -xf "${pkg}.pkg.tar.zst"
+          done
+          echo "--- extracted layout ---"
+          find /tmp/mingw64lib/mingw64/lib -maxdepth 1 -name '*ssh*' -o -name '*ssl*' -o -name '*crypto*' -o -name '*z.a' 2>/dev/null
+          ls /tmp/mingw64lib/mingw64/include/libssh/ 2>&1 | head -5
+      - name: Build (static)
+        # MSYS2 ships BOTH libssh.a (true static) and libssh.dll.a (an
+        # import stub for the shared .dll) side by side, same for
+        # openssl - plain -lssh/-lssl/-lcrypto resolved to the .dll.a
+        # variant instead (undefined __imp_* references, since there's
+        # no DLL alongside a fully static binary to import from at
+        # runtime) - referencing the .a files directly by path is
+        # unambiguous.
+        #
+        # native/mingw_compat_stub.c: MSYS2's libssh.a was built with MSYS2's
+        # own, newer mingw-w64-crt, which references a few symbols
+        # (memset_explicit, strndup, isblank, fstat64i32) that Ubuntu's
+        # apt-installed cross-compiler's older bundled runtime doesn't
+        # provide under those exact names - a toolchain-version mismatch,
+        # not a missing platform feature. -liphlpapi provides the real
+        # Windows IP Helper API implementation of if_nametoindex rather
+        # than stubbing a real networking function.
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -DLIBSSH_STATIC -static \
+            -I/tmp/mingw64lib/mingw64/include \
+            -o larzscript-windows-x86_64.exe native/larzscript.c native/gssapi_stub.c native/mingw_compat_stub.c \
+            /tmp/mingw64lib/mingw64/lib/libssh.a /tmp/mingw64lib/mingw64/lib/libssl.a /tmp/mingw64lib/mingw64/lib/libcrypto.a /tmp/mingw64lib/mingw64/lib/libz.a \
+            -lwinpthread -lws2_32 -lcrypt32 -lbcrypt -liphlpapi
       - name: Wine warm-up (creates the wine prefix + first-run noise once, outside the test loop)
         # `wine --version` alone does NOT trigger the same wineboot/prefix
         # initialization as running an actual PE binary - the "created the
@@ -653,6 +698,163 @@ jobs:
         run: |
           cd native
           BINARY=../larzscript-windows-x86_64.exe RUN_PREFIX=wine LZ_CRLF_NORMALIZE=1 WINEDEBUG=-all ./run_tests.sh
+      # Same three real-interop proofs Linux/macOS already have (see
+      # linux-x86_64's own comments for why these matter, not just "it
+      # links") - wine's winsock maps straight through to this same
+      # runner's real network stack, so a real sshd/ssh client on the
+      # ubuntu-latest host and our Windows .exe running under wine can
+      # genuinely talk to each other over 127.0.0.1, not a fake loopback.
+      # Wine also auto-maps Unix absolute paths (/tmp/...) to its Z: drive,
+      # already proven by run_tests.sh passing script paths straight
+      # through above - no path translation needed here either.
+      - name: Verify ssh.run() against a real local sshd (Windows binary under wine)
+        run: |
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f /tmp/verify_key_win -N ""
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          cat /tmp/verify_key_win.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 2224
+          cat > /tmp/verify_ssh_win.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2224)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key_win")
+          let result = ssh_run(session, "echo hello-from-real-sshd && whoami")
+          print("stdout: " + result["stdout"])
+          print("exit_status: " + str(result["exit_status"]))
+          if not result["stdout"].contains("hello-from-real-sshd") { print("FAIL: unexpected output"); exit(1) }
+          if result["exit_status"] != 0 { print("FAIL: nonzero exit status"); exit(1) }
+          ssh_close(session)
+          print("PASS")
+          LZEOF
+          WINEDEBUG=-all wine larzscript-windows-x86_64.exe /tmp/verify_ssh_win.lz
+      - name: Verify ssh forward_remote_port() against a real local sshd (Windows binary under wine)
+        run: |
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('127.0.0.1', 19802))
+          s.listen(5)
+          while True:
+              conn, _ = s.accept()
+              try:
+                  conn.sendall(b'ECHO-READY\n')
+                  while True:
+                      data = conn.recv(4096)
+                      if not data: break
+                      conn.sendall(b'GOT:' + data)
+              except OSError:
+                  pass
+              finally:
+                  conn.close()
+          " &
+          sleep 1
+          cat > /tmp/verify_forward_win.lz << 'LZEOF'
+          let session = ssh_open("127.0.0.1", 2224)
+          ssh_auth_key(session, env("USER", "runner"), "/tmp/verify_key_win")
+          ssh_listen_forward(session, 19901)
+          print("listening")
+          while true {
+            let channel = ssh_accept_forward(session, 1000)
+            if channel == nil { continue }
+            let local_fd = socket_connect("127.0.0.1", 19802)
+            while true {
+              let avail = ssh_channel_poll(channel, 100)
+              if avail > 0 {
+                let data = ssh_channel_read(channel, avail)
+                let sent = 0
+                while sent < len(data) { sent = sent + socket_write(local_fd, sent == 0 ? data : data[sent:len(data)]) }
+              }
+              if ssh_channel_eof(channel) { break }
+              let ready = socket_poll([local_fd], 100)
+              if ready.contains(local_fd) {
+                let d = socket_read(local_fd, 16384)
+                if d == "" { break }
+                ssh_channel_write(channel, d)
+              }
+            }
+            socket_close(local_fd)
+            ssh_channel_free(channel)
+          }
+          LZEOF
+          WINEDEBUG=-all wine larzscript-windows-x86_64.exe /tmp/verify_forward_win.lz &
+          FWD_PID=$!
+          sleep 2
+          python3 -c "
+          import socket, time
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.connect(('127.0.0.1', 19901))
+          s.settimeout(20)
+          banner = s.recv(200)
+          print('banner:', banner)
+          s.sendall(b'forward-test-payload')
+          time.sleep(1)
+          echo = s.recv(200)
+          print('echo:', echo)
+          s.close()
+          assert banner == b'ECHO-READY\n', 'banner mismatch'
+          assert echo == b'GOT:forward-test-payload', 'echo mismatch'
+          print('PASS')
+          "
+          kill $FWD_PID 2>/dev/null || true
+      - name: Verify ssh server role against the REAL system ssh client (Windows binary under wine)
+        timeout-minutes: 3   # a hang here should fail fast, not burn hours - see linux-x86_64's own comment on this same step for why
+        # Server replies with a fixed string rather than capture(cmd) here -
+        # unlike Linux/macOS, running the client's requested shell command
+        # would mean shelling out from inside wine, which tests wine's own
+        # process-spawning fidelity, not SSH protocol interop. What this
+        # step actually verifies - a real independent ssh client completing
+        # a real password auth + channel-open + exec round trip against our
+        # native server - doesn't depend on that.
+        run: |
+          sudo apt-get install -y sshpass
+          cat > /tmp/verify_server_win.lz << 'LZEOF'
+          let bind = ssh_bind_open(2225, "/tmp/native_server_host_key_win")
+          while true {
+            let session = ssh_bind_accept_session(bind)
+            let authenticated = false
+            while true {
+              let msg = ssh_server_next_message(session)
+              if msg == nil { break }
+              let t = ssh_msg_type(msg)
+              if t == "auth_password" {
+                let user = ssh_msg_auth_user(msg)
+                let password = ssh_msg_auth_password(msg)
+                if user == "tester" and password == "testpass123" {
+                  authenticated = true
+                  ssh_msg_auth_accept(msg)
+                } else {
+                  ssh_msg_deny(msg)
+                }
+              } else if t == "channel_open" {
+                if not authenticated { ssh_msg_deny(msg) } else { ssh_msg_channel_accept(msg) }
+              } else if t == "exec" {
+                let cmd = ssh_msg_exec_command(msg)
+                let ch = ssh_msg_channel(msg)
+                ssh_msg_request_accept(msg)
+                ssh_channel_write(ch, "hello-from-native-server\n")
+                ssh_channel_send_exit_status(ch, 0)
+                ssh_channel_close(ch)
+                ssh_channel_free(ch)
+              } else {
+                ssh_msg_deny(msg)
+              }
+            }
+          }
+          LZEOF
+          ssh-keygen -t ed25519 -f /tmp/native_server_host_key_win -N "" -q
+          WINEDEBUG=-all wine larzscript-windows-x86_64.exe /tmp/verify_server_win.lz &
+          SRV_PID=$!
+          sleep 3
+          OUT=$(timeout 20 sshpass -p testpass123 ssh -p 2225 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 tester@127.0.0.1 "irrelevant-on-windows-side")
+          echo "real ssh client got: $OUT"
+          kill $SRV_PID 2>/dev/null || true
+          if [ "$OUT" != "hello-from-native-server" ]; then
+            echo "FAIL: unexpected output from real ssh client"; exit 1
+          fi
+          echo "PASS"
       - name: Strip
         run: x86_64-w64-mingw32-strip larzscript-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
