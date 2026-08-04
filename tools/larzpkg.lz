@@ -17,16 +17,39 @@
 #   larzscript pkg search <term>
 #   larzscript pkg publish <git-url> [as <name>]
 
-let HOME = env("HOME", ".")
+let HOME = env("HOME", env("USERPROFILE", "."))
 let LIB = HOME + "/.larzscript/lib"
 let PACKAGES_REPO_URL = "https://github.com/larz-scripter/larzscript-packages"
 let PACKAGES_REPO = HOME + "/.larzscript/packages-repo"
 let REGISTRY_URL = "https://raw.githubusercontent.com/larz-scripter/larzscript/main/packages/registry.txt"
+# Scratch space for this tool's own temp files. NOT "/tmp" - that path
+# doesn't exist on Windows (confirmed live: cmd.exe has no /tmp, so every
+# "-o /tmp/..." curl write and "2>/dev/null" redirect below used to fail
+# outright, breaking `pkg install`/`search`/`publish` on every Windows
+# machine regardless of whether it even has git). Lives under the same
+# ~/.larzscript this tool already owns, which ensure_dir() below creates
+# with plain mkdir() calls instead of a shelled-out "mkdir -p" (that also
+# used to leave a stray literal "-p" directory behind on Windows, since
+# cmd.exe's mkdir has no -p flag and just makes a dir named "-p" instead).
+let TMP_DIR = HOME + "/.larzscript/tmp"
+
+# Create `path` and every missing parent, one native mkdir() call per
+# segment - portable (no shelled-out mkdir/-p flag), ignores "already
+# exists" failures.
+fn ensure_dir(path) {
+  let parts = [p for p in path.split("/") if p != ""]
+  let built = path[0:1] == "/" ? "/" : ""
+  for part in parts {
+    built = len(built) == 0 or built.ends_with("/") ? built + part : built + "/" + part
+    mkdir(built)
+  }
+}
 
 # Fetch the registry and parse it into a {name: path-in-packages-repo} dict.
 fn load_registry() {
-  let tmp = "/tmp/larzpkg_registry.txt"
-  run("curl -fsSL " + REGISTRY_URL + " -o " + tmp + " 2>/dev/null")
+  ensure_dir(TMP_DIR)
+  let tmp = TMP_DIR + "/larzpkg_registry.txt"
+  run("curl -fsSL " + REGISTRY_URL + " -o " + tmp)
   let reg = {}
   if not file_exists(tmp) {
     print("warning: could not reach the registry (offline?)")
@@ -45,9 +68,9 @@ fn load_registry() {
 # combined with --ff-only can fail if upstream history is ever rewritten;
 # self-heal by re-cloning fresh rather than trying to recover a shallow repo.
 fn ensure_packages_repo() {
-  run("mkdir -p " + HOME + "/.larzscript")
+  ensure_dir(HOME + "/.larzscript")
   if file_exists(PACKAGES_REPO) {
-    let rc = run("git -C " + PACKAGES_REPO + " pull --ff-only --quiet 2>/dev/null")
+    let rc = run("git -C " + PACKAGES_REPO + " pull --ff-only --quiet")
     if rc != 0 {
       print("packages repo out of sync, re-cloning fresh...")
       run("rm -rf " + PACKAGES_REPO)
@@ -79,7 +102,7 @@ fn parse_pkg_value(value) {
 # whatever was there. Shared by both install and update - the only
 # difference between them is which message makes sense to print first.
 fn sync_package(name, value) {
-  run("mkdir -p " + LIB)
+  ensure_dir(LIB)
   let dest = LIB + "/" + name
   run("rm -rf " + dest)
   if value.contains("://") {
@@ -87,11 +110,12 @@ fn sync_package(name, value) {
     let url = parsed[0]
     let ref = parsed[1]
     let subpath = parsed[2]
-    let tmp = "/tmp/larzpkg_ext_" + name
+    ensure_dir(TMP_DIR)
+    let tmp = TMP_DIR + "/larzpkg_ext_" + name
     run("rm -rf " + tmp)
     let clone_cmd = "git clone --depth 1 "
     if ref != "" { clone_cmd = clone_cmd + "--branch " + ref + " " }
-    clone_cmd = clone_cmd + url + " " + tmp + " 2>/dev/null"
+    clone_cmd = clone_cmd + url + " " + tmp
     if run(clone_cmd) != 0 { run("rm -rf " + tmp); return false }
     let src = subpath != "" ? tmp + "/" + subpath : tmp
     let ok = run("cp -r " + src + " " + dest) == 0
@@ -190,13 +214,14 @@ fn derive_name(url) {
 fn publish(url, name) {
   if name == "" { name = derive_name(url) }
   print("checking " + url + " ...")
-  if run("git ls-remote " + url + " >/dev/null 2>&1") != 0 {
+  if run("git ls-remote " + url) != 0 {
     print("could not reach that repo - check the URL and try again")
     return
   }
-  let tmp = "/tmp/larzpkg_publish_check"
+  ensure_dir(TMP_DIR)
+  let tmp = TMP_DIR + "/larzpkg_publish_check"
   run("rm -rf " + tmp)
-  let cloned = run("git clone --depth 1 --quiet " + url + " " + tmp + " 2>/dev/null") == 0
+  let cloned = run("git clone --depth 1 --quiet " + url + " " + tmp) == 0
   let has_main = cloned and file_exists(tmp + "/main.lz")
   run("rm -rf " + tmp)
   if not has_main {
