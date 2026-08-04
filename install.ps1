@@ -4,6 +4,9 @@
 # and adds it to your PATH so `larzscript` works in any new cmd/PowerShell
 # window - the same experience as installing Python.
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 (still the default on many Windows 10 boxes) doesn't enable
+# TLS 1.2 by default, which makes GitHub's HTTPS downloads below fail silently/cryptically.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $binDir = Join-Path $env:LOCALAPPDATA "Larzscript\bin"
 $libDir = Join-Path $env:USERPROFILE ".larzscript\lib"
