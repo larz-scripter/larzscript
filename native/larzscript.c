@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.35.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.36.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -1886,6 +1886,72 @@ static Value bi_native_mix_add(Interp *ip, Value *a, int n){
   return V_nil();
 }
 
+/* Linear gain ramp across a whole buffer - out[i] = buf[i] * lerp(start_gain,
+ * end_gain, i/(n-1)) - the fade-in/fade-out primitive for the recording
+ * workspace's per-clip editing (larzscript-beatstudio PLAN2.md Phase B). */
+static Value bi_native_fade_buffer(Interp *ip, Value *a, int n){
+  if(n!=3||!is_num(a[1])||!is_num(a[2])) runtime_error(ip,"LarzTypeError","_native_fade_buffer() expects a buffer, start_gain, end_gain");
+  need_num_list(ip,a[0],"_native_fade_buffer()");
+  List *buf=a[0].list;
+  double g0=a[1].num, g1=a[2].num;
+  int len=buf->n;
+  List *out=list_new();
+  for(int i=0;i<len;i++){
+    double frac = len>1 ? (double)i/(double)(len-1) : 0.0;
+    double g = g0 + (g1-g0)*frac;
+    list_push(out,V_number(buf->items[i].num*g));
+  }
+  return V_list(out);
+}
+
+/* Index of the first sample whose |value| crosses threshold, or len(buf)
+ * if none do - auto-trim-leading-silence's detector. */
+static Value bi_native_find_first_above(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[1])) runtime_error(ip,"LarzTypeError","_native_find_first_above() expects a buffer and a threshold");
+  need_num_list(ip,a[0],"_native_find_first_above()");
+  List *buf=a[0].list; double th=a[1].num;
+  for(int i=0;i<buf->n;i++){
+    double x=buf->items[i].num; if(x<0) x=-x;
+    if(x>=th) return V_number((double)i);
+  }
+  return V_number((double)buf->n);
+}
+
+/* Sidechain gain: the envelope/LUT gain is driven by `detector`'s level,
+ * then applied to `signal` - out[i] = signal[i] * gain(detector[i]).
+ * detector and signal must be the same length but are otherwise
+ * independent buffers (a bandpass-filtered copy driving gain reduction
+ * applied to the dry signal for a de-esser; one track's level driving
+ * gain reduction applied to another track for sidechain ducking - see
+ * dsp's sidechain_process_buffer()). Same lut/attack/release/env
+ * envelope-follower as _native_compressor_process_buffer, just decoupled
+ * from which buffer it reads level from vs. which it gains. */
+static Value bi_native_sidechain_process_buffer(Interp *ip, Value *a, int n){
+  if(n!=5||a[0].t!=V_DICT||!is_num(a[3])||!is_num(a[4])) runtime_error(ip,"LarzTypeError","_native_sidechain_process_buffer() expects a compressor dict, detector buffer, signal buffer, lut_size, lut_max_linear");
+  need_num_list(ip,a[1],"_native_sidechain_process_buffer()");
+  need_num_list(ip,a[2],"_native_sidechain_process_buffer()");
+  Dict *c=a[0].dict; List *detector=a[1].list, *signal=a[2].list;
+  if(detector->n!=signal->n) runtime_error(ip,"LarzValueError","_native_sidechain_process_buffer(): detector and signal must be the same length");
+  int lut_size=(int)a[3].num; double lut_max=a[4].num;
+  Value *lutv=dict_find(c,V_string("lut"));
+  if(!lutv||lutv->t!=V_LIST) runtime_error(ip,"LarzTypeError","compressor dict has no 'lut' list");
+  List *lut=lutv->list;
+  double attack=dget(c,"attack"), release=dget(c,"release"), env=dget(c,"env");
+  List *out=list_new();
+  for(int i=0;i<detector->n;i++){
+    double dx=detector->items[i].num;
+    double level=dx<0?-dx:dx;
+    double coeff=level>env?attack:release;
+    env=env*coeff+level*(1-coeff);
+    int idx=(int)((env/lut_max)*lut_size);
+    if(idx<0) idx=0; if(idx>=lut_size) idx=lut_size-1;
+    double gain=lut->items[idx].num;
+    list_push(out,V_number(signal->items[i].num*gain));
+  }
+  dset(c,"env",env);
+  return V_list(out);
+}
+
 static Value bi_native_scale_buffer(Interp *ip, Value *a, int n){
   if(n!=2||!is_num(a[1])) runtime_error(ip,"LarzTypeError","_native_scale_buffer() expects a buffer and a gain");
   need_num_list(ip,a[0],"_native_scale_buffer()");
@@ -3153,6 +3219,9 @@ static Builtin B_native_peak_abs={"_native_peak_abs",bi_native_peak_abs};
 static Builtin B_native_sum_sq={"_native_sum_sq",bi_native_sum_sq};
 static Builtin B_native_scale_buffer={"_native_scale_buffer",bi_native_scale_buffer};
 static Builtin B_native_mix_add={"_native_mix_add",bi_native_mix_add};
+static Builtin B_native_fade_buffer={"_native_fade_buffer",bi_native_fade_buffer};
+static Builtin B_native_find_first_above={"_native_find_first_above",bi_native_find_first_above};
+static Builtin B_native_sidechain_process_buffer={"_native_sidechain_process_buffer",bi_native_sidechain_process_buffer};
 static Builtin B_native_master_block={"_native_master_block",bi_native_master_block};
 static Builtin B_file_size={"file_size",bi_file_size};
 static Builtin B_read_file_bytes_range={"read_file_bytes_range",bi_read_file_bytes_range};
@@ -3263,6 +3332,9 @@ static void define_builtins(Env *g){
   env_define(g, "_native_sum_sq", V_builtin(&B_native_sum_sq));
   env_define(g, "_native_scale_buffer", V_builtin(&B_native_scale_buffer));
   env_define(g, "_native_mix_add", V_builtin(&B_native_mix_add));
+  env_define(g, "_native_fade_buffer", V_builtin(&B_native_fade_buffer));
+  env_define(g, "_native_find_first_above", V_builtin(&B_native_find_first_above));
+  env_define(g, "_native_sidechain_process_buffer", V_builtin(&B_native_sidechain_process_buffer));
   env_define(g, "_native_master_block", V_builtin(&B_native_master_block));
   env_define(g, "file_size", V_builtin(&B_file_size));
   env_define(g, "read_file_bytes_range", V_builtin(&B_read_file_bytes_range));
