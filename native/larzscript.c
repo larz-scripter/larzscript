@@ -2620,6 +2620,7 @@ static Value bi_ssh_auth_password(Interp *ip, Value *a, int n){ (void)a; (void)n
 static Value bi_ssh_auth_key(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_run(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_close(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_is_connected(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_accept_forward(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_poll(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
@@ -2808,6 +2809,20 @@ static Value bi_ssh_close(Interp *ip, Value *a, int n){
   ssh_disconnect(sess);
   ssh_free(sess);
   return V_nil();
+}
+
+/* Whether the transport is still up. Needed because ssh_accept_forward()
+ * returns nil both when nothing has arrived yet AND when the underlying
+ * session has died (see that function's own comment - "not distinguished
+ * from a real error here... a real but minor simplification for this
+ * first pass") - without this, forward_remote_port()/forward_remote_socks()'s
+ * accept loop would spin on a dead connection forever, silently, with no
+ * way for a caller's own reconnect-with-backoff logic to ever notice the
+ * drop and get a turn to run. */
+static Value bi_ssh_is_connected(Interp *ip, Value *a, int n){
+  if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ssh_is_connected() expects a session");
+  ssh_session sess=(ssh_session)(intptr_t)a[0].num;
+  return V_bool(ssh_is_connected(sess)!=0);
 }
 
 /* Remote port forwarding (the `ssh -R` equivalent) - low-level channel
@@ -3362,7 +3377,7 @@ static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct},
 static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
 static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_read_bytes={"socket_read_bytes",bi_socket_read_bytes}, B_socket_write_bytes={"socket_write_bytes",bi_socket_write_bytes}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
-static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close};
+static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close}, B_ssh_is_connected={"ssh_is_connected",bi_ssh_is_connected};
 static Builtin B_ssh_check_host={"ssh_check_host",bi_ssh_check_host}, B_ssh_trust_host={"ssh_trust_host",bi_ssh_trust_host};
 static Builtin B_ssh_bridge_forward={"ssh_bridge_forward",bi_ssh_bridge_forward};
 static Builtin B_ssh_listen_forward={"ssh_listen_forward",bi_ssh_listen_forward}, B_ssh_accept_forward={"ssh_accept_forward",bi_ssh_accept_forward}, B_ssh_channel_poll={"ssh_channel_poll",bi_ssh_channel_poll}, B_ssh_channel_read={"ssh_channel_read",bi_ssh_channel_read}, B_ssh_channel_write={"ssh_channel_write",bi_ssh_channel_write}, B_ssh_channel_read_bytes={"ssh_channel_read_bytes",bi_ssh_channel_read_bytes}, B_ssh_channel_write_bytes={"ssh_channel_write_bytes",bi_ssh_channel_write_bytes}, B_ssh_channel_eof={"ssh_channel_eof",bi_ssh_channel_eof}, B_ssh_channel_free={"ssh_channel_free",bi_ssh_channel_free};
@@ -3524,6 +3539,7 @@ static void define_builtins(Env *g){
   env_define(g, "ssh_auth_key",     V_builtin(&B_ssh_auth_key));
   env_define(g, "ssh_run",          V_builtin(&B_ssh_run));
   env_define(g, "ssh_close",        V_builtin(&B_ssh_close));
+  env_define(g, "ssh_is_connected", V_builtin(&B_ssh_is_connected));
   env_define(g, "ssh_check_host",   V_builtin(&B_ssh_check_host));
   env_define(g, "ssh_trust_host",   V_builtin(&B_ssh_trust_host));
   env_define(g, "ssh_bridge_forward", V_builtin(&B_ssh_bridge_forward));
