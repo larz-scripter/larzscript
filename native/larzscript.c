@@ -2453,6 +2453,62 @@ static Value bi_socket_write(Interp *ip, Value *a, int n){
   return V_number((double)sent);
 #endif
 }
+
+/* Byte-list variants - see ssh_channel_read_bytes()/write_bytes()'s
+ * comment for why: a Larzscript Str has no stored length at all (just a
+ * NUL-terminated char[]), so socket_read()/write() are limited the same
+ * way for payloads with real embedded 0x00 bytes. A byte list (real
+ * stored count, same representation read_file_bytes() already uses)
+ * doesn't have that limitation. */
+static Value bi_socket_read_bytes(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","socket_read_bytes() expects a socket handle and a max byte count");
+  larz_sock_t fd=(larz_sock_t)a[0].num;
+  long maxlen=(long)a[1].num;
+  if(maxlen<0) maxlen=0;
+  unsigned char *buf=xmalloc((size_t)maxlen>0?(size_t)maxlen:1);
+#ifdef _WIN32
+  int r=recv(fd,(char*)buf,(int)maxlen,0);
+#else
+  long r=(long)recv(fd,(char*)buf,(size_t)maxlen,0);
+#endif
+  if(r<0){ free(buf); runtime_error(ip,"SocketError","read failed"); }
+  List *out=list_new();
+  for(long i=0;i<r;i++) list_push(out,V_number((double)buf[i]));
+  free(buf);
+  return V_list(out);
+#endif
+}
+
+static Value bi_socket_write_bytes(Interp *ip, Value *a, int n){
+#ifdef __EMSCRIPTEN__
+  (void)a; (void)n;
+  runtime_error(ip,"SocketError","sockets are not available in the browser/wasm build - use a native binary");
+  return V_nil();
+#else
+  if(n!=2||!is_num(a[0])||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","socket_write_bytes() expects a socket handle and a byte list");
+  larz_sock_t fd=(larz_sock_t)a[0].num;
+  int nb=a[1].list->n;
+  unsigned char *buf=xmalloc((size_t)nb>0?(size_t)nb:1);
+  for(int i=0;i<nb;i++){
+    Value it=a[1].list->items[i];
+    if(!is_num(it)){ free(buf); runtime_error(ip,"LarzTypeError","socket_write_bytes(): byte list must contain only numbers"); }
+    buf[i]=(unsigned char)((long)it.num & 0xff);
+  }
+#ifdef _WIN32
+  int sent=send(fd,(const char*)buf,(int)nb,0);
+#else
+  long sent=(long)send(fd,(const char*)buf,(size_t)nb,0);
+#endif
+  free(buf);
+  if(sent<0) runtime_error(ip,"SocketError","write failed");
+  return V_number((double)sent);
+#endif
+}
 static Value bi_socket_close(Interp *ip, Value *a, int n){
 #ifdef __EMSCRIPTEN__
   (void)a; (void)n;
@@ -2569,6 +2625,8 @@ static Value bi_ssh_accept_forward(Interp *ip, Value *a, int n){ (void)a; (void)
 static Value bi_ssh_channel_poll(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_read(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_write(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_read_bytes(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
+static Value bi_ssh_channel_write_bytes(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_eof(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_channel_free(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
 static Value bi_ssh_bind_open(Interp *ip, Value *a, int n){ (void)a; (void)n; runtime_error(ip,"SshError","real SSH is not available in this build (libssh not linked on this platform yet)"); return V_nil(); }
@@ -2912,6 +2970,50 @@ static Value bi_ssh_channel_write(Interp *ip, Value *a, int n){
     if(n_written<=0) runtime_error(ip,"SshError","channel write failed");
     sent+=(size_t)n_written;
   }
+  return V_number((double)sent);
+}
+
+/* Byte-list variants of the two above - for code that needs to move
+ * arbitrary binary payloads through a channel (e.g. hand-building a
+ * protocol like SOCKS on top of a forwarded connection, where the
+ * traffic itself routinely contains real 0x00 bytes) without the
+ * whole-language strlen()-on-Str limitation ssh_channel_read()/write()
+ * both still have (see those functions' own comments, and read_file_bytes()/
+ * write_file()'s list branch, which solved the identical problem for file
+ * I/O the same way: a Larzscript LIST of byte values has a real stored
+ * count, unlike Str's bare NUL-terminated char[] with no length field at
+ * all - so nothing here ever calls strlen() on the payload). */
+static Value bi_ssh_channel_read_bytes(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_channel_read_bytes() expects a channel and a max byte count");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  int maxlen=(int)a[1].num;
+  if(maxlen<0) maxlen=0;
+  unsigned char *buf=xmalloc((size_t)maxlen>0?(size_t)maxlen:1);
+  int nr=ssh_channel_read_nonblocking(ch,(char*)buf,(uint32_t)maxlen,0);
+  if(nr<0) nr=0;
+  List *out=list_new();
+  for(int i=0;i<nr;i++) list_push(out,V_number((double)buf[i]));
+  free(buf);
+  return V_list(out);
+}
+
+static Value bi_ssh_channel_write_bytes(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[0])||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","ssh_channel_write_bytes() expects a channel and a byte list");
+  ssh_channel ch=(ssh_channel)(intptr_t)a[0].num;
+  int nb=a[1].list->n;
+  unsigned char *buf=xmalloc((size_t)nb>0?(size_t)nb:1);
+  for(int i=0;i<nb;i++){
+    Value it=a[1].list->items[i];
+    if(!is_num(it)){ free(buf); runtime_error(ip,"LarzTypeError","ssh_channel_write_bytes(): byte list must contain only numbers"); }
+    buf[i]=(unsigned char)((long)it.num & 0xff);
+  }
+  size_t sent=0;
+  while((int)sent<nb){
+    int n_written=ssh_channel_write(ch,(const char*)buf+sent,(uint32_t)((size_t)nb-sent));
+    if(n_written<=0){ free(buf); runtime_error(ip,"SshError","channel write failed"); }
+    sent+=(size_t)n_written;
+  }
+  free(buf);
   return V_number((double)sent);
 }
 
@@ -3259,11 +3361,11 @@ static Builtin B_all={"all",bi_all}, B_any={"any",bi_any}, B_count={"count",bi_c
 static Builtin B_hex={"hex",bi_hex}, B_bin={"bin",bi_bin}, B_oct={"oct",bi_oct}, B_gcd={"gcd",bi_gcd}, B_factorial={"factorial",bi_factorial}, B_sign={"sign",bi_sign}, B_clamp={"clamp",bi_clamp}, B_list={"list",bi_list}, B_dict={"dict",bi_dict};
 static Builtin B_env={"env",bi_env}, B_run={"run",bi_run}, B_capture={"capture",bi_capture}, B_cwd={"cwd",bi_cwd}, B_chdir={"chdir",bi_chdir}, B_listdir={"listdir",bi_listdir}, B_mkdir={"mkdir",bi_mkdir}, B_remove={"remove",bi_remove}, B_rename={"rename",bi_rename}, B_time={"time",bi_time}, B_clock={"clock",bi_clock}, B_sleep={"sleep",bi_sleep};
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__
-static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
+static Builtin B_socket_listen={"socket_listen",bi_socket_listen}, B_socket_accept={"socket_accept",bi_socket_accept}, B_socket_read={"socket_read",bi_socket_read}, B_socket_write={"socket_write",bi_socket_write}, B_socket_read_bytes={"socket_read_bytes",bi_socket_read_bytes}, B_socket_write_bytes={"socket_write_bytes",bi_socket_write_bytes}, B_socket_close={"socket_close",bi_socket_close}, B_socket_connect={"socket_connect",bi_socket_connect}, B_socket_poll={"socket_poll",bi_socket_poll};
 static Builtin B_ssh_open={"ssh_open",bi_ssh_open}, B_ssh_auth_password={"ssh_auth_password",bi_ssh_auth_password}, B_ssh_auth_key={"ssh_auth_key",bi_ssh_auth_key}, B_ssh_run={"ssh_run",bi_ssh_run}, B_ssh_close={"ssh_close",bi_ssh_close};
 static Builtin B_ssh_check_host={"ssh_check_host",bi_ssh_check_host}, B_ssh_trust_host={"ssh_trust_host",bi_ssh_trust_host};
 static Builtin B_ssh_bridge_forward={"ssh_bridge_forward",bi_ssh_bridge_forward};
-static Builtin B_ssh_listen_forward={"ssh_listen_forward",bi_ssh_listen_forward}, B_ssh_accept_forward={"ssh_accept_forward",bi_ssh_accept_forward}, B_ssh_channel_poll={"ssh_channel_poll",bi_ssh_channel_poll}, B_ssh_channel_read={"ssh_channel_read",bi_ssh_channel_read}, B_ssh_channel_write={"ssh_channel_write",bi_ssh_channel_write}, B_ssh_channel_eof={"ssh_channel_eof",bi_ssh_channel_eof}, B_ssh_channel_free={"ssh_channel_free",bi_ssh_channel_free};
+static Builtin B_ssh_listen_forward={"ssh_listen_forward",bi_ssh_listen_forward}, B_ssh_accept_forward={"ssh_accept_forward",bi_ssh_accept_forward}, B_ssh_channel_poll={"ssh_channel_poll",bi_ssh_channel_poll}, B_ssh_channel_read={"ssh_channel_read",bi_ssh_channel_read}, B_ssh_channel_write={"ssh_channel_write",bi_ssh_channel_write}, B_ssh_channel_read_bytes={"ssh_channel_read_bytes",bi_ssh_channel_read_bytes}, B_ssh_channel_write_bytes={"ssh_channel_write_bytes",bi_ssh_channel_write_bytes}, B_ssh_channel_eof={"ssh_channel_eof",bi_ssh_channel_eof}, B_ssh_channel_free={"ssh_channel_free",bi_ssh_channel_free};
 static Builtin B_ssh_bind_open={"ssh_bind_open",bi_ssh_bind_open}, B_ssh_bind_accept_session={"ssh_bind_accept_session",bi_ssh_bind_accept_session}, B_ssh_bind_free={"ssh_bind_free",bi_ssh_bind_free}, B_ssh_server_next_message={"ssh_server_next_message",bi_ssh_server_next_message}, B_ssh_msg_type={"ssh_msg_type",bi_ssh_msg_type}, B_ssh_msg_auth_user={"ssh_msg_auth_user",bi_ssh_msg_auth_user}, B_ssh_msg_auth_password={"ssh_msg_auth_password",bi_ssh_msg_auth_password}, B_ssh_msg_auth_accept={"ssh_msg_auth_accept",bi_ssh_msg_auth_accept}, B_ssh_msg_deny={"ssh_msg_deny",bi_ssh_msg_deny}, B_ssh_msg_channel_accept={"ssh_msg_channel_accept",bi_ssh_msg_channel_accept}, B_ssh_msg_exec_command={"ssh_msg_exec_command",bi_ssh_msg_exec_command}, B_ssh_msg_request_accept={"ssh_msg_request_accept",bi_ssh_msg_request_accept}, B_ssh_channel_send_exit_status={"ssh_channel_send_exit_status",bi_ssh_channel_send_exit_status}, B_ssh_msg_channel={"ssh_msg_channel",bi_ssh_msg_channel}, B_ssh_channel_close={"ssh_channel_close",bi_ssh_channel_close};
 static Builtin B_ssh_msg_pty_width={"ssh_msg_pty_width",bi_ssh_msg_pty_width}, B_ssh_msg_pty_height={"ssh_msg_pty_height",bi_ssh_msg_pty_height}, B_ssh_channel_shell={"ssh_channel_shell",bi_ssh_channel_shell};
 #endif
@@ -3412,6 +3514,8 @@ static void define_builtins(Env *g){
   env_define(g, "socket_accept", V_builtin(&B_socket_accept));
   env_define(g, "socket_read",   V_builtin(&B_socket_read));
   env_define(g, "socket_write",  V_builtin(&B_socket_write));
+  env_define(g, "socket_read_bytes",  V_builtin(&B_socket_read_bytes));
+  env_define(g, "socket_write_bytes",  V_builtin(&B_socket_write_bytes));
   env_define(g, "socket_close",  V_builtin(&B_socket_close));
   env_define(g, "socket_connect",V_builtin(&B_socket_connect));
   env_define(g, "socket_poll",   V_builtin(&B_socket_poll));
@@ -3428,6 +3532,8 @@ static void define_builtins(Env *g){
   env_define(g, "ssh_channel_poll",  V_builtin(&B_ssh_channel_poll));
   env_define(g, "ssh_channel_read",  V_builtin(&B_ssh_channel_read));
   env_define(g, "ssh_channel_write", V_builtin(&B_ssh_channel_write));
+  env_define(g, "ssh_channel_read_bytes", V_builtin(&B_ssh_channel_read_bytes));
+  env_define(g, "ssh_channel_write_bytes", V_builtin(&B_ssh_channel_write_bytes));
   env_define(g, "ssh_channel_eof",   V_builtin(&B_ssh_channel_eof));
   env_define(g, "ssh_channel_free",  V_builtin(&B_ssh_channel_free));
   env_define(g, "ssh_bind_open",           V_builtin(&B_ssh_bind_open));
