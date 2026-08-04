@@ -1213,55 +1213,96 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install mingw-w64 + wine
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine zstd
+      - name: Install mingw-w64 + wine + cmake
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 wine zstd cmake
       # ssh Phase 3 (hardest platform - see larzscript's own plan/issue).
-      # No mingw-w64 libssh in Ubuntu's apt repos, so this pulls the real
-      # mingw-w64 libssh (+ its openssl/zlib deps) directly from MSYS2's
-      # own package repo - MSYS2 is the standard, widely-trusted source
-      # for prebuilt mingw-w64 Windows libraries, not a random third
-      # party. DIAGNOSTIC-first (list the real current filenames rather
-      # than guess a version number that'll go stale) - this sandbox has
-      # no general internet access to check any of this beforehand, so
-      # first attempt, iterate against CI same as every other platform.
-      - name: Fetch mingw-w64 libssh + deps from MSYS2
+      # openssl/zlib have no Windows-specific C code of their own that
+      # touches thread-local storage the way libssh does (see below), so
+      # MSYS2's prebuilt archives for THOSE two are still fine - only
+      # libssh gets built from source now. MSYS2 is the standard, widely-
+      # trusted source for prebuilt mingw-w64 Windows libraries, not a
+      # random third party. DIAGNOSTIC-first (list the real current
+      # filenames rather than guess a version number that'll go stale).
+      - name: Fetch mingw-w64 openssl/zlib from MSYS2
         run: |
           set -e
           mkdir -p /tmp/mingw64lib && cd /tmp/mingw64lib
           BASE="https://mirror.msys2.org/mingw/mingw64"
           echo "--- finding current package filenames ---"
           INDEX=$(curl -fsSL "$BASE/")
-          for pkg in libssh openssl zlib; do
+          for pkg in openssl zlib; do
             FN=$(echo "$INDEX" | grep -oE "mingw-w64-x86_64-${pkg}-[0-9][^\"']*\.pkg\.tar\.zst" | sort -V | tail -1)
             echo "$pkg -> $FN"
             curl -fsSL -o "${pkg}.pkg.tar.zst" "$BASE/$FN"
             tar --zstd -xf "${pkg}.pkg.tar.zst"
           done
           echo "--- extracted layout ---"
-          find /tmp/mingw64lib/mingw64/lib -maxdepth 1 -name '*ssh*' -o -name '*ssl*' -o -name '*crypto*' -o -name '*z.a' 2>/dev/null
-          ls /tmp/mingw64lib/mingw64/include/libssh/ 2>&1 | head -5
+          find /tmp/mingw64lib/mingw64/lib -maxdepth 1 -name '*ssl*' -o -name '*crypto*' -o -name '*z.a' 2>/dev/null
+      # Found via a real crash on a real Windows machine (not caught by
+      # this same job's own "test under wine" step below - see the
+      # commit this comment shipped in): consuming MSYS2's PREBUILT
+      # libssh.a - built by MSYS2's own mingw-w64-gcc - while everything
+      # else here (larzscript.c itself) is built by Ubuntu's DIFFERENT
+      # mingw-w64-gcc, mixes two toolchains' idea of the PE Thread Local
+      # Storage directory in one static binary. libssh's internal logging
+      # (_ssh_log, called on every SSH operation) reads a per-thread log-
+      # level through that TLS mechanism - on real Windows this
+      # dereferenced a garbage pointer (STATUS_ACCESS_VIOLATION,
+      # confirmed via a custom crash handler + addr2line pinning the
+      # fault inside libssh's compiled code). Wine's own TLS emulation
+      # tolerates the mismatch and just works, which is exactly why CI
+      # (which only ever tested under wine) never caught this. Building
+      # libssh from source with the SAME compiler as everything else
+      # eliminates the mismatch entirely - same fix as every other
+      # platform already has (their libssh comes from their own native
+      # package manager, one toolchain throughout; Windows was the only
+      # platform mixing two).
+      - name: Build libssh from source (same mingw-w64-gcc as larzscript.c itself)
+        run: |
+          set -e
+          git clone --depth 1 --branch libssh-0.12.2 https://gitlab.com/libssh/libssh-mirror.git /tmp/libssh-src
+          cmake -S /tmp/libssh-src -B /tmp/libssh-src/build-mingw \
+            -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
+            -DCMAKE_FIND_ROOT_PATH=/tmp/mingw64lib/mingw64 \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DWITH_EXAMPLES=OFF \
+            -DWITH_SERVER=ON -DWITH_GSSAPI=OFF -DWITH_ZLIB=ON \
+            -DOPENSSL_ROOT_DIR=/tmp/mingw64lib/mingw64 \
+            -DOPENSSL_INCLUDE_DIR=/tmp/mingw64lib/mingw64/include \
+            -DOPENSSL_CRYPTO_LIBRARY=/tmp/mingw64lib/mingw64/lib/libcrypto.a \
+            -DOPENSSL_SSL_LIBRARY=/tmp/mingw64lib/mingw64/lib/libssl.a \
+            -DZLIB_INCLUDE_DIR=/tmp/mingw64lib/mingw64/include \
+            -DZLIB_LIBRARY=/tmp/mingw64lib/mingw64/lib/libz.a
+          cmake --build /tmp/libssh-src/build-mingw -j$(nproc)
+          ls -la /tmp/libssh-src/build-mingw/src/libssh.a
       - name: Build (static)
-        # MSYS2 ships BOTH libssh.a (true static) and libssh.dll.a (an
-        # import stub for the shared .dll) side by side, same for
-        # openssl - plain -lssh/-lssl/-lcrypto resolved to the .dll.a
-        # variant instead (undefined __imp_* references, since there's
-        # no DLL alongside a fully static binary to import from at
-        # runtime) - referencing the .a files directly by path is
-        # unambiguous.
-        #
-        # native/mingw_compat_stub.c: MSYS2's libssh.a was built with MSYS2's
-        # own, newer mingw-w64-crt, which references a few symbols
-        # (memset_explicit, strndup, isblank, fstat64i32) that Ubuntu's
-        # apt-installed cross-compiler's older bundled runtime doesn't
-        # provide under those exact names - a toolchain-version mismatch,
-        # not a missing platform feature. -liphlpapi provides the real
-        # Windows IP Helper API implementation of if_nametoindex rather
-        # than stubbing a real networking function.
+        # MSYS2 ships BOTH .a (true static) and .dll.a (an import stub for
+        # the shared .dll) side by side for openssl/zlib - plain -lssl/
+        # -lcrypto resolved to the .dll.a variant instead (undefined
+        # __imp_* references, since there's no DLL alongside a fully
+        # static binary to import from at runtime) - referencing the .a
+        # files directly by path is unambiguous. libssh's own freshly-
+        # built static lib doesn't have this ambiguity (BUILD_SHARED_LIBS
+        # was off above, only the .a exists). No native/mingw_compat_stub.c
+        # needed anymore - that was working around symbol gaps
+        # (memset_explicit, strndup, isblank, fstat64i32) that only
+        # existed because libssh's own cmake feature-detection was
+        # running against a DIFFERENT compiler than the one actually
+        # building it; now they're the same compiler, libssh's build
+        # correctly detects Ubuntu's mingw-w64-crt gaps itself and
+        # supplies its own fallbacks (confirmed: relinking WITH the old
+        # stub file now fails with "multiple definition of `strndup`").
+        # -liphlpapi provides the real Windows IP Helper API
+        # implementation of if_nametoindex rather than stubbing one.
         run: |
           x86_64-w64-mingw32-gcc -O2 -std=c11 -Wall -DLARZ_HAVE_LIBSSH -DLIBSSH_STATIC -static \
-            -I/tmp/mingw64lib/mingw64/include \
-            -o larzscript-windows-x86_64.exe native/larzscript.c native/gssapi_stub.c native/mingw_compat_stub.c \
-            /tmp/mingw64lib/mingw64/lib/libssh.a /tmp/mingw64lib/mingw64/lib/libssl.a /tmp/mingw64lib/mingw64/lib/libcrypto.a /tmp/mingw64lib/mingw64/lib/libz.a \
+            -I/tmp/libssh-src/include -I/tmp/libssh-src/build-mingw/include -I/tmp/mingw64lib/mingw64/include \
+            -o larzscript-windows-x86_64.exe native/larzscript.c native/gssapi_stub.c \
+            /tmp/libssh-src/build-mingw/src/libssh.a /tmp/mingw64lib/mingw64/lib/libssl.a /tmp/mingw64lib/mingw64/lib/libcrypto.a /tmp/mingw64lib/mingw64/lib/libz.a \
             -lwinpthread -lws2_32 -lcrypt32 -lbcrypt -liphlpapi
       - name: Wine warm-up (creates the wine prefix + first-run noise once, outside the test loop)
         # `wine --version` alone does NOT trigger the same wineboot/prefix

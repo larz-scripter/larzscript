@@ -2602,6 +2602,22 @@ static Value bi_ssh_bridge_forward(Interp *ip, Value *a, int n){ (void)a; (void)
  * fast and retry instead of hanging the whole script indefinitely. */
 static Value bi_ssh_open(Interp *ip, Value *a, int n){
   if((n!=2&&n!=3)||a[0].t!=V_STR||!is_num(a[1])||(n==3&&!is_num(a[2]))) runtime_error(ip,"LarzTypeError","ssh_open() expects a host string, a port number, and an optional connect timeout in seconds");
+#ifdef _WIN32
+  /* libssh's ssh_connect() opens a real socket under the hood - on
+   * Windows that needs WSAStartup() called first, same as the raw
+   * socket_listen()/socket_connect() builtins already do. Without it,
+   * ssh_connect() doesn't fail cleanly - it crashes (STATUS_ACCESS_
+   * VIOLATION), reproducibly, ONLY on a real Windows machine (Wine's
+   * winsock emulation tolerates the missing WSAStartup and silently
+   * works, which is exactly why this shipped unnoticed - CI's "test
+   * under wine" step never caught it). Found live on a real Windows box
+   * via ssh_open() as the very FIRST network call in the process (the
+   * ssh package is meant to need nothing else) - any prior call to one
+   * of the raw socket builtins would have masked this by initializing
+   * Winsock as a side effect first. */
+  static int wsa_started=0;
+  if(!wsa_started){ WSADATA wsa; WSAStartup(MAKEWORD(2,2),&wsa); wsa_started=1; }
+#endif
   ssh_session sess=ssh_new();
   if(!sess) runtime_error(ip,"SshError","could not allocate an ssh session");
   ssh_options_set(sess,SSH_OPTIONS_HOST,a[0].str);
@@ -2924,6 +2940,13 @@ static Value bi_ssh_channel_free(Interp *ip, Value *a, int n){
 
 static Value bi_ssh_bind_open(Interp *ip, Value *a, int n){
   if(n!=2||!is_num(a[0])||a[1].t!=V_STR) runtime_error(ip,"LarzTypeError","ssh_bind_open() expects a port number and a host key path");
+#ifdef _WIN32
+  /* Same fix as bi_ssh_open() above - the server role also has libssh
+   * touch a real socket (ssh_bind_listen, later) before anything else on
+   * Windows has necessarily called WSAStartup(). */
+  static int wsa_started=0;
+  if(!wsa_started){ WSADATA wsa; WSAStartup(MAKEWORD(2,2),&wsa); wsa_started=1; }
+#endif
   ssh_bind b=ssh_bind_new();
   if(!b) runtime_error(ip,"SshError","could not allocate an ssh_bind");
   unsigned int port=(unsigned int)a[0].num;
