@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.38.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.39.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -1961,6 +1961,112 @@ static Value bi_native_scale_buffer(Interp *ip, Value *a, int n){
   return V_list(out);
 }
 
+/* larzscript-beatstudio PLAN3.md Phase F (mix/master polish): three small
+ * per-chunk buffer ops, native for the same reason every other op on this
+ * page is - a whole multi-minute render running these per-sample in
+ * interpreted Larzscript would cost real seconds-to-minutes (see
+ * _native_master_block's own comment for the measured 50x this class of
+ * fusion buys). None of the three need any new interpreter machinery -
+ * same is_num/need_num_list/list_new/dget/dset toolkit every builtin
+ * above already uses.
+ *
+ * native_exp/native_tanh: this file links no libm anywhere (bi_sqrt/
+ * bi_pow above are hand-rolled too, Newton's method and a whole-number-
+ * exponent loop respectively) - saturation needs tanh, so it gets the
+ * same treatment rather than becoming the first libm dependency: a
+ * small range-reduced exp() series (the same shape as the `dsp` package's
+ * own _exp() at the Larzscript level, just here in C for this one native
+ * use) feeding the standard tanh(x) = 1 - 2/(exp(2x)+1) identity. */
+static double native_exp(double y){
+  long long whole=(long long)y;
+  if(y<0 && (double)whole!=y) whole -= 1;
+  double frac=y-(double)whole;
+  double base=1.0;
+  long long k = whole<0 ? -whole : whole;
+  for(long long i=0;i<k;i++) base = whole<0 ? base/2.718281828459045 : base*2.718281828459045;
+  double term=1.0, total=1.0;
+  for(int i=1;i<30;i++){ term = term*frac/i; total += term; }
+  return base*total;
+}
+static double native_tanh(double x){
+  if(x>20.0) return 1.0;
+  if(x<-20.0) return -1.0;
+  double e2x = native_exp(2.0*x);
+  return (e2x-1.0)/(e2x+1.0);
+}
+
+/* Harmonic saturation: out[i] = tanh(drive*x)/tanh(drive) - the standard
+ * soft-clip/waveshaper for analog-style warmth. Normalizing by tanh(drive)
+ * keeps a full-scale (+/-1.0) input mapping back to roughly full scale
+ * out, so `drive` controls how much of the curve's bend gets used, not
+ * the buffer's overall level. */
+static Value bi_native_saturate_buffer(Interp *ip, Value *a, int n){
+  if(n!=2||!is_num(a[1])) runtime_error(ip,"LarzTypeError","_native_saturate_buffer() expects a buffer and a drive amount");
+  need_num_list(ip,a[0],"_native_saturate_buffer()");
+  List *buf=a[0].list; double drive=a[1].num;
+  if(drive<=0.0) runtime_error(ip,"LarzValueError","_native_saturate_buffer(): drive must be > 0");
+  double norm=native_tanh(drive);
+  List *out=list_new();
+  for(int i=0;i<buf->n;i++) list_push(out, V_number(native_tanh(drive*buf->items[i].num)/norm));
+  return V_list(out);
+}
+
+/* Stereo widening: mid-side processing - m=(l+r)/2, s=(l-r)/2*width,
+ * recombine as (m+s, m-s). width=1.0 is unchanged; >1 widens the stereo
+ * image, <1 narrows it (0 = fully mono). Returns {l, r} as a dict rather
+ * than mutating in place, matching how mix_chunk() on the Larzscript side
+ * already produces a fresh {l, r} pair each chunk. */
+static Value bi_native_stereo_widen(Interp *ip, Value *a, int n){
+  if(n!=3||!is_num(a[2])) runtime_error(ip,"LarzTypeError","_native_stereo_widen() expects l, r, width");
+  need_num_list(ip,a[0],"_native_stereo_widen()");
+  need_num_list(ip,a[1],"_native_stereo_widen()");
+  List *l=a[0].list, *r=a[1].list;
+  if(l->n!=r->n) runtime_error(ip,"LarzValueError","_native_stereo_widen(): l and r must be the same length");
+  double width=a[2].num;
+  List *ol=list_new(), *orr=list_new();
+  for(int i=0;i<l->n;i++){
+    double lv=l->items[i].num, rv=r->items[i].num;
+    double m=(lv+rv)*0.5, s=(lv-rv)*0.5*width;
+    list_push(ol, V_number(m+s));
+    list_push(orr, V_number(m-s));
+  }
+  Dict *d=dict_new();
+  dict_set(d, V_string("l"), V_list(ol));
+  dict_set(d, V_string("r"), V_list(orr));
+  return V_dict(d);
+}
+
+/* Feedback delay line ("echo"): a real circular buffer carried in the
+ * caller's state dict (state["line"], a fixed-size list pre-filled with
+ * zeros; state["pos"]/state["feedback"]/state["mix"] are plain scalars),
+ * the exact same persistent-state-dict shape every filter/compressor
+ * above already uses (x1/x2/y1/y2, lut/attack/release/env) - so it
+ * carries correctly across chunk boundaries the same way they do.
+ * out[i] = x[i] + delayed*mix; line[pos] = x[i] + delayed*feedback -
+ * a single tap, real feedback echo (not a placeholder/no-op if feedback
+ * is 0 - that's just a one-tap slapback delay, still correct). */
+static Value bi_native_delay_process_buffer(Interp *ip, Value *a, int n){
+  if(n!=2||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","_native_delay_process_buffer() expects a delay-line dict and a buffer");
+  need_num_list(ip,a[1],"_native_delay_process_buffer()");
+  Dict *st=a[0].dict; List *buf=a[1].list;
+  Value *linev=dict_find(st,V_string("line"));
+  if(!linev||linev->t!=V_LIST) runtime_error(ip,"LarzTypeError","delay-line dict has no 'line' list - build it with dsp.delay_new()");
+  List *line=linev->list;
+  int size=line->n;
+  int pos=(int)dget(st,"pos");
+  if(size>0){ pos = pos % size; if(pos<0) pos += size; }
+  double feedback=dget(st,"feedback"), mix=dget(st,"mix");
+  List *out=list_new();
+  for(int i=0;i<buf->n;i++){
+    double x=buf->items[i].num;
+    double delayed = size>0 ? line->items[pos].num : 0.0;
+    list_push(out, V_number(x + delayed*mix));
+    if(size>0){ line->items[pos]=V_number(x + delayed*feedback); pos=(pos+1)%size; }
+  }
+  dset(st,"pos",(double)pos);
+  return V_list(out);
+}
+
 /* Fused linked-stereo master chain block: EQ (3 biquads/channel, already
  * native above) -> linked compressor (one gain per frame from
  * max(|L|,|R|), applied to both channels so the stereo image doesn't
@@ -3363,6 +3469,9 @@ static Builtin B_native_fade_buffer={"_native_fade_buffer",bi_native_fade_buffer
 static Builtin B_native_find_first_above={"_native_find_first_above",bi_native_find_first_above};
 static Builtin B_native_sidechain_process_buffer={"_native_sidechain_process_buffer",bi_native_sidechain_process_buffer};
 static Builtin B_native_master_block={"_native_master_block",bi_native_master_block};
+static Builtin B_native_saturate_buffer={"_native_saturate_buffer",bi_native_saturate_buffer};
+static Builtin B_native_stereo_widen={"_native_stereo_widen",bi_native_stereo_widen};
+static Builtin B_native_delay_process_buffer={"_native_delay_process_buffer",bi_native_delay_process_buffer};
 static Builtin B_file_size={"file_size",bi_file_size};
 static Builtin B_read_file_bytes_range={"read_file_bytes_range",bi_read_file_bytes_range};
 static Builtin B_patch_file_bytes={"patch_file_bytes",bi_patch_file_bytes};
@@ -3476,6 +3585,9 @@ static void define_builtins(Env *g){
   env_define(g, "_native_find_first_above", V_builtin(&B_native_find_first_above));
   env_define(g, "_native_sidechain_process_buffer", V_builtin(&B_native_sidechain_process_buffer));
   env_define(g, "_native_master_block", V_builtin(&B_native_master_block));
+  env_define(g, "_native_saturate_buffer", V_builtin(&B_native_saturate_buffer));
+  env_define(g, "_native_stereo_widen", V_builtin(&B_native_stereo_widen));
+  env_define(g, "_native_delay_process_buffer", V_builtin(&B_native_delay_process_buffer));
   env_define(g, "file_size", V_builtin(&B_file_size));
   env_define(g, "read_file_bytes_range", V_builtin(&B_read_file_bytes_range));
   env_define(g, "patch_file_bytes", V_builtin(&B_patch_file_bytes));
