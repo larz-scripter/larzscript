@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.39.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.40.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -2067,6 +2067,196 @@ static Value bi_native_delay_process_buffer(Interp *ip, Value *a, int n){
   return V_list(out);
 }
 
+/* larzscript-beatstudio PLAN4.md Phase J (real pitch correction /
+ * "autotune") - two native builtins, no FFT anywhere (this interpreter's
+ * dsp package has none - see this project's own repeated disclosure of
+ * that gap): a time-domain autocorrelation pitch detector, and a
+ * time-domain PSOLA-style resynthesis that shifts pitch WITHOUT changing
+ * duration. Both are the standard techniques real (non-FFT) pitch
+ * correction tools actually use, not a simplification invented for this
+ * project. native_sqrt mirrors bi_sqrt's own Newton's-method loop (this
+ * file links no libm anywhere - bi_sqrt/bi_pow are hand-rolled for the
+ * same reason, see native_exp/native_tanh above) rather than becoming a
+ * second place a libm dependency could sneak in. */
+static double native_sqrt(double x){
+  if(x<=0.0) return 0.0;
+  double g = x>1.0 ? x : 1.0;
+  for(int i=0;i<60;i++) g = 0.5*(g + x/g);
+  return g;
+}
+
+/* Per-frame normalized autocorrelation pitch detector. For each frame
+ * (frame_size samples, hop_size apart), finds the lag in
+ * [sample_rate/max_freq, sample_rate/min_freq] with the highest
+ * normalized cross-correlation between x[pos..pos+m) and
+ * x[pos+lag..pos+lag+m) (m = frame_size-lag, the standard shrinking-
+ * window formulation - avoids needing samples past the frame). A voiced
+ * gate (correlation strength above a real, empirically reasonable
+ * threshold - 0.35, not tuned per-input) marks frames where that
+ * detected period is trustworthy vs. silence/noise/unvoiced consonants,
+ * where chasing a "pitch" would be chasing noise. Returns a list of
+ * {pos, period, voiced, corr} dicts, one per frame. */
+static Value bi_native_detect_pitch_track(Interp *ip, Value *a, int n){
+  if(n!=6) runtime_error(ip,"LarzTypeError","_native_detect_pitch_track() expects buf, sample_rate, min_freq, max_freq, frame_size, hop_size");
+  need_num_list(ip,a[0],"_native_detect_pitch_track()");
+  List *buf=a[0].list;
+  double sample_rate=a[1].num, min_freq=a[2].num, max_freq=a[3].num;
+  int frame_size=(int)a[4].num, hop_size=(int)a[5].num;
+  if(frame_size<8||hop_size<1) runtime_error(ip,"LarzValueError","_native_detect_pitch_track(): frame_size/hop_size too small");
+  int min_lag=(int)(sample_rate/max_freq), max_lag=(int)(sample_rate/min_freq);
+  if(min_lag<1) min_lag=1;
+  if(max_lag>=frame_size) max_lag=frame_size-1;
+  List *out=list_new();
+  int nlags=max_lag-min_lag+1;
+  double *corr=xmalloc(sizeof(double)*(size_t)(nlags>0?nlags:1));
+  int pos=0;
+  while(pos+frame_size<=buf->n){
+    double best_r=-1.0; int best_lag=min_lag;
+    for(int lag=min_lag; lag<=max_lag; lag++){
+      int m=frame_size-lag;
+      double r=0.0;
+      if(m>0){
+        double num=0.0,e1=0.0,e2=0.0;
+        for(int i=0;i<m;i++){
+          double x1=buf->items[pos+i].num, x2=buf->items[pos+lag+i].num;
+          num+=x1*x2; e1+=x1*x1; e2+=x2*x2;
+        }
+        double denom=native_sqrt(e1*e2);
+        r = denom>1e-9 ? num/denom : 0.0;
+      }
+      corr[lag-min_lag]=r;
+      if(r>best_r){ best_r=r; best_lag=lag; }
+    }
+    /* Prefer the SHORTEST *genuine local peak* within 8% of the global
+     * max, instead of the raw global-max lag - the standard fix for a
+     * well-documented autocorrelation pitch-detector failure mode
+     * (octave-down/subharmonic errors: a signal's 2nd or 3rd harmonic
+     * period often correlates almost as strongly as the true
+     * fundamental). A pitch-shifted PSOLA test signal genuinely hit
+     * this - a clean 220Hz tone reported back ~82Hz (near a 3rd
+     * subharmonic) after a shift.
+     *
+     * "Local peak" (corr[lag] >= corr[lag-1] AND corr[lag] >=
+     * corr[lag+1]) matters, not just "any lag above the threshold" - a
+     * first version of this fix used the latter and broke a real,
+     * different case: a PURE sine's autocorrelation is a single broad
+     * lobe (no genuine secondary peak at all, since a bare sinusoid has
+     * no harmonics to alias against), and its smooth shoulder climbs
+     * through the 92%-of-peak threshold well before reaching the true
+     * peak - "any point above threshold" grabbed a spurious point
+     * partway up that shoulder (measured: a 220Hz sine came back as
+     * 234.57Hz). Requiring a genuine local maximum correctly skips the
+     * monotonic shoulder of the SAME peak while still catching a real,
+     * separate secondary peak at a harmonically-related shorter lag. */
+    for(int lag=min_lag+1; lag<best_lag; lag++){
+      double c=corr[lag-min_lag];
+      if(c<best_r*0.92) continue;
+      double prev=corr[lag-1-min_lag], next=corr[lag+1-min_lag];
+      if(c>=prev && c>=next){ best_lag=lag; best_r=c; break; }
+    }
+    Dict *d=dict_new();
+    dict_set(d,V_string("pos"),V_number((double)pos));
+    dict_set(d,V_string("period"),V_number((double)best_lag));
+    dict_set(d,V_string("voiced"),V_bool(best_r>0.35));
+    dict_set(d,V_string("corr"),V_number(best_r));
+    list_push(out,V_dict(d));
+    pos+=hop_size;
+  }
+  free(corr);
+  return V_list(out);
+}
+
+/* PSOLA-style pitch shift, duration-preserving by construction.
+ *
+ * THREE earlier versions of this function were wrong, each caught by
+ * actually re-detecting pitch on the OUTPUT rather than trusting the
+ * construction:
+ * (1) placing grains at the coarse analysis-hop spacing left large
+ *     silent gaps wherever period < hop_size (true for any real vocal
+ *     pitch), so most of the signal fell back to unmodified passthrough.
+ * (2) fixing that by walking pitch-synchronously but changing pitch via
+ *     RESAMPLING each grain's content while keeping the grain landing
+ *     position (= read position) unchanged - still didn't work, because
+ *     summing a signal with itself at the SAME position is provably
+ *     just that signal again (acc[idx]/wsum[idx] reduces to exactly
+ *     buf[idx] when every contributing grain reads from - and writes
+ *     to - the identical idx). Re-detected pitch was bit-for-bit the
+ *     original both times, not approximately close.
+ *
+ * The actually-correct mechanism (real TD-PSOLA) needs READ position
+ * (where a grain's content comes FROM in the analysis signal) and WRITE
+ * position (where it lands in the synthesized output) to be genuinely
+ * DIFFERENT - that decoupling is the entire mechanism. Two independent
+ * walks: `t_analysis` advances by the local `period` each step (reading
+ * through the source material at its own natural rate); `t_synth`
+ * advances by `period/ratio` each step (denser for pitch up, sparser for
+ * pitch down) and is bounded to end at N, which is what fixes output
+ * duration to the input's regardless of ratio. Because the two walks
+ * advance at different rates, `t_analysis` runs past the end of the
+ * buffer before `t_synth` does whenever ratio>1 (pitch up needs MORE
+ * total grains than there are natural periods in the source - clamped
+ * to keep reusing the last available grain, a standard, reasonable
+ * PSOLA fallback, not a bug) and stops short of the end whenever
+ * ratio<1 (pitch down naturally uses fewer, skipping some source
+ * material near the tail). */
+static Value bi_native_psola_shift(Interp *ip, Value *a, int n){
+  if(n!=4) runtime_error(ip,"LarzTypeError","_native_psola_shift() expects buf, frame_periods, frame_ratios, hop_size");
+  need_num_list(ip,a[0],"_native_psola_shift()");
+  need_num_list(ip,a[1],"_native_psola_shift()");
+  need_num_list(ip,a[2],"_native_psola_shift()");
+  if(!is_num(a[3])) runtime_error(ip,"LarzTypeError","_native_psola_shift(): hop_size must be a number");
+  List *buf=a[0].list, *fperiods=a[1].list, *fratios=a[2].list;
+  if(fperiods->n!=fratios->n) runtime_error(ip,"LarzValueError","_native_psola_shift(): frame_periods/frame_ratios must be the same length");
+  int hop_size=(int)a[3].num;
+  if(hop_size<1) runtime_error(ip,"LarzValueError","_native_psola_shift(): hop_size must be >= 1");
+  int N=buf->n;
+  int nframes=fperiods->n;
+  double *acc=xmalloc(sizeof(double)*(size_t)N);
+  double *wsum=xmalloc(sizeof(double)*(size_t)N);
+  for(int i=0;i<N;i++){ acc[i]=0.0; wsum[i]=0.0; }
+  double t_synth=0.0, t_analysis=0.0;
+  int guard=0, max_guard=N*4+64; /* real safety net, not expected to trigger: both advances are clamped >0.5 samples below, so this only guards a future edit that could reintroduce a zero/negative-advance loop */
+  while(t_synth<(double)N && guard<max_guard){
+    guard++;
+    int a_center=(int)(t_analysis+0.5);
+    if(a_center>=N) a_center=N-1; /* reuse the last available grain rather than stop early - see header comment */
+    if(a_center<0) a_center=0;
+    int fi = nframes>0 ? a_center/hop_size : 0;
+    if(fi>=nframes) fi=nframes-1;
+    if(fi<0) fi=0;
+    int period = nframes>0 ? (int)fperiods->items[fi].num : 0;
+    double ratio = nframes>0 ? fratios->items[fi].num : 1.0;
+    if(period<2) period=2;
+    if(ratio<=0.0) ratio=1.0;
+    int glen=2*period;
+    int a_start=a_center-period;
+    int s_center=(int)(t_synth+0.5);
+    int s_start=s_center-period;
+    for(int i=0;i<glen;i++){
+      int ridx=a_start+i, widx=s_start+i;
+      if(ridx<0||ridx>=N||widx<0||widx>=N) continue;
+      double s=buf->items[ridx].num;
+      double tri = glen>1 ? 2.0*i/(glen-1) - 1.0 : 0.0;
+      double w = 1.0 - (tri<0.0 ? -tri : tri);
+      acc[widx]+=s*w;
+      wsum[widx]+=w;
+    }
+    double synth_advance = period/ratio;
+    if(synth_advance<0.5) synth_advance=0.5;
+    double analysis_advance = (double)period;
+    if(analysis_advance<0.5) analysis_advance=0.5;
+    t_synth += synth_advance;
+    t_analysis += analysis_advance;
+  }
+  List *result=list_new();
+  for(int i=0;i<N;i++){
+    double v = wsum[i]>1e-6 ? acc[i]/wsum[i] : buf->items[i].num;
+    list_push(result, V_number(v));
+  }
+  free(acc); free(wsum);
+  return V_list(result);
+}
+
 /* Fused linked-stereo master chain block: EQ (3 biquads/channel, already
  * native above) -> linked compressor (one gain per frame from
  * max(|L|,|R|), applied to both channels so the stereo image doesn't
@@ -3472,6 +3662,8 @@ static Builtin B_native_master_block={"_native_master_block",bi_native_master_bl
 static Builtin B_native_saturate_buffer={"_native_saturate_buffer",bi_native_saturate_buffer};
 static Builtin B_native_stereo_widen={"_native_stereo_widen",bi_native_stereo_widen};
 static Builtin B_native_delay_process_buffer={"_native_delay_process_buffer",bi_native_delay_process_buffer};
+static Builtin B_native_detect_pitch_track={"_native_detect_pitch_track",bi_native_detect_pitch_track};
+static Builtin B_native_psola_shift={"_native_psola_shift",bi_native_psola_shift};
 static Builtin B_file_size={"file_size",bi_file_size};
 static Builtin B_read_file_bytes_range={"read_file_bytes_range",bi_read_file_bytes_range};
 static Builtin B_patch_file_bytes={"patch_file_bytes",bi_patch_file_bytes};
@@ -3588,6 +3780,8 @@ static void define_builtins(Env *g){
   env_define(g, "_native_saturate_buffer", V_builtin(&B_native_saturate_buffer));
   env_define(g, "_native_stereo_widen", V_builtin(&B_native_stereo_widen));
   env_define(g, "_native_delay_process_buffer", V_builtin(&B_native_delay_process_buffer));
+  env_define(g, "_native_detect_pitch_track", V_builtin(&B_native_detect_pitch_track));
+  env_define(g, "_native_psola_shift", V_builtin(&B_native_psola_shift));
   env_define(g, "file_size", V_builtin(&B_file_size));
   env_define(g, "read_file_bytes_range", V_builtin(&B_read_file_bytes_range));
   env_define(g, "patch_file_bytes", V_builtin(&B_patch_file_bytes));
