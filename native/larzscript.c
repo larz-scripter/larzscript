@@ -3130,11 +3130,47 @@ static Value bi_ssh_is_connected(Interp *ip, Value *a, int n){
  * below is libssh's own non-blocking-with-timeout readiness check,
  * played the same role socket_poll plays for real sockets. */
 
+/* ssh_channel_listen_forward() sends the tcpip-forward global request and
+ * blocks waiting for the server's reply - with NO libssh-level timeout of
+ * its own (SSH_OPTIONS_TIMEOUT, set in ssh_open() above, only governs the
+ * initial ssh_connect()). Found hanging INDEFINITELY on a real Windows
+ * machine even with a fully connected, authenticated session already
+ * established to the relay (confirmed via a live packet-level check: the
+ * TCP connection sat ESTABLISHED for days while this call never returned)
+ * - reproducible on every fresh attempt, not a rare fluke, against a relay
+ * account/server independently confirmed to reply correctly to the exact
+ * same request from a stock OpenSSH client. Root cause not fully isolated
+ * (would need a decrypted packet capture to compare byte-for-byte against
+ * OpenSSH's own request), but the fix doesn't need to wait on that: same
+ * precedent as ssh_open()'s own connect-timeout above - a socket-level
+ * receive timeout means a hang becomes a clean, fast SshError instead of
+ * wedging the whole process forever, which is exactly what
+ * netbridge.supervise()'s own retry/backoff loop is already built to
+ * handle. Timeout is reset to "block forever" afterward (success or
+ * failure) - it must NOT stay applied to every later blocking call on
+ * this same session/channel (ssh_channel_read_bytes etc. rely on their
+ * own explicit poll-then-read pattern, not an implicit socket timeout). */
 static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){
   if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_listen_forward() expects a session and a remote port number");
   ssh_session sess=(ssh_session)(intptr_t)a[0].num;
   int port=(int)a[1].num;
-  if(ssh_channel_listen_forward(sess,NULL,port,NULL)!=SSH_OK){
+  socket_t fd=ssh_get_fd(sess);
+#ifdef _WIN32
+  DWORD tmo_on=20000, tmo_off=0;
+  if(fd!=SSH_INVALID_SOCKET) setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&tmo_on,sizeof(tmo_on));
+#else
+  struct timeval tmo_on={20,0}, tmo_off={0,0};
+  if(fd!=SSH_INVALID_SOCKET) setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tmo_on,sizeof(tmo_on));
+#endif
+  int rc=ssh_channel_listen_forward(sess,NULL,port,NULL);
+  if(fd!=SSH_INVALID_SOCKET){
+#ifdef _WIN32
+    setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&tmo_off,sizeof(tmo_off));
+#else
+    setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tmo_off,sizeof(tmo_off));
+#endif
+  }
+  if(rc!=SSH_OK){
     runtime_error(ip,"SshError","could not listen on the remote port %d: %s",port,ssh_get_error(sess));
   }
   return V_nil();
