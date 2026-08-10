@@ -3173,7 +3173,19 @@ static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){
   struct timeval tmo_on={20,0}, tmo_off={0,0};
   if(fd!=SSH_INVALID_SOCKET) setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tmo_on,sizeof(tmo_on));
 #endif
-  int rc=ssh_channel_listen_forward(sess,"localhost",port,NULL);
+  /* "127.0.0.1" (a literal address), not "localhost" (a hostname libssh
+   * would need to resolve) - a live test on a real Windows machine
+   * crashed HARD (STATUS_ACCESS_VIOLATION / 0xC0000005) passing
+   * "localhost" here, while every CI platform (including windows-x86_64
+   * under Wine) sailed through it - the exact same "Wine's winsock
+   * emulation tolerates something real Windows doesn't" shape as the
+   * ssh_open() WSAStartup bug above, so a real Windows box was the only
+   * thing that could have caught this. A literal IP sidesteps whatever
+   * resolver path libssh takes for a hostname argument on Windows
+   * entirely, and satisfies GatewayPorts no exactly the same way
+   * "localhost" would have (same loopback interface, no name lookup
+   * needed to get there). */
+  int rc=ssh_channel_listen_forward(sess,"127.0.0.1",port,NULL);
   if(fd!=SSH_INVALID_SOCKET){
 #ifdef _WIN32
     setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&tmo_off,sizeof(tmo_off));
