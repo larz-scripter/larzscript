@@ -3130,53 +3130,57 @@ static Value bi_ssh_is_connected(Interp *ip, Value *a, int n){
  * below is libssh's own non-blocking-with-timeout readiness check,
  * played the same role socket_poll plays for real sockets. */
 
-/* Real root cause found (2026-08-10), not just papered over: passing NULL
- * as the bind address to ssh_channel_listen_forward() asks the server to
- * bind the forwarded port on ALL addresses (libssh's own documented
- * meaning of a NULL address here). A relay configured with `GatewayPorts
- * no` (the sshd default, and what protects the pc2tunnel account's
- * PermitOpen-less reverse-forward-only setup from becoming a public
- * relay) REJECTS that as an all-interfaces bind request - confirmed via a
- * live isolated test that got a clean, fast, DESCRIPTIVE server error
- * ("Global request tcpip-forward failed"). A stock OpenSSH client's own
+/* Two real, DISTINCT bugs found here (2026-08-10), both requiring live
+ * testing on an actual Windows machine to catch - CI's windows-x86_64 job
+ * runs under Wine, whose winsock emulation has now masked THREE separate
+ * real Windows-only crashes across this function and ssh_open() above.
+ * Recording both, including the first attempted fix that turned out to
+ * be a red herring, so neither gets rediscovered blind:
+ *
+ * Bug 1 - wrong bind address. Passing NULL as the bind address asks the
+ * server to bind the forwarded port on ALL addresses (libssh's own
+ * documented meaning of NULL here). A relay configured with
+ * `GatewayPorts no` (the sshd default, and what protects the pc2tunnel
+ * account's PermitOpen-less reverse-forward-only setup from becoming a
+ * public relay) REJECTS that as an all-interfaces bind request -
+ * confirmed via a live isolated test that got a clean, fast, DESCRIPTIVE
+ * server error ("Global request tcpip-forward failed") once bug 2 below
+ * stopped masking it as an indefinite hang. A stock OpenSSH client's own
  * `-R port:host:hostport` (no explicit bind address) defaults to
  * requesting "localhost" specifically, which `GatewayPorts no` happily
- * allows - exactly the request this native call needs to send instead of
- * a wildcard. Fix: bind address "127.0.0.1" (a literal address, not the
- * hostname "localhost" - libssh's hostname-resolution path for a named
- * bind crashed hard, STATUS_ACCESS_VIOLATION / 0xC0000005, on a real
- * Windows machine; the literal IP sidesteps that resolver path entirely
- * and satisfies GatewayPorts no the same way).
+ * allows. Fix: bind address "127.0.0.1" (a literal address, not the
+ * hostname "localhost" - that hostname-resolution path ALSO crashed hard
+ * on a real Windows machine, a symptom of bug 2 below, not its own
+ * separate issue - the literal IP just happens to dodge it too).
  *
- * A SEPARATE, now-REVERTED attempt is worth recording so it isn't
- * rediscovered the hard way again: an earlier version of this function
- * also wrapped the call in a socket-level SO_RCVTIMEO (mirroring
- * ssh_open()'s own connect-timeout above), meant as defense-in-depth
- * against an indefinite hang seen once with the NULL/wildcard bind. That
- * combination - SO_RCVTIMEO + a non-NULL bind address - crashed
- * (STATUS_ACCESS_VIOLATION again) on a real Windows machine, live-tested
- * repeatedly, while the SAME SO_RCVTIMEO with the ORIGINAL null bind
- * address never crashed (it just turned the hang into a clean, fast
- * error, which is what led to the bind-address diagnosis above in the
- * first place). Root cause not fully isolated (most likely: a non-NULL
- * bind makes libssh take an internal code path with more/different
- * socket reads than the NULL/wildcard path, and forcibly timing one of
- * those reads out from outside libssh's own control corrupts its
- * internal state on this platform) - but the fix doesn't need to wait on
- * that either: this call is already wrapped one level up, in
- * netbridge.supervise() (packages/netbridge/main.lz), which retries with
- * backoff on ANY exception - so a plain, un-timed-out blocking call here
- * is both simpler and, per live testing, the version that actually
- * works. Do not reintroduce a timeout wrapper around this specific call
- * without testing on a real Windows machine first, not just CI (Wine's
- * winsock emulation has now masked TWO real Windows-only crashes in this
- * exact function, plus a third one earlier in ssh_open() above - it is
- * not a reliable signal for this platform's socket behavior). */
+ * Bug 2 - NULL bound_port out-parameter. Passing NULL for the 4th
+ * argument crashed (STATUS_ACCESS_VIOLATION / 0xC0000005) on a real
+ * Windows machine as soon as the bind address became non-NULL (with a
+ * NULL/wildcard address it never crashed). First suspected the cause was
+ * an SO_RCVTIMEO wrapper added around this call as defense-in-depth
+ * against an earlier-seen hang - removing that wrapper did NOT stop the
+ * crash on a live re-test, disproving that theory (recorded here so it
+ * isn't retried). Actual cause: libssh most likely only WRITES the real
+ * bound port back through this out-parameter when a non-wildcard address
+ * makes that value meaningful to report - a NULL address's code path
+ * never touches it (no crash), a real address's code path does (NULL
+ * pointer write -> crash). Fix: pass a real `int` to write into. */
 static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){
   if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_listen_forward() expects a session and a remote port number");
   ssh_session sess=(ssh_session)(intptr_t)a[0].num;
   int port=(int)a[1].num;
-  if(ssh_channel_listen_forward(sess,"127.0.0.1",port,NULL)!=SSH_OK){
+  /* bound_port: a real int, not NULL - passing NULL here crashed
+   * (STATUS_ACCESS_VIOLATION) on a real Windows machine as soon as the
+   * bind address above stopped being NULL (see that fix's own comment):
+   * libssh most likely only WRITES the actual bound port back through
+   * this out-parameter when a non-wildcard address makes that value
+   * meaningful to report, so a NULL address never touched it (no crash)
+   * while a real address did (NULL-pointer write, crash). The value
+   * itself isn't needed by any caller here - `port` is always an
+   * explicit, already-known port number, never 0/"any free port" - this
+   * is purely to give libssh a valid place to write. */
+  int bound_port = 0;
+  if(ssh_channel_listen_forward(sess,"127.0.0.1",port,&bound_port)!=SSH_OK){
     runtime_error(ip,"SshError","could not listen on the remote port %d: %s",port,ssh_get_error(sess));
   }
   return V_nil();
