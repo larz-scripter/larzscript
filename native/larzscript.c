@@ -3130,26 +3130,37 @@ static Value bi_ssh_is_connected(Interp *ip, Value *a, int n){
  * below is libssh's own non-blocking-with-timeout readiness check,
  * played the same role socket_poll plays for real sockets. */
 
-/* ssh_channel_listen_forward() sends the tcpip-forward global request and
- * blocks waiting for the server's reply - with NO libssh-level timeout of
- * its own (SSH_OPTIONS_TIMEOUT, set in ssh_open() above, only governs the
- * initial ssh_connect()). Found hanging INDEFINITELY on a real Windows
- * machine even with a fully connected, authenticated session already
- * established to the relay (confirmed via a live packet-level check: the
- * TCP connection sat ESTABLISHED for days while this call never returned)
- * - reproducible on every fresh attempt, not a rare fluke, against a relay
- * account/server independently confirmed to reply correctly to the exact
- * same request from a stock OpenSSH client. Root cause not fully isolated
- * (would need a decrypted packet capture to compare byte-for-byte against
- * OpenSSH's own request), but the fix doesn't need to wait on that: same
- * precedent as ssh_open()'s own connect-timeout above - a socket-level
- * receive timeout means a hang becomes a clean, fast SshError instead of
- * wedging the whole process forever, which is exactly what
- * netbridge.supervise()'s own retry/backoff loop is already built to
- * handle. Timeout is reset to "block forever" afterward (success or
- * failure) - it must NOT stay applied to every later blocking call on
- * this same session/channel (ssh_channel_read_bytes etc. rely on their
- * own explicit poll-then-read pattern, not an implicit socket timeout). */
+/* Real root cause found (2026-08-10), not just papered over: passing NULL
+ * as the bind address to ssh_channel_listen_forward() asks the server to
+ * bind the forwarded port on ALL addresses (libssh's own documented
+ * meaning of a NULL address here). A relay configured with `GatewayPorts
+ * no` (the sshd default, and what protects the pc2tunnel account's
+ * PermitOpen-less reverse-forward-only setup from becoming a public
+ * relay) REJECTS that as an all-interfaces bind request - confirmed via a
+ * live isolated test that got a clean, fast, DESCRIPTIVE server error
+ * ("Global request tcpip-forward failed") once the earlier symptom (an
+ * indefinite hang, see the SO_RCVTIMEO fix just below) stopped masking
+ * it. A stock OpenSSH client's own `-R port:host:hostport` (no explicit
+ * bind address) defaults to requesting "localhost" specifically, which
+ * `GatewayPorts no` happily allows - exactly the request this native call
+ * needs to send instead of a wildcard. Real fix: bind address
+ * "localhost", not NULL.
+ *
+ * Separately: ssh_channel_listen_forward() also has NO libssh-level
+ * timeout of its own (SSH_OPTIONS_TIMEOUT, set in ssh_open() above, only
+ * governs the initial ssh_connect()) - while diagnosing the above, this
+ * call was ALSO observed hanging indefinitely on a real Windows machine
+ * for an unrelated reason not fully isolated (a fully connected,
+ * authenticated session sat idle for days without this call ever
+ * returning - reproducible, not a fluke). Kept the same fix shape as
+ * ssh_open()'s own connect-timeout as defense in depth regardless of the
+ * bind-address fix above: a socket-level receive timeout means ANY future
+ * hang here becomes a clean, fast SshError instead of wedging the process
+ * forever, which netbridge.supervise()'s own retry/backoff loop is
+ * already built to handle. Reset to "block forever" afterward (success or
+ * failure) - must NOT stay applied to later blocking calls on this same
+ * session/channel (ssh_channel_read_bytes etc. rely on their own explicit
+ * poll-then-read pattern, not an implicit socket timeout). */
 static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){
   if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_listen_forward() expects a session and a remote port number");
   ssh_session sess=(ssh_session)(intptr_t)a[0].num;
@@ -3162,7 +3173,7 @@ static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){
   struct timeval tmo_on={20,0}, tmo_off={0,0};
   if(fd!=SSH_INVALID_SOCKET) setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tmo_on,sizeof(tmo_on));
 #endif
-  int rc=ssh_channel_listen_forward(sess,NULL,port,NULL);
+  int rc=ssh_channel_listen_forward(sess,"localhost",port,NULL);
   if(fd!=SSH_INVALID_SOCKET){
 #ifdef _WIN32
     setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&tmo_off,sizeof(tmo_off));
