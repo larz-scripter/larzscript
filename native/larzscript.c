@@ -3138,62 +3138,45 @@ static Value bi_ssh_is_connected(Interp *ip, Value *a, int n){
  * PermitOpen-less reverse-forward-only setup from becoming a public
  * relay) REJECTS that as an all-interfaces bind request - confirmed via a
  * live isolated test that got a clean, fast, DESCRIPTIVE server error
- * ("Global request tcpip-forward failed") once the earlier symptom (an
- * indefinite hang, see the SO_RCVTIMEO fix just below) stopped masking
- * it. A stock OpenSSH client's own `-R port:host:hostport` (no explicit
- * bind address) defaults to requesting "localhost" specifically, which
- * `GatewayPorts no` happily allows - exactly the request this native call
- * needs to send instead of a wildcard. Real fix: bind address
- * "localhost", not NULL.
+ * ("Global request tcpip-forward failed"). A stock OpenSSH client's own
+ * `-R port:host:hostport` (no explicit bind address) defaults to
+ * requesting "localhost" specifically, which `GatewayPorts no` happily
+ * allows - exactly the request this native call needs to send instead of
+ * a wildcard. Fix: bind address "127.0.0.1" (a literal address, not the
+ * hostname "localhost" - libssh's hostname-resolution path for a named
+ * bind crashed hard, STATUS_ACCESS_VIOLATION / 0xC0000005, on a real
+ * Windows machine; the literal IP sidesteps that resolver path entirely
+ * and satisfies GatewayPorts no the same way).
  *
- * Separately: ssh_channel_listen_forward() also has NO libssh-level
- * timeout of its own (SSH_OPTIONS_TIMEOUT, set in ssh_open() above, only
- * governs the initial ssh_connect()) - while diagnosing the above, this
- * call was ALSO observed hanging indefinitely on a real Windows machine
- * for an unrelated reason not fully isolated (a fully connected,
- * authenticated session sat idle for days without this call ever
- * returning - reproducible, not a fluke). Kept the same fix shape as
- * ssh_open()'s own connect-timeout as defense in depth regardless of the
- * bind-address fix above: a socket-level receive timeout means ANY future
- * hang here becomes a clean, fast SshError instead of wedging the process
- * forever, which netbridge.supervise()'s own retry/backoff loop is
- * already built to handle. Reset to "block forever" afterward (success or
- * failure) - must NOT stay applied to later blocking calls on this same
- * session/channel (ssh_channel_read_bytes etc. rely on their own explicit
- * poll-then-read pattern, not an implicit socket timeout). */
+ * A SEPARATE, now-REVERTED attempt is worth recording so it isn't
+ * rediscovered the hard way again: an earlier version of this function
+ * also wrapped the call in a socket-level SO_RCVTIMEO (mirroring
+ * ssh_open()'s own connect-timeout above), meant as defense-in-depth
+ * against an indefinite hang seen once with the NULL/wildcard bind. That
+ * combination - SO_RCVTIMEO + a non-NULL bind address - crashed
+ * (STATUS_ACCESS_VIOLATION again) on a real Windows machine, live-tested
+ * repeatedly, while the SAME SO_RCVTIMEO with the ORIGINAL null bind
+ * address never crashed (it just turned the hang into a clean, fast
+ * error, which is what led to the bind-address diagnosis above in the
+ * first place). Root cause not fully isolated (most likely: a non-NULL
+ * bind makes libssh take an internal code path with more/different
+ * socket reads than the NULL/wildcard path, and forcibly timing one of
+ * those reads out from outside libssh's own control corrupts its
+ * internal state on this platform) - but the fix doesn't need to wait on
+ * that either: this call is already wrapped one level up, in
+ * netbridge.supervise() (packages/netbridge/main.lz), which retries with
+ * backoff on ANY exception - so a plain, un-timed-out blocking call here
+ * is both simpler and, per live testing, the version that actually
+ * works. Do not reintroduce a timeout wrapper around this specific call
+ * without testing on a real Windows machine first, not just CI (Wine's
+ * winsock emulation has now masked TWO real Windows-only crashes in this
+ * exact function, plus a third one earlier in ssh_open() above - it is
+ * not a reliable signal for this platform's socket behavior). */
 static Value bi_ssh_listen_forward(Interp *ip, Value *a, int n){
   if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","ssh_listen_forward() expects a session and a remote port number");
   ssh_session sess=(ssh_session)(intptr_t)a[0].num;
   int port=(int)a[1].num;
-  socket_t fd=ssh_get_fd(sess);
-#ifdef _WIN32
-  DWORD tmo_on=20000, tmo_off=0;
-  if(fd!=SSH_INVALID_SOCKET) setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&tmo_on,sizeof(tmo_on));
-#else
-  struct timeval tmo_on={20,0}, tmo_off={0,0};
-  if(fd!=SSH_INVALID_SOCKET) setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tmo_on,sizeof(tmo_on));
-#endif
-  /* "127.0.0.1" (a literal address), not "localhost" (a hostname libssh
-   * would need to resolve) - a live test on a real Windows machine
-   * crashed HARD (STATUS_ACCESS_VIOLATION / 0xC0000005) passing
-   * "localhost" here, while every CI platform (including windows-x86_64
-   * under Wine) sailed through it - the exact same "Wine's winsock
-   * emulation tolerates something real Windows doesn't" shape as the
-   * ssh_open() WSAStartup bug above, so a real Windows box was the only
-   * thing that could have caught this. A literal IP sidesteps whatever
-   * resolver path libssh takes for a hostname argument on Windows
-   * entirely, and satisfies GatewayPorts no exactly the same way
-   * "localhost" would have (same loopback interface, no name lookup
-   * needed to get there). */
-  int rc=ssh_channel_listen_forward(sess,"127.0.0.1",port,NULL);
-  if(fd!=SSH_INVALID_SOCKET){
-#ifdef _WIN32
-    setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&tmo_off,sizeof(tmo_off));
-#else
-    setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tmo_off,sizeof(tmo_off));
-#endif
-  }
-  if(rc!=SSH_OK){
+  if(ssh_channel_listen_forward(sess,"127.0.0.1",port,NULL)!=SSH_OK){
     runtime_error(ip,"SshError","could not listen on the remote port %d: %s",port,ssh_get_error(sess));
   }
   return V_nil();
