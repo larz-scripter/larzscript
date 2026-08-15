@@ -1,0 +1,89 @@
+# wifi - LarzOS shell command for WiFi hotspot + client connect, built on
+# the `wifi` package (requires: `larzscript pkg install wifi`).
+#
+#   wifi scan
+#   wifi status
+#   wifi connect <ssid> [password]
+#   wifi disconnect
+#   wifi hotspot <ssid> <password> [interface]
+#   wifi hotspot-stop
+#   wifi hotspot-status
+
+# Import by absolute install path, NOT `import "wifi"` - a bare-name import
+# from a script that is ITSELF at os/bin/wifi.lz triggers the interpreter's
+# relative-import resolution to find THIS file as a candidate for the
+# package too, causing self-recursive import -> unbounded recursion ->
+# stack overflow (confirmed via ASAN: stack-overflow in exec() at
+# native/larzscript.c:1587, N_TRY, with an infinitely repeating exec->exec
+# call chain). Reproducible with any bin/<name>.lz script that imports a
+# package sharing its own filename. Worked around here; the interpreter
+# behavior itself may be worth a bug report upstream.
+import env("HOME") + "/.larzscript/lib/wifi/main.lz" as wifi
+
+fn usage() {
+  print("usage: wifi scan | status | connect <ssid> [password] | disconnect")
+  print("     | hotspot <ssid> <password> [interface] | hotspot-stop | hotspot-status")
+}
+
+fn do_scan() {
+  let nets = wifi.scan()
+  if len(nets) == 0 { print("no networks found") }
+  for n in nets { print(n["ssid"].ljust(24) + str(n["signal"]) + "%".ljust(6) + n["security"]) }
+}
+
+fn do_status() {
+  let s = wifi.status()
+  if s["connected"] { print("connected to " + s["ssid"] + (s["ip"] == nil ? "" : " (" + s["ip"] + ")")) }
+  else { print("not connected") }
+}
+
+fn do_connect() {
+  if len(args) < 2 { print("usage: wifi connect <ssid> [password]"); return }
+  let pw = len(args) >= 3 ? args[2] : ""
+  wifi.connect(args[1], pw)
+  print("connected to " + args[1])
+}
+
+fn do_disconnect() {
+  wifi.disconnect()
+  print("disconnected")
+}
+
+fn do_hotspot() {
+  if len(args) < 3 { print("usage: wifi hotspot <ssid> <password> [interface]"); return }
+  let iface = len(args) >= 4 ? args[3] : nil
+  wifi.hotspot_start(args[1], args[2], iface)
+  print("hotspot \"" + args[1] + "\" started - other devices can now connect")
+}
+
+fn do_hotspot_stop() {
+  wifi.hotspot_stop()
+  print("hotspot stopped")
+}
+
+fn do_hotspot_status() {
+  let s = wifi.hotspot_status()
+  if s["active"] { print("hotspot active: " + s["ssid"]) }
+  else { print("no hotspot running") }
+}
+
+fn dispatch(cmd) {
+  if cmd == "scan" { do_scan(); return }
+  if cmd == "status" { do_status(); return }
+  if cmd == "connect" { do_connect(); return }
+  if cmd == "disconnect" { do_disconnect(); return }
+  if cmd == "hotspot" { do_hotspot(); return }
+  if cmd == "hotspot-stop" { do_hotspot_stop(); return }
+  if cmd == "hotspot-status" { do_hotspot_status(); return }
+  usage()
+}
+
+if len(args) < 1 {
+  usage()
+} else {
+  try {
+    dispatch(args[0])
+  } catch e {
+    print("wifi: " + e["message"])
+  }
+}
