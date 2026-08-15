@@ -157,6 +157,7 @@ units             packages/units
 netbridge         packages/netbridge
 psktunnel         packages/psktunnel
 ssh               packages/ssh
+wifi              packages/wifi
 neural            packages/neural
 raytrace          packages/raytrace
 crdt              packages/crdt
