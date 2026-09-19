@@ -3,6 +3,16 @@
 
 import sys
 
+try:
+    # Importing readline is enough to make the built-in input() used by the
+    # REPL below do line editing - arrows, history, Home/End - instead of
+    # echoing "^[[A" into the line. Absent on some builds/platforms; the REPL
+    # just falls back to unedited input there. (The native interpreter has
+    # its own editor, since it cannot rely on GNU readline being present.)
+    import readline  # noqa: F401
+except ImportError:
+    pass
+
 from larzscript import run, parse
 from larzscript.interpreter import Interpreter
 from larzscript.errors import LarzScriptError

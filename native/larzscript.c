@@ -48,7 +48,7 @@
  * in-flight temporaries with a temp-root stack. Verified under AddressSanitizer
  * with the GC forced on every statement. Zero third-party deps (libc only).
  */
-#define LARZSCRIPT_VERSION "1.40.0"   /* single source of truth: --version, REPL banner, self-update */
+#define LARZSCRIPT_VERSION "1.41.0"   /* single source of truth: --version, REPL banner, self-update */
 #define _GNU_SOURCE   /* enable POSIX/GNU: popen, strtok_r, usleep, realpath, clock_gettime */
 #include <stdio.h>
 #include <stdlib.h>
@@ -2320,10 +2320,322 @@ static Value bi_native_master_block(Interp *ip, Value *a, int n){
 static Value bi_chr(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","chr() expects a number"); char *s=xmalloc(2); s[0]=(char)(int)a[0].num; s[1]=0; return V_take(s); }
 static Value bi_ord(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_STR||a[0].str[0]==0) runtime_error(ip,"LarzTypeError","ord() expects a non-empty string"); return V_number((unsigned char)a[0].str[0]); }
 static Value bi_assert(Interp *ip, Value *a, int n){ if(n<1) runtime_error(ip,"LarzTypeError","assert() expects a condition"); if(!truthy(a[0])) runtime_error(ip,"AssertionError","%s", (n>=2&&a[1].t==V_STR)?a[1].str:"assertion failed"); return V_nil(); }
+/* ===================== interactive line editing =====================
+ * input() used to be a bare fgets(), which leaves the terminal in canonical
+ * mode: an arrow key sends ESC [ A and the tty driver echoes it literally,
+ * so the user sees "^[[A" land in the middle of the line and the cursor
+ * never moves. larzsh's whole prompt loop is input(), so that is exactly
+ * what the LarzOS phone terminal showed on every arrow press.
+ *
+ * So when stdin is a real terminal, read the line here in raw mode and do
+ * the editing a shell prompt is expected to do: arrows, word and line
+ * motion, delete, and an in-memory history. Everything else (a pipe, a
+ * redirect, Windows, wasm, the freestanding kernel build) keeps the plain
+ * fgets path, which is what the test suite and `echo ... | larzsh` use.
+ */
+#if (!defined(__STDC_HOSTED__) || __STDC_HOSTED__) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#define LARZ_HAVE_LINEEDIT 1
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <poll.h>
+#include <errno.h>
+#endif
+
+#define LE_BUFSZ 8192
+
+#ifdef LARZ_HAVE_LINEEDIT
+
+/* How long to wait for the rest of an escape sequence before deciding the
+ * user just pressed Esc on its own. Terminals deliver a real sequence in
+ * one burst, so this only has to beat human typing speed. */
+#define LE_ESC_MS 50
+#define LE_MAX_HISTORY 500
+
+/* History is per-process and in memory only - deliberately not written to
+ * disk, because input() is the generic "ask the user something" builtin and
+ * a script's answers (passwords, keys) have no business in a history file. */
+static char *le_hist[LE_MAX_HISTORY];
+static int le_hist_n = 0;
+
+static void le_hist_add(const char *line){
+  if(!*line) return;
+  if(le_hist_n && strcmp(le_hist[le_hist_n-1], line) == 0) return;   /* no consecutive duplicates */
+  if(le_hist_n == LE_MAX_HISTORY){
+    free(le_hist[0]);
+    memmove(le_hist, le_hist+1, sizeof(char*) * (LE_MAX_HISTORY-1));
+    le_hist_n--;
+  }
+  le_hist[le_hist_n++] = xstrdup(line);
+}
+
+static int le_columns(void){
+  struct winsize ws;
+  if(ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) return ws.ws_col;
+  return 80;
+}
+
+/* Offsets stay UTF-8 aware: the cursor only ever lands on the first byte of
+ * a character, and one display column is counted per character (combining
+ * marks and double-width CJK are not accounted for). */
+static int le_prev(const char *b, int pos){
+  if(pos <= 0) return 0;
+  pos--;
+  while(pos > 0 && ((unsigned char)b[pos] & 0xC0) == 0x80) pos--;
+  return pos;
+}
+static int le_next(const char *b, int len, int pos){
+  if(pos >= len) return len;
+  pos++;
+  while(pos < len && ((unsigned char)b[pos] & 0xC0) == 0x80) pos++;
+  return pos;
+}
+static int le_width(const char *b, int len){
+  int w = 0;
+  for(int i=0;i<len;i++) if(((unsigned char)b[i] & 0xC0) != 0x80) w++;
+  return w;
+}
+
+/* Delete the character to the left of / under the cursor. */
+static void le_del_left(char *b, int *len, int *pos){
+  if(*pos <= 0) return;
+  int p = le_prev(b, *pos);
+  memmove(b+p, b+*pos, *len - *pos);
+  *len -= *pos - p; *pos = p; b[*len] = 0;
+}
+static void le_del_right(char *b, int *len, int pos){
+  if(pos >= *len) return;
+  int p = le_next(b, *len, pos);
+  memmove(b+pos, b+p, *len - p);
+  *len -= p - pos; b[*len] = 0;
+}
+
+/* Word motion, the readline definition: skip the run of spaces next to the
+ * cursor, then the run of non-spaces. */
+static int le_word_left(const char *b, int pos){
+  while(pos > 0 && b[le_prev(b,pos)] == ' ') pos = le_prev(b, pos);
+  while(pos > 0 && b[le_prev(b,pos)] != ' ') pos = le_prev(b, pos);
+  return pos;
+}
+static int le_word_right(const char *b, int len, int pos){
+  while(pos < len && b[pos] == ' ') pos = le_next(b, len, pos);
+  while(pos < len && b[pos] != ' ') pos = le_next(b, len, pos);
+  return pos;
+}
+
+/* Repaint the prompt and the line on one physical row.
+ *
+ * A window exactly one terminal-width wide is scrolled over prompt+line so
+ * the cursor is always on screen, instead of letting the line wrap. Wrapping
+ * is what a single-row redraw cannot undo - and on a phone screen, forty
+ * columns wide with a path in the prompt, it would happen constantly. */
+static void le_refresh(const char *prompt, const char *buf, int len, int pos){
+  char disp[LE_BUFSZ + 512];
+  int plen = (int)strlen(prompt);
+  if(plen > 511){ prompt += plen - 511; plen = 511; }   /* keep the tail of an over-long prompt */
+  memcpy(disp, prompt, plen);
+  memcpy(disp + plen, buf, len);
+  int dlen = plen + len;
+
+  int cols = le_columns();
+  int curcol = le_width(disp, plen + pos);
+  int total  = le_width(disp, dlen);
+
+  int start = 0;
+  if(total >= cols){
+    if(curcol > cols - 1) start = curcol - (cols - 1);
+    if(start > total - (cols - 1)) start = total - (cols - 1);
+    if(start < 0) start = 0;
+  }
+
+  /* Map the [start, start+cols) column window back to byte offsets. */
+  int b0 = dlen, b1 = dlen, col = 0, i = 0;
+  for(;;){
+    if(col == start) b0 = i;
+    if(col == start + cols){ b1 = i; break; }
+    if(i >= dlen){ b1 = dlen; break; }
+    i = le_next(disp, dlen, i);
+    col++;
+  }
+  if(b0 > b1) b0 = b1;
+
+  char out[LE_BUFSZ + 640];
+  int n = 0;
+  out[n++] = '\r';
+  memcpy(out + n, disp + b0, b1 - b0); n += b1 - b0;
+  memcpy(out + n, "\x1b[K", 3); n += 3;          /* erase what a longer previous line left behind */
+  out[n++] = '\r';
+  /* ESC[0C is a one-column move on most terminals, not a no-op - so only
+   * emit the cursor-forward when there is actually somewhere to go. */
+  if(curcol > start) n += snprintf(out + n, 24, "\x1b[%dC", curcol - start);
+  if(write(1, out, n) < 0){ /* nothing useful to do if the terminal went away */ }
+}
+
+/* One byte, or -1 if none arrived within ms, or -2 on EOF/error. */
+static int le_getch_ms(int ms){
+  struct pollfd p; p.fd = 0; p.events = POLLIN; p.revents = 0;
+  int r = poll(&p, 1, ms);
+  if(r <= 0) return -1;
+  unsigned char c;
+  ssize_t got = read(0, &c, 1);
+  if(got <= 0) return -2;
+  return c;
+}
+
+/* Read and edit one line. Returns 1 on a completed line, 0 on EOF, and -1 if
+ * the terminal refused raw mode (caller falls back to fgets). */
+static int le_readline(const char *prompt, char *buf, int bufsz, int *out_len){
+  struct termios orig, raw;
+  if(tcgetattr(0, &orig) != 0) return -1;
+  raw = orig;
+  /* ISIG off too: we want Ctrl-C to abandon the line the way a shell prompt
+   * does, and Ctrl-Z would otherwise suspend larzsh with no job control to
+   * bring it back. Both are handled as ordinary bytes below. Output
+   * processing (c_oflag) is left alone so "\n" still means CRLF. */
+  raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
+  raw.c_iflag &= ~(IXON | ICRNL);
+  raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0;
+  if(tcsetattr(0, TCSAFLUSH, &raw) != 0) return -1;
+
+  int len = 0, pos = 0, rc = 1, aborted = 0;
+  int hidx = le_hist_n;                 /* le_hist_n means "the line being typed" */
+  char saved[LE_BUFSZ]; int saved_len = 0;
+  buf[0] = 0;
+  le_refresh(prompt, buf, len, pos);
+
+  for(;;){
+    unsigned char c;
+    ssize_t r = read(0, &c, 1);
+    if(r < 0 && errno == EINTR) continue;
+    if(r <= 0){ rc = 0; break; }
+
+    if(c == '\r' || c == '\n') break;
+
+    if(c == 3){ aborted = 1; len = 0; pos = 0; buf[0] = 0; break; }   /* Ctrl-C */
+    if(c == 4){                                                       /* Ctrl-D */
+      if(len == 0){ rc = 0; break; }
+      le_del_right(buf, &len, pos);
+    }
+    else if(c == 127 || c == 8) le_del_left(buf, &len, &pos);
+    else if(c == 1) pos = 0;                                          /* Ctrl-A */
+    else if(c == 5) pos = len;                                        /* Ctrl-E */
+    else if(c == 2) pos = le_prev(buf, pos);                          /* Ctrl-B */
+    else if(c == 6) pos = le_next(buf, len, pos);                     /* Ctrl-F */
+    else if(c == 11){ len = pos; buf[len] = 0; }                      /* Ctrl-K */
+    else if(c == 21){                                                 /* Ctrl-U */
+      memmove(buf, buf + pos, len - pos); len -= pos; pos = 0; buf[len] = 0;
+    }
+    else if(c == 23){                                                 /* Ctrl-W */
+      int p = le_word_left(buf, pos);
+      memmove(buf + p, buf + pos, len - pos); len -= pos - p; pos = p; buf[len] = 0;
+    }
+    else if(c == 12){                                                 /* Ctrl-L */
+      if(write(1, "\x1b[H\x1b[2J", 7) < 0){ }
+    }
+    else if(c == 27){
+      int c1 = le_getch_ms(LE_ESC_MS);
+      if(c1 < 0) goto repaint;                                        /* a bare Esc press */
+      if(c1 == 'b'){ pos = le_word_left(buf, pos); goto repaint; }
+      if(c1 == 'f'){ pos = le_word_right(buf, len, pos); goto repaint; }
+      /* CSI (ESC [) and SS3 (ESC O) both reach here: a terminal in DECCKM
+       * application-cursor mode - which is what full-screen programs leave
+       * behind - sends the arrows as ESC O A rather than ESC [ A. */
+      if(c1 != '[' && c1 != 'O') goto repaint;
+      int n1 = 0, n2 = 0, field = 0, fin;
+      for(;;){
+        fin = le_getch_ms(LE_ESC_MS);
+        if(fin < 0) break;
+        if(fin >= '0' && fin <= '9'){ if(field) n2 = n2*10 + (fin-'0'); else n1 = n1*10 + (fin-'0'); continue; }
+        if(fin == ';'){ field = 1; continue; }
+        break;
+      }
+      if(fin < 0) goto repaint;
+      int ctrlmod = (n2 == 5 || n2 == 6);        /* Ctrl / Ctrl+Shift on the arrows */
+      if(fin == 'A' || fin == 'B'){
+        if(fin == 'A' && hidx > 0){
+          if(hidx == le_hist_n){ memcpy(saved, buf, len); saved_len = len; }
+          hidx--;
+          len = (int)strlen(le_hist[hidx]);
+          if(len > bufsz-1) len = bufsz-1;
+          memcpy(buf, le_hist[hidx], len); buf[len] = 0; pos = len;
+        } else if(fin == 'B' && hidx < le_hist_n){
+          hidx++;
+          if(hidx == le_hist_n){ memcpy(buf, saved, saved_len); len = saved_len; }
+          else {
+            len = (int)strlen(le_hist[hidx]);
+            if(len > bufsz-1) len = bufsz-1;
+            memcpy(buf, le_hist[hidx], len);
+          }
+          buf[len] = 0; pos = len;
+        }
+      }
+      else if(fin == 'C') pos = ctrlmod ? le_word_right(buf, len, pos) : le_next(buf, len, pos);
+      else if(fin == 'D') pos = ctrlmod ? le_word_left(buf, pos)       : le_prev(buf, pos);
+      else if(fin == 'H') pos = 0;
+      else if(fin == 'F') pos = len;
+      else if(fin == '~'){
+        if(n1 == 1 || n1 == 7) pos = 0;                 /* Home */
+        else if(n1 == 4 || n1 == 8) pos = len;          /* End */
+        else if(n1 == 3) le_del_right(buf, &len, pos);  /* Delete */
+      }
+    }
+    else if(c >= 32){
+      /* Gather the whole UTF-8 character before repainting, so a multi-byte
+       * keystroke never shows up on screen as a half-drawn character. */
+      char ch[4]; int cn = 1; ch[0] = (char)c;
+      int want = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+      while(cn < want){
+        int k = le_getch_ms(LE_ESC_MS);
+        if(k < 0) break;
+        ch[cn++] = (char)k;
+      }
+      if(len + cn < bufsz - 1){
+        memmove(buf + pos + cn, buf + pos, len - pos);
+        memcpy(buf + pos, ch, cn);
+        len += cn; pos += cn; buf[len] = 0;
+      }
+    }
+  repaint:
+    le_refresh(prompt, buf, len, pos);
+  }
+
+  tcsetattr(0, TCSAFLUSH, &orig);
+  if(aborted){
+    if(write(1, "^C\n", 3) < 0){ }
+  } else if(rc == 1){
+    le_refresh(prompt, buf, len, len);        /* leave the finished line fully drawn */
+    if(write(1, "\n", 1) < 0){ }
+    le_hist_add(buf);
+  }
+  /* On EOF nothing is printed, matching what canonical-mode Ctrl-D did. */
+  *out_len = len;
+  return rc;
+}
+#endif /* LARZ_HAVE_LINEEDIT */
+
+/* Read one line from stdin, edited in place when that is a terminal.
+ * Returns 1 with the line (no trailing newline) in buf, or 0 at EOF.
+ * Shared by the input() builtin and the REPL. */
+static int larz_read_line(const char *prompt, char *buf, int bufsz, int *out_len){
+#ifdef LARZ_HAVE_LINEEDIT
+  if(isatty(0) && isatty(1)){
+    int rc = le_readline(prompt, buf, bufsz, out_len);
+    if(rc >= 0) return rc;
+    /* rc < 0: the terminal refused raw mode - fall through to plain reads. */
+  }
+#endif
+  if(prompt && *prompt){ printf("%s", prompt); fflush(stdout); }
+  if(!fgets(buf, bufsz, stdin)) return 0;
+  int len = (int)strlen(buf);
+  while(len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) buf[--len] = 0;
+  *out_len = len;
+  return 1;
+}
+
 static Value bi_input(Interp *ip, Value *a, int n){
-  (void)ip; if(n>=1 && a[0].t==V_STR){ printf("%s", a[0].str); fflush(stdout); }
-  char buf[8192]; if(!fgets(buf,sizeof buf,stdin)) return V_nil();
-  int len=(int)strlen(buf); while(len>0 && (buf[len-1]=='\n'||buf[len-1]=='\r')) buf[--len]=0;
+  (void)ip;
+  const char *prompt = (n>=1 && a[0].t==V_STR) ? a[0].str : "";
+  char buf[LE_BUFSZ]; int len = 0;
+  if(!larz_read_line(prompt, buf, (int)sizeof buf, &len)) return V_nil();
   return mkstr_n(buf,len);
 }
 static Value bi_keys(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","keys() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].key); return V_list(r); }
@@ -3742,8 +4054,11 @@ static void repl(Interp *ip){
   printf("Larzscript native REPL (v" LARZSCRIPT_VERSION ") - type statements; Ctrl-D to exit.\n"
          "Definitions can span multiple lines; the '..... ' prompt means more is expected.\n");
   for(;;){
-    printf(buf[0] ? "..... " : "larz> "); fflush(stdout);
-    if(!fgets(line, sizeof line, stdin)){ printf("\n"); break; }
+    /* Same editor as input(): in canonical mode an arrow key at the REPL
+     * prompt echoed "^[[A" into the source line instead of recalling it. */
+    int llen = 0;
+    if(!larz_read_line(buf[0] ? "..... " : "larz> ", line, (int)sizeof line - 2, &llen)){ printf("\n"); break; }
+    line[llen] = '\n'; line[llen+1] = 0;
     if(strlen(buf)+strlen(line)+1 >= sizeof buf){ fprintf(stderr,"input too long\n"); buf[0]=0; continue; }
     strcat(buf, line);
     if(bracket_depth(buf) > 0) continue;            /* keep reading until brackets balance */
