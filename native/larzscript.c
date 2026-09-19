@@ -2494,7 +2494,11 @@ static int le_readline(const char *prompt, char *buf, int bufsz, int *out_len){
   raw.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
   raw.c_iflag &= ~(IXON | ICRNL);
   raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0;
-  if(tcsetattr(0, TCSAFLUSH, &raw) != 0) return -1;
+  /* TCSADRAIN, not TCSAFLUSH: FLUSH throws away whatever the user already
+   * typed or pasted, so a multi-line paste lost every line after the first
+   * (the shell was busy running line one while the rest sat unread). Like
+   * readline, keep the type-ahead. */
+  if(tcsetattr(0, TCSADRAIN, &raw) != 0) return -1;
 
   int len = 0, pos = 0, rc = 1, aborted = 0;
   int hidx = le_hist_n;                 /* le_hist_n means "the line being typed" */
@@ -2598,7 +2602,7 @@ static int le_readline(const char *prompt, char *buf, int bufsz, int *out_len){
     le_refresh(prompt, buf, len, pos);
   }
 
-  tcsetattr(0, TCSAFLUSH, &orig);
+  tcsetattr(0, TCSADRAIN, &orig);
   if(aborted){
     if(write(1, "^C\n", 3) < 0){ }
   } else if(rc == 1){
