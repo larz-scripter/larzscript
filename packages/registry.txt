@@ -181,3 +181,12 @@ orbits            packages/orbits
 neows             packages/neows
 dsp               packages/dsp
 wav               packages/wav
+# larzscript-cosmos: quantum computing, quantum mechanics, relativity and astrophysics (install ALL of them: they import each other)
+physmath          https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/physmath
+physconst         https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/physconst
+complex           https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/complex
+quantum           https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/quantum
+qalgo             https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/qalgo
+qmech             https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/qmech
+relativity        https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/relativity
+astro             https://github.com/larz-scripter/larzscript-cosmos@v0.1.0#packages/astro
