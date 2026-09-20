@@ -1769,7 +1769,35 @@ static Value bi_round(Interp *ip, Value *a, int n){
   }
   return V_number((double)(long long)(x>=0?x+0.5:x-0.5));
 }
-static Value bi_sqrt(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","sqrt() expects a number"); double x=a[0].num; if(x<0) runtime_error(ip,"LarzValueError","sqrt() of a negative number"); if(x==0) return V_number(0); double g=x>1?x:1; for(int i=0;i<60;i++) g=0.5*(g+x/g); return V_number(g); }
+/* Square root for every finite x >= 0, with no libm (this file links none).
+ *
+ * The original loop was Newton's method from g = max(x, 1) for a FIXED 60 iterations. From
+ * g = 1 the first ~60 iterations can only halve g, so it bottoms out at 2^-60 = 8.67e-19:
+ * sqrt(1e-47) returned 8.67e-19 instead of 3.16e-24, and the mirror-image failure above 1e36
+ * (sqrt(1e100) gave 8.67e81). Anything at atomic scale in SI units (energies ~1e-19..1e-47 J)
+ * landed in the broken range.
+ *
+ * Fix: write x = m * 4^e with m in [1, 4) using exact power-of-two scalings, run Newton on m
+ * (quadratic convergence from a guess within ~25% needs 5 steps; 8 is generous), then scale
+ * back by 2^e. Every scaling is an exact multiplication, so no accuracy is lost. */
+static double lz_sqrt(double x){
+  if(x!=x || x==0.0) return x;                   /* NaN and 0 pass through */
+  if(x<0.0) return 0.0;                          /* callers reject negatives before getting here */
+  if(x>1.7976931348623157e308) return x;         /* +infinity */
+  int e=0; double m=x;
+  while(m>=1152921504606846976.0){ m*=8.673617379884035e-19; e+=30; }     /* 4^30 = 2^60 */
+  while(m>=4.0){ m*=0.25; e+=1; }
+  while(m<8.673617379884035e-19){ m*=1152921504606846976.0; e-=30; }
+  while(m<1.0){ m*=4.0; e-=1; }
+  double g=0.5*(m+1.0);
+  for(int i=0;i<8;i++) g=0.5*(g+m/g);
+  while(e>=30){ g*=1073741824.0; e-=30; }                                   /* 2^30 */
+  while(e>0){ g*=2.0; e--; }
+  while(e<=-30){ g*=9.313225746154785e-10; e+=30; }                         /* 2^-30 */
+  while(e<0){ g*=0.5; e++; }
+  return g;
+}
+static Value bi_sqrt(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","sqrt() expects a number"); double x=a[0].num; if(x<0) runtime_error(ip,"LarzValueError","sqrt() of a negative number"); if(x==0) return V_number(0); return V_number(lz_sqrt(x)); }
 static Value bi_pow(Interp *ip, Value *a, int n){ if(n!=2||!is_num(a[0])||!is_num(a[1])) runtime_error(ip,"LarzTypeError","pow() expects two numbers"); double b=a[0].num, e=a[1].num; if(e!=(long long)e) runtime_error(ip,"LarzValueError","pow(): exponent must be a whole number"); long long ex=(long long)e; double r=1, base=b; int neg=ex<0; if(neg) ex=-ex; for(long long i=0;i<ex;i++) r*=base; if(neg){ if(b==0) runtime_error(ip,"LarzRuntimeError","0 to a negative power"); r=1/r; } return V_number(r); }
 /* ---- dsp buffer accelerators -----------------------------------------
  * The `dsp` stack package (packages/dsp) documents and calls a
@@ -2080,9 +2108,7 @@ static Value bi_native_delay_process_buffer(Interp *ip, Value *a, int n){
  * second place a libm dependency could sneak in. */
 static double native_sqrt(double x){
   if(x<=0.0) return 0.0;
-  double g = x>1.0 ? x : 1.0;
-  for(int i=0;i<60;i++) g = 0.5*(g + x/g);
-  return g;
+  return lz_sqrt(x);
 }
 
 /* Per-frame normalized autocorrelation pitch detector. For each frame
