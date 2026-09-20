@@ -486,6 +486,12 @@ static Token *lex(const char *src){
     }
     if(isdigit((unsigned char)c) || (c=='.'&&isdigit((unsigned char)src[i+1]))){
       int j=i; while(isdigit((unsigned char)src[j])||src[j]=='.') j++;
+      /* scientific notation: 1e9, 6.626E-34, 2.5e+3. The exponent is only consumed when digits
+       * follow, so a number directly followed by an identifier is tokenised exactly as before. */
+      if((src[j]=='e'||src[j]=='E') && (isdigit((unsigned char)src[j+1]) ||
+         ((src[j+1]=='+'||src[j+1]=='-') && isdigit((unsigned char)src[j+2])))){
+        j+=2; while(isdigit((unsigned char)src[j])) j++;
+      }
       char *num=xstrndup(src+i,j-i); t.type=T_NUM; t.num=strtod(num,NULL); i=j; tk_push(&tl,t); continue;
     }
     if(c=='"' || (c=='f' && src[i+1]=='"')){

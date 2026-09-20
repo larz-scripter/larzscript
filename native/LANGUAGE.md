@@ -14,7 +14,7 @@ the standalone native binary (`larzscript.c`) — the official implementation.
 
 | Type | Examples | Notes |
 |------|----------|-------|
-| number | `42`, `3.14`, `-7` | one numeric type (integers print without a point) |
+| number | `42`, `3.14`, `-7`, `6.626e-34` | one numeric type (integers print without a point); scientific notation `1e9`, `2.5E-3`, `6.02e+23` is accepted |
 | string | `"hi"`, `f"x={x}"` | escapes `\n \t \\ \"`; f-strings interpolate |
 | bool | `true`, `false` | |
 | nil | `nil` | absence of a value |
