@@ -165,6 +165,7 @@ typedef struct Str { GCObj gc; char data[]; } Str;   /* a GC-managed string; Val
 #define STR_HDR(p) ((GCObj*)((char*)(p) - offsetof(Str, data)))
 static GCObj *g_gc_head=NULL;
 static long g_gc_count=0, g_gc_threshold=200000;
+static int g_gc_stress=0;      /* LZ_GC_STRESS: collect at every safe point (test mode) */
 static void gc_register(void *p, unsigned char kind){ GCObj *o=(GCObj*)p; o->gc_kind=kind; o->gc_marked=0; o->gc_next=g_gc_head; g_gc_head=o; g_gc_count++; }
 
 /* ===================== values ===================== */
@@ -1013,7 +1014,7 @@ static void gc_collect(Interp *ip){
       free(o); g_gc_count--;
     }
   }
-  g_gc_threshold = g_gc_count*2 + 200000;
+  g_gc_threshold = g_gc_stress ? 0 : g_gc_count*2 + 200000;
 }
 static void maybe_gc(Interp *ip){ if(g_gc_count > g_gc_threshold) gc_collect(ip); }
 volatile int larz_gas_kill = 0;   /* set by the host OS (LarzOS) when a command exceeds its gas budget */
@@ -1271,8 +1272,10 @@ static Value eval(Interp *ip, Node *n, Env *env){
     case N_DICT: {
       Dict *d=dict_new(); int tr=ip->ntemp; gc_temp_push(ip, V_dict(d));
       for(int i=0;i+1<n->nkids;i+=2){
-        Value k=eval(ip,n->kids[i],env), v=eval(ip,n->kids[i+1],env);
+        Value k=eval(ip,n->kids[i],env); int tk=ip->ntemp; gc_temp_push(ip,k);   /* evaluating v can run statements, and so a GC */
+        Value v=eval(ip,n->kids[i+1],env);
         dict_set(d, k, v);
+        gc_temp_pop(ip, tk);
       }
       gc_temp_pop(ip, tr);
       return V_dict(d);
@@ -1310,7 +1313,7 @@ static Value eval(Interp *ip, Node *n, Env *env){
       for(long long i=0;i<len;i++){
         Value item = rg ? V_number((double)range_at(rg,i)) : arr?arr[i] : dd?dd->items[i].key : mkstr_n(sp+i,1);
         Env *child=env_new(env); env_define(child,n->name,item); gc_root_push(ip,child);
-        if(!cond || truthy(eval(ip,cond,child))){ Value k=eval(ip,n->a,child); Value v=eval(ip,n->b,child); dict_set(r,k,v); }
+        if(!cond || truthy(eval(ip,cond,child))){ Value k=eval(ip,n->a,child); int tk=ip->ntemp; gc_temp_push(ip,k); Value v=eval(ip,n->b,child); dict_set(r,k,v); gc_temp_pop(ip,tk); }
         gc_root_pop(ip);
       }
       gc_temp_pop(ip,tr);
@@ -2640,9 +2643,12 @@ static Value bi_input(Interp *ip, Value *a, int n){
 }
 static Value bi_keys(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","keys() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].key); return V_list(r); }
 static Value bi_values(Interp *ip, Value *a, int n){ if(n!=1||a[0].t!=V_DICT) runtime_error(ip,"LarzTypeError","values() expects a dict"); List *r=list_new(); for(int i=0;i<a[0].dict->n;i++) list_push(r,a[0].dict->items[i].val); return V_list(r); }
-static Value bi_map(Interp *ip, Value *a, int n){ if(n>=2) a[1]=derange(a[1]); if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","map() expects a function and a list"); List *r=list_new(); int tr=ip->ntemp; gc_temp_push(ip,V_list(r)); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; list_push(r, call_value(ip,a[0],&arg,1)); } gc_temp_pop(ip,tr); return V_list(r); }
-static Value bi_filter(Interp *ip, Value *a, int n){ if(n>=2) a[1]=derange(a[1]); if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","filter() expects a function and a list"); List *r=list_new(); int tr=ip->ntemp; gc_temp_push(ip,V_list(r)); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; if(truthy(call_value(ip,a[0],&arg,1))) list_push(r,arg); } gc_temp_pop(ip,tr); return V_list(r); }
-static Value bi_reduce(Interp *ip, Value *a, int n){ if(n>=2) a[1]=derange(a[1]); if(n<2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","reduce() expects a function, a list and an optional initial value"); List *l=a[1].list; int i=0; Value acc; if(n>=3) acc=a[2]; else { if(l->n==0) runtime_error(ip,"LarzValueError","reduce() of empty list with no initial value"); acc=l->items[0]; i=1; } int tr=ip->ntemp; gc_temp_push(ip,acc); for(; i<l->n; i++){ Value args[2]; args[0]=acc; args[1]=l->items[i]; acc=call_value(ip,a[0],args,2); ip->temproots[tr]=acc; } gc_temp_pop(ip,tr); return acc; }
+static Value bi_map(Interp *ip, Value *a, int n){ int tr0=ip->ntemp; if(n>=2){ a[1]=derange(a[1]); gc_temp_push(ip,a[1]); }   /* a range becomes a fresh list; root it while the callback runs */
+  if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","map() expects a function and a list"); List *r=list_new(); gc_temp_push(ip,V_list(r)); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; list_push(r, call_value(ip,a[0],&arg,1)); } gc_temp_pop(ip,tr0); return V_list(r); }
+static Value bi_filter(Interp *ip, Value *a, int n){ int tr0=ip->ntemp; if(n>=2){ a[1]=derange(a[1]); gc_temp_push(ip,a[1]); }   /* a range becomes a fresh list; root it while the callback runs */
+  if(n!=2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","filter() expects a function and a list"); List *r=list_new(); gc_temp_push(ip,V_list(r)); for(int i=0;i<a[1].list->n;i++){ Value arg=a[1].list->items[i]; if(truthy(call_value(ip,a[0],&arg,1))) list_push(r,arg); } gc_temp_pop(ip,tr0); return V_list(r); }
+static Value bi_reduce(Interp *ip, Value *a, int n){ int tr0=ip->ntemp; if(n>=2){ a[1]=derange(a[1]); gc_temp_push(ip,a[1]); }   /* a range becomes a fresh list; root it while the callback runs */
+  if(n<2||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","reduce() expects a function, a list and an optional initial value"); List *l=a[1].list; int i=0; Value acc; if(n>=3) acc=a[2]; else { if(l->n==0) runtime_error(ip,"LarzValueError","reduce() of empty list with no initial value"); acc=l->items[0]; i=1; } int tr=ip->ntemp; gc_temp_push(ip,acc); for(; i<l->n; i++){ Value args[2]; args[0]=acc; args[1]=l->items[i]; acc=call_value(ip,a[0],args,2); ip->temproots[tr]=acc; } gc_temp_pop(ip,tr0); return acc; }
 static Value bi_join(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n<1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","join() expects a list and an optional separator"); const char *sep=(n>=2&&a[1].t==V_STR)?a[1].str:""; SB b; b.s=NULL;b.n=0;b.cap=0; for(int i=0;i<a[0].list->n;i++){ if(i) sb_puts(&b,sep); char *s=str_of(a[0].list->items[i]); sb_puts(&b,s); } sb_putc(&b,0); return V_take(b.s?b.s:xstrdup("")); }
 static Value bi_enumerate(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0]); if(n!=1||a[0].t!=V_LIST) runtime_error(ip,"LarzTypeError","enumerate() expects a list"); List *r=list_new(); for(int i=0;i<a[0].list->n;i++){ List *pair=list_new(); list_push(pair,V_number(i)); list_push(pair,a[0].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
 static Value bi_zip(Interp *ip, Value *a, int n){ if(n>=2){ a[0]=derange(a[0]); a[1]=derange(a[1]); } if(n!=2||a[0].t!=V_LIST||a[1].t!=V_LIST) runtime_error(ip,"LarzTypeError","zip() expects two lists"); int m=a[0].list->n<a[1].list->n?a[0].list->n:a[1].list->n; List *r=list_new(); for(int i=0;i<m;i++){ List *pair=list_new(); list_push(pair,a[0].list->items[i]); list_push(pair,a[1].list->items[i]); list_push(r,V_list(pair)); } return V_list(r); }
@@ -5645,7 +5651,7 @@ static int cmd_update(void){
 #endif /* __STDC_HOSTED__ */
 
 int main(int argc, char **argv){
-  if(getenv("LZ_GC_STRESS")) g_gc_threshold=0;   /* collect on every statement (test mode) */
+  if(getenv("LZ_GC_STRESS")){ g_gc_stress=1; g_gc_threshold=0; }   /* collect on every statement (test mode) */
   const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0, want_emit_c=0;
   int i=1;
   for(; i<argc; i++){

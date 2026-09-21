@@ -1,0 +1,25 @@
+fn f() {
+  let x = [1, 2]
+  let y = "a" + "b"
+  return 1
+}
+fn add3(a, b, c) { return a + b + str(c) }
+let d = {"path": "x", "first": f(), "second": f()}
+print(d)
+print(add3("a" + "b", "c" + "d", f()))
+print(add3("a" + "b", "z" + str(f()), f()))
+let l = []
+l.push("p" + "q")
+l.push(f())
+l.push("r" + "s")
+print(l)
+print({"k" + "1": f(), "k" + "2": "v" + "2"})
+print(map(fn(x) { return x + f() }, range(5)))
+print(filter(fn(x) { return f() > x }, range(5)))
+print(reduce(fn(a, b) { return a + b + f() }, range(5), 0))
+print("s" + "t" + str(f()) + "u" + "v")
+print(join("a,b,c".split(","), "-" + "+"), f())
+print({"a" + "": f()}["a"])
+print(sorted(["b" + "", "a" + "", str(f())]))
+print({"k" + str(n): f() for n in range(3)})
+print([n * f() for n in range(3)])
