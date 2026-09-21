@@ -1,0 +1,11 @@
+10.5
+1.5
+-10
+-1.5
+1.5
+1 -1 1
+0
+0
+2
+5.25
+caught: {type: LarzRuntimeError, message: division by zero (line 14)}
