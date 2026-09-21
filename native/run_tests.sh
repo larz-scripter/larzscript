@@ -47,6 +47,8 @@ echo "--- formatter checks ---"
 fpass=0; ffail=0
 for lz in tests/*.lz; do
   if skip "$lz"; then continue; fi
+  # tests/syntax_*.lz are programs that must NOT parse; there is nothing to format
+  case "$(basename "$lz")" in syntax_*) continue ;; esac
   dir=$(dirname "$lz"); tmp="$dir/.fmtcheck.lz"
   run fmt "$lz" 2>/dev/null | norm > "$tmp"
   f1="$(cat "$tmp")"
