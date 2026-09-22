@@ -74,9 +74,11 @@ x += 5              # compound assign: += -= *= /= %=
 
 ### Reserved words
 
-These words are part of the language and can't be used as a variable, function,
-parameter or loop-variable name. Declaring one is a `SyntaxError` at the
-declaration that names the word (`'wait' is a reserved word ...`):
+These words are part of the language and can't be used as a variable,
+parameter, loop-variable, `import ... as` alias, or `capability`/`grant`/
+`revoke` name - anything read back later as a bare identifier. Declaring one
+this way is a `SyntaxError` at the declaration that names the word
+(`'wait' is a reserved word ...`):
 
 ```
 let fn return if else while and or not true false nil
@@ -85,8 +87,15 @@ try catch throw import as capability grant revoke requires split
 is unless at least most more less than say wait
 ```
 
-They are still fine as string keys (`{"wait": 1}`) and as member names after a
-dot (`x.from`). `launch` and `new` are not reserved.
+**A function's own name is the exception**: `fn pay(...)` is allowed even
+though `pay` is reserved, because a function is usually called through a
+module (`wal.pay(...)`, via `import ... as wal`) - and member names after a
+dot already accept any word (`x.from`). A bare, unqualified call to such a
+function (`pay(...)` with no `wal.`) still fails, same as any other bare
+reference to a reserved word.
+
+String keys (`{"wait": 1}`) and member names after a dot (`x.from`) are
+always fine. `launch` and `new` are not reserved.
 
 ---
 
