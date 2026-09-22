@@ -25,6 +25,11 @@ the standalone native binary (`larzscript.c`) — the official implementation.
 | wallet | `wallet w = $10.00` | a named balance you can `pay` from/to |
 | module | `import "m.lz" as m` | a namespace of another file's definitions |
 
+A number prints as the shortest text that reads back as the same value, so no
+digits are dropped: `print(123456789.5)` shows `123456789.5`, and
+`print(0.1 + 0.2)` shows `0.30000000000000004`. Use `round(x, n)` to control the
+digits you show (`round(0.1 + 0.2, 2)` is `0.3`).
+
 Truthiness: `nil`, `false`, `0`, `$0.00`, `""`, `[]`, `{}` are falsy; all else truthy.
 
 ---
