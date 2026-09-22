@@ -61,6 +61,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <time.h>
+#include <float.h>
 #ifdef _WIN32
 /* MinGW's mkdir() takes no mode (no POSIX permission bits on Windows), and
  * doesn't declare realpath() (its closest analog is the CRT's _fullpath,
@@ -1067,6 +1068,22 @@ static Value eval(Interp *ip, Node *n, Env *env);
 static void exec(Interp *ip, Node *n, Env *env);
 static const char *type_name(Value v);
 
+/* a % b for numbers. Whole numbers keep the fast integer path; anything with a fractional
+ * part (or too big for a long long) gets a real floating-point remainder with the sign of a,
+ * like C's fmod. Hand-rolled because the interpreter is built without -lm; exact, since each
+ * subtraction removes a multiple of b that is within a factor of 2 of the remainder. */
+static double num_mod(double a, double b){
+  if(a>-9e18 && a<9e18 && b>-9e18 && b<9e18 && a==(long long)a && b==(long long)b)
+    return (double)((long long)a % (long long)b);
+  double x=a<0?-a:a, y=b<0?-b:b;
+  if(!(x<=DBL_MAX)) return x-x;             /* a is nan or inf: nan */
+  if(y!=y) return y;                        /* b is nan */
+  if(y>DBL_MAX) return a;                   /* a % inf == a */
+  double r=x;
+  while(r>=y){ double t=y; while(t*2<=r) t*=2; r-=t; }
+  return a<0?-r:r;
+}
+
 static Value do_binop(Interp *ip, const char *op, Value a, Value b){
   int bm = a.t==V_MONEY && b.t==V_MONEY;
   int bn = is_num(a) && is_num(b);
@@ -1099,7 +1116,7 @@ static Value do_binop(Interp *ip, const char *op, Value a, Value b){
     if(bn){ if(b.num==0) runtime_error(ip,"LarzRuntimeError","division by zero"); return V_number(a.num/b.num); }
     runtime_error(ip,"LarzTypeError","cannot divide those values");
   }
-  if(strcmp(op,"%")==0){ if(bn){ if(b.num==0) runtime_error(ip,"LarzRuntimeError","division by zero"); return V_number((double)((long long)a.num % (long long)b.num)); } runtime_error(ip,"LarzTypeError","cannot take modulo"); }
+  if(strcmp(op,"%")==0){ if(bn){ if(b.num==0) runtime_error(ip,"LarzRuntimeError","division by zero"); return V_number(num_mod(a.num,b.num)); } runtime_error(ip,"LarzTypeError","cannot take modulo"); }
   if(strcmp(op,"//")==0){ if(bn){ if(b.num==0) runtime_error(ip,"LarzRuntimeError","division by zero"); double q=a.num/b.num; long long f=(long long)q; if(q<0 && (double)f!=q) f--; return V_number((double)f); } runtime_error(ip,"LarzTypeError","cannot floor-divide those values"); }
   if(strcmp(op,"**")==0){ if(bn){ double e=b.num; if(e!=(long long)e) runtime_error(ip,"LarzValueError","** exponent must be a whole number"); long long ex=(long long)e; int neg=ex<0; if(neg)ex=-ex; double r=1,base=a.num; for(long long i=0;i<ex;i++) r*=base; if(neg){ if(a.num==0) runtime_error(ip,"LarzRuntimeError","0 to a negative power"); r=1/r; } return V_number(r); } runtime_error(ip,"LarzTypeError","cannot raise those values to a power"); }
   /* ordering */
@@ -5145,7 +5162,7 @@ static void emit_runtime(void){
   puts("static LZ lz_sub(LZ a,LZ b){if(a.t==6&&b.t==6)return lzmoney(a.n-b.n);return lznum(a.n-b.n);}");
   puts("static LZ lz_mul(LZ a,LZ b){if(a.t==6)return lzmoney(lz_mround(a.n*b.n));if(b.t==6)return lzmoney(lz_mround(b.n*a.n));return lznum(a.n*b.n);}");
   puts("static LZ lz_div(LZ a,LZ b){if(a.t==6)return lzmoney(lz_mround(a.n/b.n));return lznum(a.n/b.n);}");
-  puts("static LZ lz_mod(LZ a,LZ b){return lznum((double)((long long)a.n%(long long)b.n));}");
+  puts("static LZ lz_mod(LZ a,LZ b){if(a.n>-9e18&&a.n<9e18&&b.n>-9e18&&b.n<9e18&&a.n==(long long)a.n&&b.n==(long long)b.n)return lznum((double)((long long)a.n%(long long)b.n));return lznum(fmod(a.n,b.n));}");
   puts("static LZ lz_idiv(LZ a,LZ b){double d=a.n/b.n;long long f=(long long)d;if((double)f>d)f--;return lznum((double)f);}");
   puts("static LZ lz_pow(LZ a,LZ b){double r=1,x=a.n;long long e=(long long)b.n;for(long long i=0;i<e;i++)r*=x;return lznum(r);}");
   puts("static LZ lz_and(LZ a,LZ b){return lztruthy(a)?b:a;}");

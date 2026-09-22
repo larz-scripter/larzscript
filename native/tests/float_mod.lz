@@ -1,0 +1,17 @@
+print(370.5 % 360)
+print(7.5 % 2)
+print(-10 % 360)
+print(-7.5 % 2)
+print(7.5 % -2)
+print(10 % 3, -10 % 3, 10 % -3)
+print(5 % 0.5)
+print(5 % 2.5)
+print(2 ** 70 % 7)
+let angle = 725.25
+angle %= 360
+print(angle)
+try {
+  print(1.5 % 0)
+} catch e {
+  print("caught:", e)
+}

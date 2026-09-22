@@ -107,7 +107,8 @@ Precedence, lowest to highest:
 11. postfix: call `f(...)`, index `a[i]`, slice `a[i:j]`, member `m.x`
 
 `+` concatenates strings and lists; `*` scales money by a number; `//` is floor
-division; `**` is power. `in` tests membership in a list, dict (keys) or string
+division; `**` is power. `%` is a true remainder on floats too
+(`370.5 % 360` is `10.5`) and takes the sign of the left operand. `in` tests membership in a list, dict (keys) or string
 (substring). `has` tests a wallet subscription.
 
 `==`/`!=`/`>=`/`<=`/`>`/`<` also read as `is`/`is not`/`is at least`/`is at
