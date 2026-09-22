@@ -559,6 +559,16 @@ static void expect_kw(Parser *p, const char *w){
   padv(p);
 }
 
+/* A name being declared (let/fn/param/loop var/...) must be an identifier: reject a reserved
+ * word right where it is declared instead of accepting it and failing later, at its first use,
+ * with a bare "unexpected token". */
+static char *ident_name(Parser *p){
+  Token *t=pk(p);
+  if(t->type==T_KW) fail("'%s' is a reserved word and can't be used as a name (line %d)", t->text, t->line);
+  if(t->type!=T_IDENT) fail("expected a name on line %d", t->line);
+  return padv(p)->text;
+}
+
 static Node *statement(Parser *p);
 static Node *expression(Parser *p);
 static Node *parse_fn(Parser *p, int named);
@@ -605,7 +615,7 @@ static Node *primary(Parser *p){
     if(pk(p)->type==T_RBK){ padv(p); return node(N_ARRAY); }
     Node *first=expression(p);
     if(is_kw(pk(p),"for")){          /* list comprehension: [expr for x in it (if c)?] */
-      padv(p); Node *n=node(N_LISTCOMP); n->a=first; n->name=padv(p)->text;
+      padv(p); Node *n=node(N_LISTCOMP); n->a=first; n->name=ident_name(p);
       expect_kw(p,"in"); n->b=expression(p);
       if(is_kw(pk(p),"if")){ padv(p); n->c=expression(p); }
       expect(p, T_RBK, "']'"); return n;
@@ -620,7 +630,7 @@ static Node *primary(Parser *p){
     if(pk(p)->type==T_RB){ padv(p); return node(N_DICT); }
     Node *k=expression(p); expect(p, T_COLON, "':'"); Node *v=expression(p);
     if(is_kw(pk(p),"for")){          /* dict comprehension: {k: v for x in it (if c)?} */
-      padv(p); Node *n=node(N_DICTCOMP); n->a=k; n->b=v; n->name=padv(p)->text;
+      padv(p); Node *n=node(N_DICTCOMP); n->a=k; n->b=v; n->name=ident_name(p);
       expect_kw(p,"in"); n->c=expression(p);
       if(is_kw(pk(p),"if")){ padv(p); push_kid(n, expression(p)); }
       expect(p, T_RB, "'}'"); return n;
@@ -738,13 +748,13 @@ static Node *expression(Parser *p){ return ternary(p); }
 static Node *parse_fn(Parser *p, int named){
   expect_kw(p,"fn");
   Node *n=node(N_FN);
-  n->name = named ? padv(p)->text : NULL;
+  n->name = named ? ident_name(p) : NULL;
   expect(p,T_LP,"'('");
   int cap=0;
   if(pk(p)->type!=T_RP){
     do {
       if(n->nparams==cap){ cap=cap?cap*2:4; n->params=realloc(n->params,cap*sizeof(char*)); n->pdefs=realloc(n->pdefs,cap*sizeof(Node*)); }
-      n->params[n->nparams]=padv(p)->text;
+      n->params[n->nparams]=ident_name(p);
       Node *def=NULL;
       if(is_op(pk(p),"=")){ padv(p); def=expression(p); }
       n->pdefs[n->nparams]=def;
@@ -804,12 +814,12 @@ static int starts_expr(Token *t){
 
 static Node *statement(Parser *p){
   Token *t = pk(p);
-  if(is_kw(t,"let")){ padv(p); Node *n=node(N_LET); n->name=padv(p)->text; if(!is_op(pk(p),"=")) fail("expected '=' on line %d",pk(p)->line); padv(p); n->a=expression(p); return n; }
-  if(is_kw(t,"price")){ padv(p); Node *n=node(N_PRICE); n->name=padv(p)->text; if(!is_op(pk(p),"=")) fail("expected '=' on line %d",pk(p)->line); padv(p); n->a=expression(p); return n; }
-  if(is_kw(t,"wallet")){ padv(p); Node *n=node(N_WALLET); n->name=padv(p)->text; if(is_op(pk(p),"=")){ padv(p); n->a=expression(p); } return n; }
-  if(is_kw(t,"capability")){ padv(p); Node *n=node(N_CAPABILITY); n->name=padv(p)->text; return n; }
-  if(is_kw(t,"grant")){ padv(p); Node *n=node(N_GRANT); n->name=padv(p)->text; return n; }
-  if(is_kw(t,"revoke")){ padv(p); Node *n=node(N_REVOKE); n->name=padv(p)->text; return n; }
+  if(is_kw(t,"let")){ padv(p); Node *n=node(N_LET); n->name=ident_name(p); if(!is_op(pk(p),"=")) fail("expected '=' on line %d",pk(p)->line); padv(p); n->a=expression(p); return n; }
+  if(is_kw(t,"price")){ padv(p); Node *n=node(N_PRICE); n->name=ident_name(p); if(!is_op(pk(p),"=")) fail("expected '=' on line %d",pk(p)->line); padv(p); n->a=expression(p); return n; }
+  if(is_kw(t,"wallet")){ padv(p); Node *n=node(N_WALLET); n->name=ident_name(p); if(is_op(pk(p),"=")){ padv(p); n->a=expression(p); } return n; }
+  if(is_kw(t,"capability")){ padv(p); Node *n=node(N_CAPABILITY); n->name=ident_name(p); return n; }
+  if(is_kw(t,"grant")){ padv(p); Node *n=node(N_GRANT); n->name=ident_name(p); return n; }
+  if(is_kw(t,"revoke")){ padv(p); Node *n=node(N_REVOKE); n->name=ident_name(p); return n; }
   if(is_kw(t,"pay")){ padv(p); Node *n=node(N_PAY); n->a=expression(p); expect_kw(p,"from"); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text;
       if(is_kw(pk(p),"requires")){ padv(p); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"split")){
@@ -836,11 +846,11 @@ static Node *statement(Parser *p){
   if(is_kw(t,"require")){ padv(p); Node *n=node(N_REQUIRE); n->a=expression(p);
       if(pk(p)->type==T_COMMA){ padv(p); if(pk(p)->type!=T_STR) fail("expected a message string on line %d",pk(p)->line); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"fn")){ return parse_fn(p, 1); }
-  if(is_kw(t,"try")){ padv(p); Node *n=node(N_TRY); n->a=block(p); expect_kw(p,"catch"); n->name=padv(p)->text; n->b=block(p); return n; }
+  if(is_kw(t,"try")){ padv(p); Node *n=node(N_TRY); n->a=block(p); expect_kw(p,"catch"); n->name=ident_name(p); n->b=block(p); return n; }
   if(is_kw(t,"throw")){ padv(p); Node *n=node(N_THROW); n->a=expression(p); return n; }
   if(is_kw(t,"import")){ padv(p); Node *n=node(N_IMPORT);
       n->a=expression(p);                 /* the path: usually a string literal, but any expression */
-      if(is_kw(pk(p),"as")){ padv(p); n->name=padv(p)->text; }
+      if(is_kw(pk(p),"as")){ padv(p); n->name=ident_name(p); }
       return n; }
   if(is_kw(t,"return")){ padv(p); Node *n=node(N_RETURN); if(starts_expr(pk(p))) n->a=expression(p); return n; }
   if(is_kw(t,"if")){ padv(p); Node *n=node(N_IF); n->a=expression(p); n->b=block(p);
@@ -866,7 +876,7 @@ static Node *statement(Parser *p){
   if(is_kw(t,"subscribe")){ padv(p); Node *n=node(N_SUBSCRIBE); n->src=padv(p)->text; expect_kw(p,"to"); n->dst=padv(p)->text;
       if(is_kw(pk(p),"requires")){ padv(p); n->str=padv(p)->text; } return n; }
   if(is_kw(t,"for")){
-      padv(p); Node *n=node(N_FOR); n->name=padv(p)->text;
+      padv(p); Node *n=node(N_FOR); n->name=ident_name(p);
       if(is_kw(pk(p),"from")){
         /* "for i from A to B" - a natural counting loop, inclusive of B,
          * auto-detecting ascending/descending (can't decide direction at

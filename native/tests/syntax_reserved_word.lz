@@ -1,0 +1,7 @@
+# A reserved word is rejected where it is declared, not at its first use.
+let d = {"wait": 1}
+print(d["wait"])
+let launch = 2
+print(launch)
+let wait = 1
+print("not reached")
