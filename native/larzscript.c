@@ -311,11 +311,17 @@ static int truthy(Value v){
   }
 }
 
-/* print a number the way Larzscript does: integers without a decimal point */
-static void print_number(double d){
-  if(d==(long long)d) printf("%lld",(long long)d);
-  else printf("%g",d);
+/* Format a number the way Larzscript shows it: whole numbers without a decimal point, anything
+ * else as the shortest decimal string that reads back as the same double (like Python's repr),
+ * so printing never silently drops digits. buf needs room for 32 bytes. */
+static void fmt_num(char *buf, size_t n, double d){
+  if(d>-9e18 && d<9e18 && d==(long long)d){ snprintf(buf,n,"%lld",(long long)d); return; }
+  for(int prec=1; prec<=17; prec++){
+    snprintf(buf,n,"%.*g",prec,d);
+    if(strtod(buf,NULL)==d) return;
+  }
 }
+static void print_number(double d){ char b[32]; fmt_num(b,sizeof b,d); fputs(b,stdout); }
 static void print_value(Value v){
   switch(v.t){
     case V_NIL: printf("nil"); break;
@@ -370,7 +376,7 @@ static void val_to_sb(SB *b, Value v){
     case V_NIL: sb_puts(b,"nil"); break;
     case V_BOOL: sb_puts(b, v.b?"true":"false"); break;
     case V_CAPABILITY: sb_puts(b, v.b?"<capability granted>":"<capability revoked>"); break;
-    case V_NUM: if(v.num==(long long)v.num) sb_putf(b,"%lld",(long long)v.num); else sb_putf(b,"%g",v.num); break;
+    case V_NUM: { char nb[32]; fmt_num(nb,sizeof nb,v.num); sb_puts(b,nb); break; }
     case V_MONEY: { long long c=v.cents<0?-v.cents:v.cents; sb_putf(b,"%s$%lld.%02lld", v.cents<0?"-":"", c/100, c%100); break; }
     case V_STR: sb_puts(b, v.str); break;
     case V_WALLET: { long long c=v.wal->cents<0?-v.wal->cents:v.wal->cents; sb_putf(b,"<wallet %s: %s$%lld.%02lld>", v.wal->name, v.wal->cents<0?"-":"", c/100, c%100); break; }
@@ -1756,17 +1762,20 @@ static Value bi_reversed(Interp *ip, Value *a, int n){ if(n>=1) a[0]=derange(a[0
   List *r=list_new(); for(int i=a[0].list->n-1;i>=0;i--) list_push(r, a[0].list->items[i]);
   return V_list(r);
 }
-static Value bi_floor(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","floor() expects a number"); double x=a[0].num; long long d=(long long)x; if(x<0 && (double)d!=x) d--; return V_number((double)d); }
-static Value bi_ceil(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ceil() expects a number"); double x=a[0].num; long long d=(long long)x; if(x>0 && (double)d!=x) d++; return V_number((double)d); }
+static Value bi_floor(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","floor() expects a number"); double x=a[0].num; if(!(x>-4503599627370496.0 && x<4503599627370496.0)) return V_number(x); long long d=(long long)x; if(x<0 && (double)d!=x) d--; return V_number((double)d); }
+static Value bi_ceil(Interp *ip, Value *a, int n){ if(n!=1||!is_num(a[0])) runtime_error(ip,"LarzTypeError","ceil() expects a number"); double x=a[0].num; if(!(x>-4503599627370496.0 && x<4503599627370496.0)) return V_number(x); long long d=(long long)x; if(x>0 && (double)d!=x) d++; return V_number((double)d); }
 static Value bi_round(Interp *ip, Value *a, int n){
   if(n<1||n>2||!is_num(a[0])) runtime_error(ip,"LarzTypeError","round() expects a number and optional digit count");
   double x=a[0].num;
   if(n==2){
     if(!is_num(a[1])) runtime_error(ip,"LarzTypeError","round(): digits must be a number");
     int d=(int)a[1].num, ad=d<0?-d:d; double m=1; for(int i=0;i<ad;i++) m*=10; if(d<0) m=1/m;
-    double y=x*m; y = y>=0? (double)(long long)(y+0.5) : (double)(long long)(y-0.5);
+    double y=x*m;
+    if(!(y>-4503599627370496.0 && y<4503599627370496.0)) return V_number(x);   /* no fractional digits left to round (or nan/inf) */
+    y = y>=0? (double)(long long)(y+0.5) : (double)(long long)(y-0.5);
     return V_number(y/m);
   }
+  if(!(x>-4503599627370496.0 && x<4503599627370496.0)) return V_number(x);
   return V_number((double)(long long)(x>=0?x+0.5:x-0.5));
 }
 /* Square root for every finite x >= 0, with no libm (this file links none).
@@ -5107,7 +5116,7 @@ static void emit_runtime(void){
   puts("static char*lz_tostr(LZ v){");
   puts("  char b[64];");
   puts("  if(v.t==2)return v.s?v.s:(char*)\"\";");
-  puts("  if(v.t==1){if(v.n==(long long)v.n)sprintf(b,\"%lld\",(long long)v.n);else sprintf(b,\"%g\",v.n);return strdup(b);}");
+  puts("  if(v.t==1){if(v.n>-9e18&&v.n<9e18&&v.n==(long long)v.n)sprintf(b,\"%lld\",(long long)v.n);else{for(int p=1;p<=17;p++){sprintf(b,\"%.*g\",p,v.n);if(strtod(b,NULL)==v.n)break;}}return strdup(b);}");
   puts("  if(v.t==3)return strdup(v.n?\"true\":\"false\");");
   puts("  if(v.t==4){LST*l=(LST*)v.p;size_t cap=64,len=0;char*r=(char*)malloc(cap);r[len++]='[';");
   puts("    for(int i=0;i<l->n;i++){if(i){r[len++]=',';r[len++]=' ';}char*e=lz_tostr(l->items[i]);size_t el=strlen(e);while(len+el+4>cap){cap*=2;r=(char*)realloc(r,cap);}memcpy(r+len,e,el);len+=el;}");
