@@ -1,0 +1,14 @@
+# Scientific-notation number literals: 1e9, 6.626e-34, 2.5E+3.
+# Regression: these used to lex as the number followed by a stray identifier ("1.0e9" became 1.0
+# then `e9`), which was silently wrong inside a function and a NameError elsewhere - and
+# `larzscript fmt` printed small decimals in exactly this form, so its output did not parse.
+print(1e3, 1E3, 2.5e-3, 6.02e23, 1.5e+3)
+print(1e3 == 1000, 25e-1 == 2.5, 1e0 == 1)
+print(6.62607015e-34 * 1e34)
+let e9 = 5
+print(e9, e9 + 1e1)
+fn avogadro() { return 6.02214076e23 }
+print(avogadro() / 1e23)
+print(0.5e1 + .5e1)
+print([1e2, 2e2, 3e2])
+print(5 - 2e-1)
