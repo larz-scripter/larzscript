@@ -1,0 +1,16 @@
+# sqrt() must be accurate over the whole double range.
+# Regression: it ran a fixed 60-iteration Newton loop from max(x, 1), so anything below ~1e-36
+# (or above ~1e36) came back wrong - sqrt(1e-47) gave 8.67e-19 instead of 3.16e-24.
+fn p10(n) { return n >= 0 ? pow(10, n) : 1.0 / pow(10, -n) }
+let tol = 1.0 / pow(10, 15) / 2
+let bad = 0
+for e in range(-300, 301, 7) {
+  let x = p10(e)
+  let r = sqrt(x)
+  if abs(r * r - x) / x > tol { bad = bad + 1; print("bad", e, r) }
+}
+print("bad results:", bad)
+print(sqrt(1.0 / pow(10, 47)))
+print(sqrt(1.0 / pow(10, 28)))
+print(sqrt(pow(10, 100)))
+print(sqrt(0.25), sqrt(2), sqrt(0), sqrt(1), sqrt(1000000))
