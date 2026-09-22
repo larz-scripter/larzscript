@@ -756,7 +756,13 @@ static Node *expression(Parser *p){ return ternary(p); }
 static Node *parse_fn(Parser *p, int named){
   expect_kw(p,"fn");
   Node *n=node(N_FN);
-  n->name = named ? ident_name(p) : NULL;
+  // Unlike let/price/wallet/capability/params, a function's OWN name is not required to be
+  // exempt from the reserved-word check for correctness - but real code (e.g. `fn pay(...)`
+  // exported as `wal.pay`, called only via a module alias) legitimately uses a reserved word as
+  // a function name, since dotted member access already accepts keywords (`x.from`, `mod.wait`).
+  // A bare call/reference to such a name still fails, same as before this fix existed - this
+  // only restores the ability to DECLARE it that way, which used to work.
+  n->name = named ? padv(p)->text : NULL;
   expect(p,T_LP,"'('");
   int cap=0;
   if(pk(p)->type!=T_RP){

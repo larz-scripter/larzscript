@@ -1,0 +1,7 @@
+# A function's OWN name may be a reserved word (declaring it doesn't read it back as a bare
+# identifier) - real code exports these and calls them only through a module alias, where
+# member access already accepts any word. A bare, unqualified call still isn't legal.
+import "paytools" as pt
+print(pt.pay(1, 2))
+print(pt.wallet(3))
+print(pt.wait(10))

@@ -1,0 +1,5 @@
+# Regression for a real break: a module exporting a function named after a reserved word,
+# called only through the module alias - never bare. See tests/reserved_word_fn_names.lz.
+fn pay(a, b) { return a + b }
+fn wallet(x) { return x * 2 }
+fn wait(x) { return x - 1 }
