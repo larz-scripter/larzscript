@@ -24,7 +24,10 @@ else
   $CC -O2 -std=c11 -o /tmp/_larzscript_test larzscript.c
   BIN="/tmp/_larzscript_test"
 fi
-run() { $RUN_PREFIX "$BIN" "$@"; }
+# tests/gcstress_*.lz run with LZ_GC_STRESS=1 (a collection at every statement): a value held in a
+# C local while user code runs is only caught if the GC actually fires then
+GCSTRESS=""
+run() { if [ -n "$GCSTRESS" ]; then env LZ_GC_STRESS=1 $RUN_PREFIX "$BIN" "$@"; else $RUN_PREFIX "$BIN" "$@"; fi; }
 norm() { if [ "$LZ_CRLF_NORMALIZE" = "1" ]; then sed 's/\r$//'; else cat; fi; }
 skip() { [ -n "$SKIP_GLOB" ] && case "$(basename "$1")" in $SKIP_GLOB) return 0 ;; esac; return 1; }
 
@@ -32,6 +35,7 @@ pass=0; fail=0; skipped=0
 for lz in tests/*.lz; do
   if skip "$lz"; then skipped=$((skipped+1)); continue; fi
   exp="${lz%.lz}.expected"
+  case "$(basename "$lz")" in gcstress_*) GCSTRESS=1 ;; *) GCSTRESS="" ;; esac
   got="$(run "$lz" 2>&1 | norm || true)"
   if [ "$got" = "$(cat "$exp")" ]; then
     pass=$((pass+1))
@@ -43,6 +47,7 @@ if [ "$skipped" -gt 0 ]; then echo "$pass passed, $fail failed, $skipped skipped
 [ "$fail" = 0 ]
 
 # formatter invariants: fmt is idempotent, and formatted code runs identically
+GCSTRESS=""
 echo "--- formatter checks ---"
 fpass=0; ffail=0
 for lz in tests/*.lz; do
