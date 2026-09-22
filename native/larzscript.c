@@ -5713,7 +5713,15 @@ int main(int argc, char **argv){
       if(!home){ fprintf(stderr,"larzscript pkg: neither $HOME nor %%USERPROFILE%% is set, can't find larzpkg.lz\n"); return 1; }
       static char pkgpath[4096];
       snprintf(pkgpath,sizeof pkgpath,"%s/.larzscript/larzpkg.lz",home);
-      if(access(pkgpath,0)!=0){ fprintf(stderr,"larzscript pkg: %s not found - re-run the installer (curl -fsSL <install-url> | sh)\n", pkgpath); return 1; }
+#ifndef _WIN32
+      /* A system-wide install (the LarzOS/Debian apt package) ships larzpkg.lz here instead of
+       * in every user's home; the per-user copy from install.sh still wins when both exist. */
+      if(access(pkgpath,0)!=0){
+        static const char *sys[]={"/usr/share/larzscript/larzpkg.lz","/usr/local/share/larzscript/larzpkg.lz"};
+        for(int k=0;k<2;k++) if(access(sys[k],0)==0){ snprintf(pkgpath,sizeof pkgpath,"%s",sys[k]); break; }
+      }
+#endif
+      if(access(pkgpath,0)!=0){ fprintf(stderr,"larzscript pkg: %s not found - re-run the installer (curl -fsSL <install-url> | sh), or on Debian/Ubuntu: apt install --reinstall larzscript\n", pkgpath); return 1; }
       path=pkgpath; i++; break;
     }
     path=a; i++; break;                 /* the source file; the rest are program args */
