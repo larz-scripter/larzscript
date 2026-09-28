@@ -17,6 +17,36 @@ verification before work starts — the project's own stated principle in
 `CONTRIBUTING.md` ("real tests over reasoning") applies to planning the
 work, not just to the code.
 
+## Design philosophy — the three pillars, and what they mean for everything below
+
+Larzscript is meant to be **money-native, English-readable, and AI/agent-
+native** — all three, not just the first one. Every item in every track
+below has to be evaluated against all three, not just "does Python have
+this":
+
+- **English-readable is already real, not aspirational** — confirmed by
+  reading `LANGUAGE.md`'s own "Read it like English" section: `is`/
+  `is not`/`is at least`/`is at most`/`unless`/`for i from 1 to 10`/`say`/
+  `wait` are all real syntax today, each one desugaring to a symbolic
+  equivalent (`fmt` preserves whichever spelling you wrote — it's a real
+  dual grammar, not a difference in features). **This means every new
+  syntax proposed below — classes, pattern matching, generators, type
+  annotations — needs its own natural-language spelling considered
+  alongside the symbolic one from the start, the same dual-form way `is`/
+  `==` already work, not bolted on as an afterthought once the symbolic
+  form ships.**
+- **Money-native** is the already-flagship, already-solid pillar (see
+  "real strengths" below) — the bar every other pillar should be held to.
+- **AI/agent-native is the pillar with real, currently-unaddressed gaps.**
+  Checked directly, not assumed: **zero** AI/LLM-calling builtins exist
+  anywhere in `native/larzscript.c` or `LANGUAGE.md` today. This is a real
+  hole, not a nuance — worth its own numbered item in Track 3 (below),
+  scoped with the same "design before code" discipline as sockets (#2)
+  and the recursion fix (#32), especially since a real, already-verified-
+  working AI gateway (`gateway.larzos.com`) already exists in this same
+  estate and is a natural, concrete integration target rather than a
+  hypothetical one.
+
 ## Where things actually stand today (verified, not assumed)
 
 **Real strengths, worth protecting, not just gaps to fix:**
@@ -163,8 +193,33 @@ work, not just to the code.
 
 ## Track 3 — Feature breadth ("expanding it bigger to do more")
 
-Ranked by gap size against "looks professional like Python," not by ease:
+Ranked by gap size against "looks professional like Python" **and** the
+three pillars above — every item below needs a natural-language spelling
+considered alongside any symbolic syntax (see design philosophy), the
+same dual-form way `is`/`==` and `unless`/`if not` already coexist:
 
+0. **AI/agent-native primitives — currently a real, verified-zero gap,**
+   not a nuance. Two concrete directions, likely both eventually:
+   - **Calling a model as a language primitive**, in the same spirit as
+     `pay`/`wallet` being first-class rather than a bolted-on library —
+     something like `ask model "..."`/`ask model, "..." as answer` (reads
+     as English, matches the existing `say`/`wait` pattern) backed by a
+     real HTTP call to a configured endpoint. `gateway.larzos.com`'s
+     `ai-gateway.service` (confirmed live, OpenAI/Ollama-compatible
+     `/api/generate` and `/v1/chat/completions`, already used this session
+     for the earnifyhub-mailer content-moderation gate) is a real, already-
+     verified integration target for a reference implementation, not a
+     hypothetical one — worth prototyping against it directly rather than
+     designing in the abstract.
+   - **Agent/tool-use ergonomics**: a structured/machine-readable output
+     mode (e.g. `--json-errors`, or a builtin that serializes a value as
+     JSON for a calling agent to parse reliably) and a way to expose a
+     Larzscript function's signature as a callable tool definition — this
+     estate already runs a real `larzmcp.service` (Larz OS MCP Server) on
+     the same gateway box, so "Larzscript function as an MCP tool" is a
+     concrete, already-adjacent integration, not a green-field guess.
+   - Scope as its own tracked issue first, same discipline as #2 (sockets)
+     — this is a new pillar of the language, not a small add.
 1. **Classes / user-defined types with methods.** The single largest
    feature-parity gap. Needs a real design pass before any code: how does
    a class interact with the existing closure/`Env` model? Does a method
