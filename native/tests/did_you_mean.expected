@@ -1,0 +1,5 @@
+name: 'amonut' is not defined - did you mean 'amount'? (line 3)
+assign: cannot assign to undefined 'totl' (use 'let') - did you mean 'total'? (line 9)
+key: key not found - did you mean 'email'? (line 15)
+nomatch: 'xyzzy_totally_unrelated_qwerty' is not defined (line 20)
+builtin: 'pritn' is not defined - did you mean 'print'? (line 25)

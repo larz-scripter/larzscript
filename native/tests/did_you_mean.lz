@@ -1,0 +1,28 @@
+try {
+  let amount = 5
+  print(amonut)
+} catch e {
+  print("name:", e["message"])
+}
+try {
+  let total = 1
+  totl = 2
+} catch e {
+  print("assign:", e["message"])
+}
+try {
+  let user = {"email": "a@b.com"}
+  print(user["emial"])
+} catch e {
+  print("key:", e["message"])
+}
+try {
+  print(xyzzy_totally_unrelated_qwerty)
+} catch e {
+  print("nomatch:", e["message"])
+}
+try {
+  pritn("hi")
+} catch e {
+  print("builtin:", e["message"])
+}
