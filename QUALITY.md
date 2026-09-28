@@ -72,10 +72,13 @@ this":
   reinventing each time.
 
 **Concrete gaps, found by hand, not by assumption:**
-- **No "did you mean" suggestions anywhere** (`grep`-confirmed: zero hits
-  for any suggestion/edit-distance logic in `native/larzscript.c`). A
-  typo'd variable or builtin name just gets `LarzNameError`, no nudge
-  toward the fix — table stakes in Python 3.10+, Rust, Elm, Ruby.
+- **No "did you mean" suggestions anywhere** — **fix open in #35**, awaiting
+  merge. `LarzNameError` (undefined name, assign-to-undefined) and
+  `LarzKeyError` (dict key miss) would append `- did you mean 'x'?` via a
+  length-scaled Levenshtein check against everything in scope (locals
+  through builtins) or the dict's own keys. Verified on the branch: real
+  typo cases, a no-match case (no suggestion), full test suite +
+  formatter idempotence re-run clean.
 - **No warnings channel** — every diagnostic is a hard, fatal error. No
   way to flag something suspicious (an unused variable, a shadowed name,
   a deprecated builtin) without stopping execution.
@@ -119,12 +122,11 @@ this":
 
 ## Track 1 — Diagnostics: what the interpreter tells you
 
-1. **Did-you-mean suggestions** (high leverage, well-scoped, do first).
-   `LarzNameError`/`LarzKeyError` already know the failing name; add a
-   Levenshtein/edit-distance check against names actually in scope (for
-   name errors) or dict keys (for key errors) and append
-   `- did you mean 'x'?` when a close match exists. Small, self-contained,
-   directly improves the single most common first-run experience (a typo).
+1. **Did-you-mean suggestions — PR #35 open, awaiting merge.**
+   `LarzNameError`/`LarzKeyError` carry a `- did you mean 'x'?` suffix
+   when a close match exists (Levenshtein distance against in-scope
+   names, or dict keys for a key miss). Regression coverage in
+   `native/tests/did_you_mean.lz`.
 2. **A warnings channel, separate from errors.** Non-fatal, printed to
    stderr, doesn't stop execution. Candidates: an unused `let` binding, a
    variable shadowing an outer scope, calling a builtin in a way that's
