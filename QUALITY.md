@@ -199,7 +199,28 @@ considered alongside any symbolic syntax (see design philosophy), the
 same dual-form way `is`/`==` and `unless`/`if not` already coexist:
 
 0. **AI/agent-native primitives — currently a real, verified-zero gap,**
-   not a nuance. Two concrete directions, likely both eventually:
+   not a nuance.
+   **First step shipped 2026-09-28:** [`packages/ai`](https://github.com/larz-scripter/larzscript-packages/tree/master/packages/ai)
+   (`larzscript pkg install ai`) - `ai.ask(prompt)` calls any OpenAI-
+   compatible chat completion endpoint, configured entirely via
+   `LARZSCRIPT_AI_ENDPOINT`/`_MODEL`/`_KEY` env vars (never hardcoded to
+   one estate's gateway, so it's genuinely reusable). Verified end-to-end
+   against a real, live endpoint (`gateway.larzos.com`) before publishing:
+   a real successful call, all four error paths, and an embedded-quote
+   prompt to confirm the shell-escaping is actually correct. Caught a real
+   bug in testing, not by inspection: an earlier draft built on the
+   existing `http` package's `post_headers()` silently discarded the
+   endpoint's real error message on any 4xx/5xx response (that helper
+   shells out with `curl -f`, which drops the body on HTTP errors) - fixed
+   by going back to a direct `curl` call with the same proven escaping
+   `http.lz`'s own `_q()` uses, so the endpoint's real error message
+   (e.g. "Model 'x' is not available") surfaces instead of a generic one.
+   This is a *package*, not new interpreter syntax - the natural-language-
+   spelling question below still applies once/if this graduates toward a
+   language primitive (`ask model "..."` as a real keyword, matching how
+   `pay`/`wallet` are first-class rather than library calls).
+
+   Two further directions, likely both eventually:
    - **Calling a model as a language primitive**, in the same spirit as
      `pay`/`wallet` being first-class rather than a bolted-on library —
      something like `ask model "..."`/`ask model, "..." as answer` (reads
