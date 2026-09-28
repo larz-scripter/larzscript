@@ -181,3 +181,4 @@ orbits            packages/orbits
 neows             packages/neows
 dsp               packages/dsp
 wav               packages/wav
+ai      packages/ai
