@@ -127,12 +127,15 @@ this":
    when a close match exists (Levenshtein distance against in-scope
    names, or dict keys for a key miss). Regression coverage in
    `native/tests/did_you_mean.lz`.
-2. **A warnings channel, separate from errors.** Non-fatal, printed to
-   stderr, doesn't stop execution. Candidates: an unused `let` binding, a
-   variable shadowing an outer scope, calling a builtin in a way that's
-   deprecated-but-still-works. Add a `--strict` flag that promotes
-   warnings to errors (mirrors Python's `-W error`, Rust's `#[deny]`) so
-   CI/serious projects can opt into zero tolerance.
+2. **A warnings channel, separate from errors — PR #36 open, awaiting
+   merge.** Non-fatal, printed to stderr, doesn't stop execution; a
+   `--strict` flag promotes warnings to fatal errors (mirrors Python's
+   `-W error`, Rust's `#[deny]`). Ships with one real check wired up
+   (`let` shadowing a name from an enclosing scope, including a builtin).
+   Deliberately scoped small like #35 - the other two candidates this
+   item originally named, an unused-`let` warning and a deprecated-
+   builtin warning, are left for a follow-up PR on top of the channel
+   this one adds, not folded in here.
 3. **Colorized terminal error output**, TTY-detected (`isatty(stderr)`),
    respecting `NO_COLOR` (an actual, real, documented convention -
    no-color.org) and a `--no-color` flag. Error type in a color, message
