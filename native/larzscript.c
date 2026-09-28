@@ -422,6 +422,8 @@ typedef struct Node {
   char *src, *dst;            /* pay / subscribe */
   char *period;               /* paywall */
   int lam_id;                 /* larzc: 1-based id of a hoisted lambda/nested-fn (0 = none) */
+  int warned_shadow;          /* one-shot guard: this N_LET already warned about shadowing,
+                                * don't repeat it every time a loop re-executes the statement */
 } Node;
 
 static int g_parse_line=0;   /* line of the most recently consumed token */
@@ -960,6 +962,7 @@ typedef struct Txn { const char *src, *dst; long long cents; } Txn;
 typedef struct Sub { const char *w, *p; } Sub;
 typedef struct Interp {
   Env *globals;
+  int strict;                   /* --strict: promote warnings (interp_warn) to fatal errors */
   int has_gas; long long gas; long long gas_used;
   int returning; Value retval;
   int loopflow;                 /* 0 none, 1 break, 2 continue */
@@ -1063,6 +1066,18 @@ static void runtime_error(Interp *ip, const char *name, const char *fmt, ...){
   if(ip->curline>0) snprintf(ip->errmsg,sizeof(ip->errmsg),"%s (line %d)", msg, ip->curline);
   else snprintf(ip->errmsg,sizeof(ip->errmsg),"%s", msg);
   longjmp(ip->jb,1);
+}
+/* A non-fatal diagnostic: printed to stderr, execution continues - unless
+ * --strict is set, in which case it becomes an ordinary fatal error
+ * (mirrors Python's -W error / Rust's #[deny], for CI or anyone who wants
+ * zero tolerance). Kept as its own function, not a runtime_error() call
+ * site, so a warning's call sites don't have to know about --strict. */
+static void interp_warn(Interp *ip, const char *category, const char *fmt, ...){
+  char msg[224];
+  va_list ap; va_start(ap,fmt); vsnprintf(msg,sizeof(msg),fmt,ap); va_end(ap);
+  if(ip->strict) runtime_error(ip,"LarzStrictError","%s",msg);
+  if(ip->curline>0) fprintf(stderr,"Warning (%s): %s (line %d)\n", category, msg, ip->curline);
+  else fprintf(stderr,"Warning (%s): %s\n", category, msg);
 }
 static void append_txn(Interp *ip, const char *s, const char *d, long long c){
   if(ip->nled==ip->ledcap){ ip->ledcap=ip->ledcap?ip->ledcap*2:16; ip->ledger=realloc(ip->ledger,ip->ledcap*sizeof(Txn)); }
@@ -1504,7 +1519,13 @@ static void exec(Interp *ip, Node *n, Env *env){
   if(larz_gas_kill){ larz_gas_kill=0; runtime_error(ip,"GasError","command exceeded its compute gas budget"); }
   if(n->line) ip->curline=n->line;
   switch(n->kind){
-    case N_LET: env_define(env, n->name, eval(ip,n->a,env)); return;
+    case N_LET: {
+      if(!n->warned_shadow && env->parent && env_find(env->parent,n->name)){
+        n->warned_shadow=1;
+        interp_warn(ip,"shadowed-name","'%s' shadows a variable from an enclosing scope", n->name);
+      }
+      env_define(env, n->name, eval(ip,n->a,env)); return;
+    }
     case N_ASSIGN: { Value *slot=env_find(env,n->name); if(!slot) runtime_error(ip,"LarzNameError","cannot assign to undefined '%s' (use 'let')", n->name); *slot=eval(ip,n->a,env); return; }
     case N_PRICE: { Value v=eval(ip,n->a,env); if(v.t!=V_MONEY) runtime_error(ip,"LarzTypeError","a price must be money"); env_define(env,n->name,v); return; }
     case N_WALLET: {
@@ -4840,6 +4861,7 @@ static const char *USAGE =
   "  larzscript --check <file.lz>   syntax-check a file (for editors / CI)\n"
   "  larzscript --emit-c <file.lz>  compile to C (larzc: gcc it for a native binary)\n"
   "  larzscript [--ledger] <file>   also print the money ledger afterwards\n"
+  "  larzscript [--strict] <file>   promote warnings (e.g. shadowed names) to fatal errors\n"
   "  larzscript update              check for and install the latest release\n"
   "  larzscript pkg <args...>       run the package manager (install/list/publish/...)\n"
   "  larzscript --version | --help\n";
@@ -5726,7 +5748,7 @@ static int cmd_update(void){
 
 int main(int argc, char **argv){
   if(getenv("LZ_GC_STRESS")){ g_gc_stress=1; g_gc_threshold=0; }   /* collect on every statement (test mode) */
-  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0, want_emit_c=0;
+  const char *path=NULL, *eval_code=NULL; int show_ledger=0, want_repl=0, want_fmt=0, want_check=0, want_emit_c=0, want_strict=0;
   int i=1;
   for(; i<argc; i++){
     const char *a=argv[i];
@@ -5734,6 +5756,7 @@ int main(int argc, char **argv){
     if(strcmp(a,"--help")==0 || strcmp(a,"-h")==0){ printf("%s", USAGE); return 0; }
     if(strcmp(a,"update")==0){ return cmd_update(); }
     if(strcmp(a,"--ledger")==0){ show_ledger=1; continue; }
+    if(strcmp(a,"--strict")==0){ want_strict=1; continue; }
     if(strcmp(a,"fmt")==0){ want_fmt=1; continue; }
     if(strcmp(a,"--check")==0 || strcmp(a,"check")==0){ want_check=1; continue; }
     if(strcmp(a,"--emit-c")==0){ want_emit_c=1; continue; }
@@ -5806,7 +5829,7 @@ int main(int argc, char **argv){
 
   if(want_repl){
     Interp ip; memset(&ip,0,sizeof(ip));
-    install_builtins(&ip); ip.basedir=xstrdup(".");
+    install_builtins(&ip); ip.basedir=xstrdup("."); ip.strict=want_strict;
     env_define(ip.globals, "args", V_list(prog_args));
     repl(&ip);
     return 0;
@@ -5825,7 +5848,7 @@ int main(int argc, char **argv){
   Node *prog = parse_program(toks);
 
   Interp ip; memset(&ip,0,sizeof(ip));
-  install_builtins(&ip); ip.basedir=basedir;
+  install_builtins(&ip); ip.basedir=basedir; ip.strict=want_strict;
   env_define(ip.globals, "args", V_list(prog_args));
 
   if(setjmp(ip.jb)){ fprintf(stderr,"%s: %s\n", ip.errname, ip.errmsg); return 1; }
