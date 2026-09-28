@@ -16,6 +16,18 @@ pip). You write `.lz` files and run them — just like any other language.
 curl -fsSL https://raw.githubusercontent.com/larz-scripter/larzscript/main/install.sh | sh
 ```
 
+**Debian / Ubuntu (apt)** - signed apt repo, amd64 and arm64:
+
+```bash
+curl -fsSL https://larzos.com/apt/KEY.asc | sudo gpg --dearmor -o /usr/share/keyrings/larzos-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/larzos-archive-keyring.gpg] https://larzos.com/apt stable main" | sudo tee /etc/apt/sources.list.d/larzos.list
+sudo apt update && sudo apt install larzscript
+```
+
+The package is the same static binary and installs one file (`/usr/bin/larzscript`).
+More Linux tools from the same repo (declarative config, a shell, an AI router):
+[larzos.com/larzos-linux/apt/](https://larzos.com/larzos-linux/apt/).
+
 **Windows** (PowerShell) — installs `larzscript.exe` and adds it to your PATH,
 so `larzscript` works in any new cmd/PowerShell window, just like Python:
 
