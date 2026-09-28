@@ -955,6 +955,62 @@ static void env_define(Env *e, const char *name, Value v){
   Entry *n=xmalloc(sizeof(Entry)); gc_register(n,GC_ENTRY); n->name=xstrdup(name); n->val=v; n->next=e->head; e->head=n;
 }
 
+/* "did you mean" support for LarzNameError/LarzKeyError - classic iterative
+ * Levenshtein edit distance, O(len(a)*len(b)) time, O(min(len(a),len(b)))
+ * space. Names/keys involved are always short (identifiers, dict keys),
+ * so there's no need for anything fancier. */
+static int edit_distance(const char *a, const char *b){
+  int la=(int)strlen(a), lb=(int)strlen(b);
+  if(la==0) return lb;
+  if(lb==0) return la;
+  if(lb>la){ const char *t=a; a=b; b=t; int tl=la; la=lb; lb=tl; } /* keep b the shorter one, bound scratch space by it */
+  int *prev=xmalloc((lb+1)*sizeof(int)), *cur=xmalloc((lb+1)*sizeof(int));
+  for(int j=0;j<=lb;j++) prev[j]=j;
+  for(int i=1;i<=la;i++){
+    cur[0]=i;
+    for(int j=1;j<=lb;j++){
+      int cost=(a[i-1]==b[j-1])?0:1;
+      int del=prev[j]+1, ins=cur[j-1]+1, sub=prev[j-1]+cost;
+      int m=del<ins?del:ins; if(sub<m) m=sub;
+      cur[j]=m;
+    }
+    int *tmp=prev; prev=cur; cur=tmp;
+  }
+  int result=prev[lb];
+  free(prev); free(cur);
+  return result;
+}
+/* how close counts as "close enough to suggest" - short names tolerate
+ * less absolute distance (past a certain point a 2-char name is just a
+ * different name), longer ones tolerate proportionally more. */
+static int suggest_threshold(int len){ if(len<=3) return 1; if(len<=8) return 2; return 3; }
+/* Walks the same env chain env_find() itself walks (locals out through
+ * enclosing scopes to globals/builtins - everything a NameError could
+ * plausibly have meant) and returns the closest name within
+ * suggest_threshold(), or NULL if nothing is close enough to be worth
+ * suggesting. Only called after env_find() has already failed. */
+static const char *suggest_name(Env *e, const char *name){
+  const char *best=NULL; int bestd=1000000000, thresh=suggest_threshold((int)strlen(name));
+  for(; e; e=e->parent) for(Entry *it=e->head; it; it=it->next){
+    int d=edit_distance(name,it->name);
+    if(d<bestd){ bestd=d; best=it->name; }
+  }
+  return (bestd<=thresh) ? best : NULL;
+}
+/* Same idea for a dict key miss - only string keys are worth fuzzy
+ * matching (a numeric/bool key typo isn't a spelling mistake). */
+static const char *suggest_dict_key(Dict *d, Value key){
+  if(key.t!=V_STR) return NULL;
+  const char *name=key.str;
+  const char *best=NULL; int bestd=1000000000, thresh=suggest_threshold((int)strlen(name));
+  for(int i=0;i<d->n;i++){
+    if(d->items[i].key.t!=V_STR) continue;
+    int dist=edit_distance(name,d->items[i].key.str);
+    if(dist<bestd){ bestd=dist; best=d->items[i].key.str; }
+  }
+  return (bestd<=thresh) ? best : NULL;
+}
+
 /* ===================== interpreter ===================== */
 typedef struct Txn { const char *src, *dst; long long cents; } Txn;
 typedef struct Sub { const char *w, *p; } Sub;
@@ -1280,7 +1336,15 @@ static Value eval(Interp *ip, Node *n, Env *env){
     case N_STR: return V_string(n->str);
     case N_BOOL: return V_bool(n->boolean);
     case N_NIL: return V_nil();
-    case N_NAME: { Value *v=env_find(env,n->name); if(!v) runtime_error(ip,"LarzNameError","'%s' is not defined", n->name); return *v; }
+    case N_NAME: {
+      Value *v=env_find(env,n->name);
+      if(!v){
+        const char *sug=suggest_name(env,n->name);
+        if(sug) runtime_error(ip,"LarzNameError","'%s' is not defined - did you mean '%s'?", n->name, sug);
+        else runtime_error(ip,"LarzNameError","'%s' is not defined", n->name);
+      }
+      return *v;
+    }
     case N_UN: {
       Value v=eval(ip,n->a,env);
       if(strcmp(n->op,"not")==0) return V_bool(!truthy(v));
@@ -1392,7 +1456,11 @@ static Value eval(Interp *ip, Node *n, Env *env){
       Value iv=eval(ip,n->b,env); gc_temp_pop(ip,tr);
       if(obj.t==V_DICT){
         Value *slot=dict_find(obj.dict, iv);
-        if(!slot) runtime_error(ip,"LarzKeyError","key not found");
+        if(!slot){
+          const char *sug=suggest_dict_key(obj.dict, iv);
+          if(sug) runtime_error(ip,"LarzKeyError","key not found - did you mean '%s'?", sug);
+          else runtime_error(ip,"LarzKeyError","key not found");
+        }
         return *slot;
       }
       if(!is_num(iv) || iv.num!=(long long)iv.num) runtime_error(ip,"LarzTypeError","index must be a whole number");
@@ -1505,7 +1573,15 @@ static void exec(Interp *ip, Node *n, Env *env){
   if(n->line) ip->curline=n->line;
   switch(n->kind){
     case N_LET: env_define(env, n->name, eval(ip,n->a,env)); return;
-    case N_ASSIGN: { Value *slot=env_find(env,n->name); if(!slot) runtime_error(ip,"LarzNameError","cannot assign to undefined '%s' (use 'let')", n->name); *slot=eval(ip,n->a,env); return; }
+    case N_ASSIGN: {
+      Value *slot=env_find(env,n->name);
+      if(!slot){
+        const char *sug=suggest_name(env,n->name);
+        if(sug) runtime_error(ip,"LarzNameError","cannot assign to undefined '%s' (use 'let') - did you mean '%s'?", n->name, sug);
+        else runtime_error(ip,"LarzNameError","cannot assign to undefined '%s' (use 'let')", n->name);
+      }
+      *slot=eval(ip,n->a,env); return;
+    }
     case N_PRICE: { Value v=eval(ip,n->a,env); if(v.t!=V_MONEY) runtime_error(ip,"LarzTypeError","a price must be money"); env_define(env,n->name,v); return; }
     case N_WALLET: {
       long long c=0;
