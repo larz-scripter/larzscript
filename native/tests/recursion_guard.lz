@@ -1,0 +1,18 @@
+fn rec(n) {
+  if n > 0 {
+    return rec(n - 1) + 1
+  }
+  return 0
+}
+# A modest depth, well within any real machine's stack, must still work fine.
+print("safe depth:", rec(40))
+# A runaway/very deep recursion must fail as a clean, catchable error - never
+# a crash - regardless of exactly how much real stack headroom this machine
+# has (see call_value()'s stack-headroom check).
+try {
+  rec(1000000)
+  print("unreachable")
+} catch e {
+  print("caught:", e["type"])
+}
+print("still running after catch")

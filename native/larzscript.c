@@ -109,6 +109,14 @@ typedef int larz_sock_t;
 #endif
 #endif /* !__EMSCRIPTEN__ */
 #endif /* hosted */
+/* Real stack-headroom check for call_value() (below): getrlimit/RLIMIT_STACK is
+ * POSIX-hosted-only (no meaning on Windows or under Emscripten's emulated stack,
+ * and the freestanding kernel build has its own fixed task-stack regions instead
+ * of an OS ulimit) - same guard as the sockets block just above. */
+#if (!defined(__STDC_HOSTED__) || __STDC_HOSTED__) && !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#include <sys/resource.h>
+#define LARZ_HAVE_STACK_GUARD 1
+#endif
 /* Real SSH via libssh - a real, audited C library, not a from-scratch
  * reimplementation (Larzscript's own double-only numeric type can't do the
  * big-integer/elliptic-curve math real SSH key exchange needs - see
@@ -964,6 +972,7 @@ typedef struct Interp {
   int returning; Value retval;
   int loopflow;                 /* 0 none, 1 break, 2 continue */
   int calldepth;                 /* nested Larzscript function calls in flight - see call_value() */
+  char *stack_base; size_t stack_limit;   /* real C-stack headroom check - see call_value() */
   int curline;                  /* line currently executing, for errors */
   char *basedir;                /* directory of the current file, for imports */
   struct ModRec { char *path; Value val; } *modcache; int nmod, modcap;
@@ -1456,11 +1465,27 @@ static Value eval(Interp *ip, Node *n, Env *env){
  * rather than letting the process SIGSEGV. 150 is far beyond any legitimate
  * LarzOS script's recursion depth (boot.lz's factorial demo is 7 deep). */
 #define MAX_CALL_DEPTH 150
+/* Real, measured margin below the real crash point: bisected on both x86_64
+ * and aarch64 at the actual release build flags (-O2), the C stack genuinely
+ * overflows at Larzscript recursion depth 72 - well under MAX_CALL_DEPTH, so
+ * that counter's clean-error path was dead code on a normal hosted build; a
+ * runaway recursion SIGSEGV'd long before ever reaching it. 1 MiB comfortably
+ * covers one more call's real cost (~100+ KiB measured, not a naive few
+ * hundred bytes) plus the runtime_error()/longjmp unwind path's own needs. */
+#define LARZ_STACK_SAFETY_MARGIN (1024u*1024u)
 static Value call_value(Interp *ip, Value callee, Value *args, int nargs){
   if(callee.t==V_BUILTIN) return callee.bi->fn(ip,args,nargs);
   if(callee.t==V_FUNC){
     Node *decl=callee.fn->decl;
     const char *fname = decl->name ? decl->name : "function";
+#ifdef LARZ_HAVE_STACK_GUARD
+    if(ip->stack_base){
+      char probe;
+      size_t used = (size_t)(ip->stack_base - &probe);
+      if(used + LARZ_STACK_SAFETY_MARGIN > ip->stack_limit)
+        runtime_error(ip,"LarzRecursionError","stack space is running low calling '%s' - check for infinite/runaway recursion", fname);
+    }
+#endif
     if(ip->calldepth>=MAX_CALL_DEPTH) runtime_error(ip,"LarzRecursionError","maximum call depth (%d) exceeded calling '%s' - check for infinite/runaway recursion", MAX_CALL_DEPTH, fname);
     if(nargs>decl->nparams) runtime_error(ip,"LarzTypeError","%s expects at most %d argument(s), got %d", fname, decl->nparams, nargs);
     if(decl->has_gas && decl->gas){
@@ -4324,6 +4349,18 @@ static void install_builtins(Interp *ip){
   ip->globals = env_new(NULL);
   ip->has_gas = 0;                 /* unlimited by default */
   define_builtins(ip->globals);
+#ifdef LARZ_HAVE_STACK_GUARD
+  /* install_builtins() is one frame below main() - close enough to the real
+   * stack base for a safety-margined check (see call_value()); the few KB
+   * used by arg parsing/lexing/parsing before this point is negligible next
+   * to the LARZ_STACK_SAFETY_MARGIN below and a single call frame's real
+   * cost (empirically ~100+ KiB, not the few hundred bytes a naive estimate
+   * would suggest - see MAX_CALL_DEPTH's comment). */
+  ip->stack_base = (char*)&ip;
+  struct rlimit rl;
+  if(getrlimit(RLIMIT_STACK,&rl)==0 && rl.rlim_cur!=RLIM_INFINITY) ip->stack_limit=(size_t)rl.rlim_cur;
+  else ip->stack_limit = 8u*1024*1024;   /* RLIM_INFINITY or the call failed - fall back to the common 8 MiB default rather than disable the check */
+#endif
 }
 
 #ifdef __EMSCRIPTEN__
