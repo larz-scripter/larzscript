@@ -1,0 +1,3 @@
+safe depth: 40
+caught: LarzRecursionError
+still running after catch
