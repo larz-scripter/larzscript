@@ -1,0 +1,12 @@
+let x = 1
+if true {
+  let x = 2
+  print("inner:", x)
+}
+print("outer:", x)
+let i = 0
+while i < 3 {
+  let x = i * 10
+  print("loop:", x)
+  i = i + 1
+}

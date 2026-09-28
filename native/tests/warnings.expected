@@ -1,0 +1,7 @@
+Warning (shadowed-name): 'x' shadows a variable from an enclosing scope (line 3)
+Warning (shadowed-name): 'x' shadows a variable from an enclosing scope (line 9)
+inner: 2
+outer: 1
+loop: 0
+loop: 10
+loop: 20
