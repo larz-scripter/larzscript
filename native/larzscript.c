@@ -5658,6 +5658,34 @@ static int update_fetch(const char *url, const char *outpath){
   return system(cmd);
 }
 
+/* Refresh (or install for the first time) the per-user package manager
+ * script alongside a binary update - best-effort, never fails the update
+ * itself. `larzscript pkg` resolves $HOME/.larzscript/larzpkg.lz first (see
+ * cmd_pkg below), the same file install.sh drops there; the self-updater
+ * replaces the binary but historically left this alone, so `larzscript pkg`
+ * could break right after a successful `larzscript update` the same way it
+ * could after a bare apt install missing it (larzos-linux#10 / larzscript#33)
+ * - keep both install paths in parity going forward. */
+static void update_refresh_larzpkg(void){
+  const char *home = getenv("HOME");
+#ifdef _WIN32
+  if(!home) home = getenv("USERPROFILE");
+#endif
+  if(!home) return; /* can't place it anywhere sensible - `pkg` will report its own clear error later */
+
+  char dir[4096]; snprintf(dir,sizeof dir,"%s/.larzscript",home);
+  mkdir(dir,0755); /* ignore the result - fine if it already exists, and a failure here just means the fetch below fails too */
+
+  char dest[4160]; snprintf(dest,sizeof dest,"%s/larzpkg.lz",dir);
+  char tmp[4192]; snprintf(tmp,sizeof tmp,"%s.new",dest);
+  const char *url = "https://raw.githubusercontent.com/larz-scripter/larzscript/main/tools/larzpkg.lz";
+  if(update_fetch(url,tmp)!=0){ fprintf(stderr,"larzscript update: warning - could not refresh larzpkg.lz (network error); `larzscript pkg` may be stale or missing\n"); remove(tmp); return; }
+  size_t len; char *buf=update_read_file(tmp,&len);
+  if(!buf || len==0){ fprintf(stderr,"larzscript update: warning - downloaded larzpkg.lz was empty; leaving any existing copy in place\n"); free(buf); remove(tmp); return; }
+  free(buf);
+  if(rename(tmp,dest)!=0){ fprintf(stderr,"larzscript update: warning - could not install the refreshed larzpkg.lz to '%s'\n", dest); remove(tmp); return; }
+}
+
 static int cmd_update(void){
   if(!sha256_selftest()){ fprintf(stderr,"larzscript update: internal SHA-256 self-test failed - aborting, nothing touched\n"); return 1; }
 
@@ -5703,7 +5731,11 @@ static int cmd_update(void){
   if(!selfbuf){ fprintf(stderr,"larzscript update: could not read the running binary at '%s'\n", self); free(self); return 1; }
   char selfhash[65]; sha256_hex((unsigned char*)selfbuf,selflen,selfhash);
   free(selfbuf);
-  if(strcmp(selfhash,expected)==0){ printf("larzscript is already up to date (%s)\n", LARZSCRIPT_VERSION); free(self); return 0; }
+  if(strcmp(selfhash,expected)==0){
+    printf("larzscript is already up to date (%s)\n", LARZSCRIPT_VERSION);
+    update_refresh_larzpkg(); /* the binary being current doesn't mean larzpkg.lz is present - fix that too */
+    free(self); return 0;
+  }
 
   char url[512]; snprintf(url,sizeof url,
     "https://github.com/larz-scripter/larzscript/releases/latest/download/%s", asset);
@@ -5735,6 +5767,7 @@ static int cmd_update(void){
 #endif
 
   printf("updated larzscript -> %s\n", self);
+  update_refresh_larzpkg();
   free(self);
   return 0;
 }
