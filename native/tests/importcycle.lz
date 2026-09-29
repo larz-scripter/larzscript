@@ -1,0 +1,7 @@
+try {
+  import "importcycle_pkg/budget" as b
+  print("unreachable")
+} catch e {
+  print("caught:", e["type"])
+}
+print("done")
