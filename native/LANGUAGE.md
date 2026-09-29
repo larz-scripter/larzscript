@@ -217,7 +217,12 @@ Import resolution searches, in order: relative to the importing file, then each
 directory in `$LARZSCRIPT_PATH`, then `~/.larzscript/lib`, then `./lz_modules`.
 A bare name like `import "mathx"` also matches `mathx.lz`, `mathx/mathx.lz` or
 `mathx/main.lz` — which is how packages installed with **larzpkg** are found.
-Modules are executed once and cached.
+Modules are executed once and cached. A module that imports itself, directly
+or through another module, before it finishes loading — e.g. a file named
+`budget.lz` doing `import "budget"`, which resolves relative to the
+importing file before falling through to an installed package of the same
+name — raises a catchable `ImportError` ("import cycle") instead of
+recursing.
 
 ### Packages (larzpkg)
 

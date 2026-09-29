@@ -967,6 +967,7 @@ typedef struct Interp {
   int curline;                  /* line currently executing, for errors */
   char *basedir;                /* directory of the current file, for imports */
   struct ModRec { char *path; Value val; } *modcache; int nmod, modcap;
+  char **loading; int nloading, loadingcap;  /* resolved paths currently mid-load - import-cycle guard, see larzscript#38 */
   Env **rootstack; int nroots, rootcap;   /* live scope envs (GC roots) */
   Value *temproots; int ntemp, tempcap;   /* objects held mid-build (GC roots) */
   Txn *ledger; int nled, ledcap;
@@ -1642,13 +1643,13 @@ static void exec(Interp *ip, Node *n, Env *env){
     case N_CONTINUE: ip->loopflow=2; return;
     case N_TRY: {
       jmp_buf saved; memcpy(saved, ip->jb, sizeof(jmp_buf));
-      int nr=ip->nroots, nt=ip->ntemp, ncd=ip->calldepth;  /* restore GC roots + call depth if the try unwinds */
+      int nr=ip->nroots, nt=ip->ntemp, ncd=ip->calldepth, nld=ip->nloading;  /* restore GC roots + call depth + in-flight imports if the try unwinds */
       if(setjmp(ip->jb)==0){
         exec(ip, n->a, env);
         memcpy(ip->jb, saved, sizeof(jmp_buf));       /* normal exit: restore outer */
       } else {
         memcpy(ip->jb, saved, sizeof(jmp_buf));       /* error: restore outer first */
-        ip->nroots=nr; ip->ntemp=nt; ip->calldepth=ncd;
+        ip->nroots=nr; ip->ntemp=nt; ip->calldepth=ncd; ip->nloading=nld;
         ip->returning=0; ip->loopflow=0;
         Dict *d=dict_new();
         dict_set(d, V_string("type"),    V_string(ip->errname?ip->errname:"Error"));
@@ -1684,6 +1685,17 @@ static void exec(Interp *ip, Node *n, Env *env){
       const char *alias=n->name; char abuf[4096];
       if(!alias){ const char *base=strrchr(path,'/'); base=base?base+1:path; snprintf(abuf,sizeof abuf,"%s",base); char *dot=strrchr(abuf,'.'); if(dot)*dot=0; alias=abuf; }
       for(int i=0;i<ip->nmod;i++) if(strcmp(ip->modcache[i].path,resolved)==0){ env_define(env, alias, ip->modcache[i].val); return; }
+      /* Cycle guard: a module isn't added to modcache until it finishes
+       * loading (below), so without this check a module that imports
+       * itself - directly, or indirectly through another module - would
+       * recurse through this whole case unboundedly and blow the C stack.
+       * See larzscript#38 (hit via a file sharing its own package's name,
+       * e.g. budget.lz doing `import "budget"`, which resolves relative to
+       * the importing file before falling through to the real package). */
+      for(int i=0;i<ip->nloading;i++) if(strcmp(ip->loading[i],resolved)==0)
+        runtime_error(ip,"ImportError","import cycle: '%s' is still loading (it imports itself, directly or indirectly, before it finishes)", path);
+      if(ip->nloading==ip->loadingcap){ ip->loadingcap=ip->loadingcap?ip->loadingcap*2:8; ip->loading=realloc(ip->loading,ip->loadingcap*sizeof(char*)); }
+      ip->loading[ip->nloading++]=xstrdup(resolved);
       FILE *f=fopen(resolved,"rb"); if(!f) runtime_error(ip,"ImportError","cannot import '%s'", path);
       size_t cap=1<<16,len=0; char *src=xmalloc(cap); size_t r;
       while((r=fread(src+len,1,cap-len,f))>0){ len+=r; if(len==cap){ cap*=2; src=realloc(src,cap); } }
@@ -1699,6 +1711,7 @@ static void exec(Interp *ip, Node *n, Env *env){
       for(int i=0;i<prog->nkids;i++){ exec(ip,prog->kids[i],modenv); if(ip->returning) break; }
       gc_root_pop(ip);
       ip->returning=saved_ret; ip->basedir=saved_base;
+      ip->nloading--; free(ip->loading[ip->nloading]);  /* done loading - unblock a later, non-cyclic re-import */
       Value mod=V_module(modenv, xstrdup(alias));
       if(ip->nmod==ip->modcap){ ip->modcap=ip->modcap?ip->modcap*2:8; ip->modcache=realloc(ip->modcache,ip->modcap*sizeof(*ip->modcache)); }
       ip->modcache[ip->nmod].path=xstrdup(resolved); ip->modcache[ip->nmod].val=mod; ip->nmod++;
