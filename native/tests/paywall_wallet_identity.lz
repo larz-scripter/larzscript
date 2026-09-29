@@ -1,0 +1,10 @@
+wallet shop
+paywall pro = $9.00 / month to shop
+
+fn make_wallet(start) { wallet w = start; return w }
+let alice = make_wallet($20.00)
+let bob = make_wallet($20.00)
+
+subscribe alice to pro
+print(alice has pro)
+print(bob has pro)

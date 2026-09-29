@@ -957,7 +957,7 @@ static void env_define(Env *e, const char *name, Value v){
 
 /* ===================== interpreter ===================== */
 typedef struct Txn { const char *src, *dst; long long cents; } Txn;
-typedef struct Sub { const char *w, *p; } Sub;
+typedef struct Sub { void *w, *p; } Sub; /* wallet/paywall object identity, not name - see larzscript#37 */
 typedef struct Interp {
   Env *globals;
   int has_gas; long long gas; long long gas_used;
@@ -1026,6 +1026,10 @@ static void gc_collect(Interp *ip){
   for(int i=0;i<ip->ntemp;i++) gc_mark_value(ip->temproots[i]);
   gc_mark_value(ip->retval);
   for(int i=0;i<ip->nmod;i++) gc_mark_value(ip->modcache[i].val);
+  /* subs now hold real wallet/paywall pointers (identity, not name - see
+   * larzscript#37) - keep both sides alive so a collected object's address
+   * can never be reused and silently match an unrelated later subscription. */
+  for(int i=0;i<ip->nsub;i++){ ((GCObj*)ip->subs[i].w)->gc_marked=1; ((GCObj*)ip->subs[i].p)->gc_marked=1; }
 #ifdef __EMSCRIPTEN__
   for(int i=0;i<g_ui_ncb;i++) gc_mark_value(g_ui_callbacks[i]);
 #endif
@@ -1068,12 +1072,17 @@ static void append_txn(Interp *ip, const char *s, const char *d, long long c){
   if(ip->nled==ip->ledcap){ ip->ledcap=ip->ledcap?ip->ledcap*2:16; ip->ledger=realloc(ip->ledger,ip->ledcap*sizeof(Txn)); }
   ip->ledger[ip->nled].src=s; ip->ledger[ip->nled].dst=d; ip->ledger[ip->nled].cents=c; ip->nled++;
 }
-static void add_sub(Interp *ip, const char *w, const char *p){
+static void add_sub(Interp *ip, void *w, void *p){
   if(ip->nsub==ip->subcap){ ip->subcap=ip->subcap?ip->subcap*2:8; ip->subs=realloc(ip->subs,ip->subcap*sizeof(Sub)); }
   ip->subs[ip->nsub].w=w; ip->subs[ip->nsub].p=p; ip->nsub++;
 }
-static int has_sub(Interp *ip, const char *w, const char *p){
-  for(int i=0;i<ip->nsub;i++) if(strcmp(ip->subs[i].w,w)==0 && strcmp(ip->subs[i].p,p)==0) return 1;
+/* Compares by the wallet/paywall's own object identity (the pointer), not by
+ * its declared variable name - two distinct wallets that happen to share a
+ * declaration-site name (e.g. two calls to the same factory function, each
+ * declaring `wallet w = ...`) must never be treated as the same subscriber.
+ * See larzscript#37: this used to strcmp() the names instead. */
+static int has_sub(Interp *ip, void *w, void *p){
+  for(int i=0;i<ip->nsub;i++) if(ip->subs[i].w==w && ip->subs[i].p==p) return 1;
   return 0;
 }
 
@@ -1294,7 +1303,7 @@ static Value eval(Interp *ip, Node *n, Env *env){
       if(strcmp(n->op,"has")==0){
         Value w=eval(ip,n->a,env), pw=eval(ip,n->b,env);
         if(w.t!=V_WALLET || pw.t!=V_PAYWALL) runtime_error(ip,"LarzTypeError","'has' needs a wallet and a paywall");
-        return V_bool(has_sub(ip, w.wal->name, pw.pw->name));
+        return V_bool(has_sub(ip, w.wal, pw.pw));
       }
       if(strcmp(n->op,"in")==0){
         Value a=eval(ip,n->a,env), b=eval(ip,n->b,env);
@@ -1572,7 +1581,7 @@ static void exec(Interp *ip, Node *n, Env *env){
       if(pw->price>wv->wal->cents) runtime_error(ip,"MoneyError","wallet '%s' has insufficient funds", wv->wal->name);
       wv->wal->cents -= pw->price; payee->wal->cents += pw->price;
       append_txn(ip, n->src, pw->payee, pw->price);
-      add_sub(ip, wv->wal->name, pw->name);
+      add_sub(ip, wv->wal, pw);
       return;
     }
     case N_REQUIRE: { if(!truthy(eval(ip,n->a,env))) runtime_error(ip,"RequireError","%s", n->str?n->str:"requirement not met"); return; }
